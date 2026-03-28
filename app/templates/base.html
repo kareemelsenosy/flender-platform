@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}FLENDER Platform{% endblock %}</title>
   <link rel="stylesheet" href="/static/css/main.css">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -234,10 +236,10 @@
         (d1.notifications || []).forEach(n => showToast(n.title, n.message, n.actions, n.type));
         _renderSidebarTasks(d2.tasks || []);
       } catch(_) {}
-      setTimeout(_pollAll, 4000);
+      setTimeout(_pollAll, 15000);
     };
-    // Start polling after a short delay so page renders first
-    setTimeout(_pollAll, 2000);
+    // Start polling after page renders
+    setTimeout(_pollAll, 3000);
   }
   </script>
 

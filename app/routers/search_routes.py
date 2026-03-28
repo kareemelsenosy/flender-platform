@@ -376,11 +376,24 @@ async def search_page(session_id: int, request: Request, db: DBSession = Depends
         return RedirectResponse("/", status_code=302)
 
     # If already done searching, go to review
-    if sess.status == "reviewing" or sess.status == "completed":
+    if sess.status in ("reviewing", "completed"):
         return RedirectResponse(f"/review/{session_id}", status_code=302)
 
     # Check if search is already running
-    is_running = _search_progress.get(session_id, {}).get("running", False)
+    prog = _search_progress.get(session_id, {})
+    is_running = prog.get("running", False)
+
+    # If session says "searching" but no active background thread,
+    # the search finished (or crashed) — check if items were searched
+    if sess.status == "searching" and not is_running:
+        searched = db.query(UniqueItem).filter(
+            UniqueItem.session_id == session_id,
+            UniqueItem.search_status == "done",
+        ).count()
+        if searched > 0:
+            sess.status = "reviewing"
+            db.commit()
+            return RedirectResponse(f"/review/{session_id}", status_code=302)
 
     return templates.TemplateResponse(request, "search.html", {
         "session": sess,
