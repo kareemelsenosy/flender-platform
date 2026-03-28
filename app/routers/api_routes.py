@@ -4,12 +4,22 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.auth import get_current_user_id
 from app.services.notifications import poll_notifications
 
 router = APIRouter()
+
+
+@router.get("/api/health")
+async def health_check():
+    return JSONResponse({"status": "ok"})
+
+
+@router.get("/dashboard")
+async def dashboard_redirect():
+    return RedirectResponse("/", status_code=302)
 
 
 @router.get("/api/notifications/poll")

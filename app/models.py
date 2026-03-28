@@ -22,6 +22,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)
     username = Column(String(100), unique=True, nullable=False)
+    email = Column(String(255), unique=True, nullable=True)
     password_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=_utcnow)
@@ -87,11 +88,11 @@ class UniqueItem(Base):
 
     id = Column(Integer, primary_key=True)
     session_id = Column(Integer, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
-    item_code = Column(String(100), nullable=False)
-    color_code = Column(String(100))
-    brand = Column(String(100))
-    style_name = Column(String(255))
-    color_name = Column(String(100))
+    item_code = Column(String(500), nullable=False)
+    color_code = Column(String(255))
+    brand = Column(String(255))
+    style_name = Column(String(500))
+    color_name = Column(String(255))
     gender = Column(String(50))
     wholesale_price = Column(Float)
     retail_price = Column(Float)
@@ -160,9 +161,9 @@ class SearchCache(Base):
     __tablename__ = "search_cache"
 
     id = Column(Integer, primary_key=True)
-    item_code = Column(String(100), nullable=False)
-    color_code = Column(String(100), default="")
-    brand = Column(String(100), default="")
+    item_code = Column(String(500), nullable=False)
+    color_code = Column(String(255), default="")
+    brand = Column(String(255), default="")
     candidates_json = Column(Text, default="[]")
     scores_json = Column(Text, default="{}")
     searched_at = Column(DateTime, default=_utcnow)

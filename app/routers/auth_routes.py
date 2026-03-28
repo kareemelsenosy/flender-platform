@@ -63,8 +63,15 @@ async def login(request: Request, username: str = Form(default=""), password: st
 
 @router.post("/register")
 async def register(request: Request, username: str = Form(default=""), password: str = Form(default=""),
-                   db: DBSession = Depends(get_db)):
-    # M1: Server-side password validation
+                   email: str = Form(default=""), db: DBSession = Depends(get_db)):
+    # Validate @flendergroup.com email
+    email = email.strip().lower()
+    if not email or not email.endswith("@flendergroup.com"):
+        return templates.TemplateResponse(request, "login.html", {
+            "error": "Registration is restricted to @flendergroup.com email addresses.", "show_register": True,
+        })
+
+    # M1: Server-side validation
     if len(username.strip()) < 3:
         return templates.TemplateResponse(request, "login.html", {
             "error": "Username must be at least 3 characters.", "show_register": True,
@@ -77,9 +84,15 @@ async def register(request: Request, username: str = Form(default=""), password:
     existing = db.query(User).filter(User.username == username.strip()).first()
     if existing:
         return templates.TemplateResponse(request, "login.html", {
-            "error": "Username already taken", "show_register": True,
+            "error": "Username already taken.", "show_register": True,
         })
-    user = User(username=username.strip(), password_hash=hash_password(password))
+    existing_email = db.query(User).filter(User.email == email).first()
+    if existing_email:
+        return templates.TemplateResponse(request, "login.html", {
+            "error": "This email is already registered.", "show_register": True,
+        })
+
+    user = User(username=username.strip(), email=email, password_hash=hash_password(password))
     db.add(user)
     db.commit()
     db.refresh(user)

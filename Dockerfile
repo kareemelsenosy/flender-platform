@@ -12,6 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p uploads output data credentials
+RUN mkdir -p uploads output data credentials && chmod +x start.sh
 
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
+CMD ["bash", "start.sh"]
