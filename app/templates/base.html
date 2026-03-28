@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}FLENDER Platform{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  {% block layout %}
+  <div class="app-layout">
+    <!-- Sidebar -->
+    {% block nav %}
+    <aside class="sidebar">
+      <a href="/" class="sidebar-brand">
+        <span class="sidebar-logo">FLENDER</span>
+        <span class="sidebar-tagline">Order Sheet Organizer</span>
+      </a>
+
+      <nav class="sidebar-nav">
+        <div class="sidebar-section">
+          <a href="/" class="sidebar-link {% if request.url.path == '/' %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            Dashboard
+          </a>
+          <a href="/sheets" class="sidebar-link {% if '/sheets' in request.url.path %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+            Sheets Import
+          </a>
+          <a href="/settings" class="sidebar-link {% if '/settings' in request.url.path %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Settings
+          </a>
+        </div>
+      </nav>
+
+      <!-- Active background tasks indicator -->
+      <div id="sidebar-tasks" style="display:none;padding:12px 16px;border-top:1px solid var(--gray-100)">
+        <div style="font-size:0.72rem;font-weight:700;color:var(--gray-400);letter-spacing:0.5px;margin-bottom:8px;text-transform:uppercase">Background Tasks</div>
+        <div id="sidebar-task-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <a href="/logout" class="sidebar-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          Logout
+        </a>
+      </div>
+    </aside>
+    {% endblock %}
+
+    <!-- Main Content -->
+    <main class="main-content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  {% endblock %}
+
+  <!-- Toast Notifications -->
+  <div id="toast-container" style="
+    position:fixed; bottom:28px; right:28px; z-index:9999;
+    display:flex; flex-direction:column; gap:10px; align-items:flex-end; pointer-events:none;
+  "></div>
+
+  <style>
+  .toast {
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 16px 18px;
+    width: 340px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+    pointer-events: all;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    animation: toastIn 0.28s cubic-bezier(.22,1,.36,1) both;
+    border-left: 3px solid var(--gray-300);
+    position: relative;
+  }
+  .toast.toast-done   { border-left-color: var(--success); }
+  .toast.toast-error  { border-left-color: var(--danger); }
+  .toast.toast-info   { border-left-color: #2563eb; }
+  .toast.toast-out    { animation: toastOut 0.22s ease forwards; }
+  @keyframes toastIn  { from { opacity:0; transform:translateY(16px) scale(.97); } to { opacity:1; transform:none; } }
+  @keyframes toastOut { from { opacity:1; transform:none; } to { opacity:0; transform:translateY(8px) scale(.97); } }
+  .toast-header       { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+  .toast-title        { font-weight:700; font-size:0.85rem; color:var(--black); flex:1; }
+  .toast-close        { border:none; background:none; cursor:pointer; color:var(--gray-400); font-size:1rem; line-height:1; padding:0; flex-shrink:0; }
+  .toast-close:hover  { color:var(--black); }
+  .toast-msg          { font-size:0.8rem; color:var(--gray-500); line-height:1.4; }
+  .toast-actions      { display:flex; gap:8px; flex-wrap:wrap; margin-top:2px; }
+  .toast-actions a    { font-size:0.78rem; font-weight:600; padding:4px 10px; border-radius:6px;
+                        background:var(--black); color:var(--white); text-decoration:none; }
+  .toast-actions a:hover { opacity:.85; }
+  .toast-actions a.outline { background:transparent; color:var(--black); border:1px solid var(--gray-300); }
+  .toast-actions a.outline:hover { border-color:var(--black); }
+  .toast-progress     { height:3px; background:var(--gray-100); border-radius:99px; overflow:hidden; }
+  .toast-progress-bar { height:100%; background:var(--gray-300); border-radius:99px;
+                        animation:toastTimer 8s linear forwards; }
+  .toast.toast-done .toast-progress-bar   { background:var(--success); }
+  .toast.toast-error .toast-progress-bar  { background:var(--danger); }
+  .toast.toast-info .toast-progress-bar   { background:#2563eb; }
+  @keyframes toastTimer { from { width:100%; } to { width:0%; } }
+  </style>
+
+  <!-- Global Modal -->
+  <div class="modal-overlay" id="flender-modal">
+    <div class="modal-box">
+      <h3 class="modal-title" id="modal-title">Confirm</h3>
+      <p class="modal-message" id="modal-message">Are you sure?</p>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <script>
+  // Custom modal system — replaces browser confirm() and alert()
+  function showModal(title, message, buttons) {
+    const overlay = document.getElementById('flender-modal');
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-message').textContent = message;
+    const actions = document.getElementById('modal-actions');
+    actions.innerHTML = '';
+    buttons.forEach(b => {
+      const btn = document.createElement('button');
+      btn.className = 'btn ' + (b.cls || 'btn-outline');
+      btn.textContent = b.label;
+      btn.onclick = () => { overlay.classList.remove('active'); if (b.action) b.action(); };
+      actions.appendChild(btn);
+    });
+    overlay.classList.add('active');
+    // Close on overlay click
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove('active'); };
+  }
+
+  function showAlert(message, title) {
+    showModal(title || 'Notice', message, [
+      { label: 'OK', cls: 'btn-primary' }
+    ]);
+  }
+
+  function showConfirm(message, onConfirm, title) {
+    showModal(title || 'Confirm', message, [
+      { label: 'Cancel', cls: 'btn-outline' },
+      { label: 'Yes, Continue', cls: 'btn-primary', action: onConfirm }
+    ]);
+  }
+
+  function showDanger(message, onConfirm, title) {
+    showModal(title || 'Are you sure?', message, [
+      { label: 'Cancel', cls: 'btn-outline' },
+      { label: 'Delete', cls: 'btn-delete', action: onConfirm }
+    ]);
+  }
+  </script>
+
+  <script>
+  // ── Toast system ───────────────────────────────────────────────────────────
+  function showToast(title, message, actions, type) {
+    const container = document.getElementById('toast-container');
+    const cls = type === 'search_done' || type === 'import_done' ? 'toast-done'
+              : type === 'import_error' ? 'toast-error' : 'toast-info';
+
+    const t = document.createElement('div');
+    t.className = `toast ${cls}`;
+
+    const actionsHtml = (actions || []).map((a, i) =>
+      `<a href="${a.url}" class="${i > 0 ? 'outline' : ''}">${a.label}</a>`
+    ).join('');
+
+    t.innerHTML = `
+      <div class="toast-header">
+        <span class="toast-title">${title}</span>
+        <button class="toast-close" onclick="dismissToast(this.closest('.toast'))">✕</button>
+      </div>
+      ${message ? `<div class="toast-msg">${message}</div>` : ''}
+      ${actionsHtml ? `<div class="toast-actions">${actionsHtml}</div>` : ''}
+      <div class="toast-progress"><div class="toast-progress-bar"></div></div>`;
+
+    container.appendChild(t);
+
+    // Auto-dismiss after 8 s
+    setTimeout(() => dismissToast(t), 8000);
+  }
+
+  function dismissToast(el) {
+    if (!el || !el.isConnected) return;
+    el.classList.add('toast-out');
+    setTimeout(() => el.remove(), 250);
+  }
+
+  // ── Active task sidebar widget ──────────────────────────────────────────────
+  function _renderSidebarTasks(tasks) {
+    const panel = document.getElementById('sidebar-tasks');
+    const list  = document.getElementById('sidebar-task-list');
+    if (!panel || !list) return;
+    if (!tasks.length) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    list.innerHTML = '';
+    tasks.forEach(t => {
+      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0;
+      const href = t.type === 'search'
+        ? `/search/${t.session_id}`
+        : '/sheets';
+      const label = t.type === 'search'
+        ? (t.session_name || `Search #${t.session_id}`)
+        : 'Sheets Import';
+      const d = document.createElement('a');
+      d.href = href;
+      d.style.cssText = 'display:block;text-decoration:none;';
+      d.innerHTML = `
+        <div style="font-size:0.76rem;font-weight:600;color:var(--black);margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</div>
+        <div style="background:var(--gray-100);height:4px;border-radius:99px;overflow:hidden">
+          <div style="height:100%;border-radius:99px;background:#2563eb;width:${pct}%;transition:width 0.5s"></div>
+        </div>
+        <div style="font-size:0.7rem;color:var(--gray-400);margin-top:2px">${t.done} / ${t.total}</div>`;
+      list.appendChild(d);
+    });
+  }
+
+  // ── Notification + task polling ─────────────────────────────────────────────
+  // Only poll when user is logged in (sidebar exists)
+  if (document.querySelector('.sidebar')) {
+    const _pollAll = async () => {
+      try {
+        const [r1, r2] = await Promise.all([
+          fetch('/api/notifications/poll'),
+          fetch('/api/active-tasks'),
+        ]);
+        const d1 = await r1.json();
+        const d2 = await r2.json();
+        (d1.notifications || []).forEach(n => showToast(n.title, n.message, n.actions, n.type));
+        _renderSidebarTasks(d2.tasks || []);
+      } catch(_) {}
+      setTimeout(_pollAll, 4000);
+    };
+    // Start polling after a short delay so page renders first
+    setTimeout(_pollAll, 2000);
+  }
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

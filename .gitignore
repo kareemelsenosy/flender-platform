@@ -1,0 +1,52 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+*.env
+.env.*
+
+# ── Database ──────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── User data (never commit) ──────────────────────────────────────────────────
+uploads/
+output/
+credentials/
+data/
+
+# ── Google credentials (VERY sensitive) ──────────────────────────────────────
+*_google.json
+google_credentials.json
+service_account*.json
+
+# ── Generated files ───────────────────────────────────────────────────────────
+*.zip
+*.xlsx
+*.xls
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/

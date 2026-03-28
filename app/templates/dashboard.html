@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}FLENDER — Dashboard{% endblock %}
+{% block content %}
+<h2 class="mb-6">Dashboard</h2>
+
+<!-- Upload options -->
+<div class="grid-2 mb-6">
+  <!-- Excel / CSV upload (multi-file) -->
+  <div class="card" id="upload-card">
+    <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <h3>Upload Excel or CSV</h3>
+      <p class="text-sm text-muted">Drag &amp; drop or click — select <strong>multiple files</strong> at once</p>
+      <p class="text-sm text-muted" style="margin-top:4px">.xlsx, .xls, .csv</p>
+      <input type="file" id="file-input" accept=".xlsx,.xls,.csv" multiple style="display:none"
+             onchange="startUpload(this.files)">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="upload-zone" onclick="window.location.href='/sheets'" style="cursor:pointer">
+      <h3>Import from Google Sheets</h3>
+      <p class="text-sm text-muted">Paste a Google Sheets URL</p>
+      <p class="text-sm text-muted" style="margin-top:4px">Auto-imports images &amp; data</p>
+    </div>
+  </div>
+</div>
+
+<!-- Batch upload progress (hidden until files are chosen) -->
+<div id="upload-batch" style="display:none" class="mb-6">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h3 style="margin:0">Uploading Files</h3>
+    <span id="upload-summary" class="text-muted" style="font-size:0.85rem"></span>
+  </div>
+  <div id="upload-job-list" style="display:flex;flex-direction:column;gap:10px"></div>
+  <button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="resetUpload()">+ Upload More Files</button>
+</div>
+
+<style>
+.ujob { background:var(--white); border:1px solid var(--gray-200); border-radius:var(--radius-sm); padding:14px 18px; }
+.ujob.uploading { border-left:3px solid #2563eb; }
+.ujob.done      { border-left:3px solid var(--success); }
+.ujob.error     { border-left:3px solid var(--danger); }
+.ujob-header    { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:10px; }
+.ujob-name      { font-weight:600; font-size:0.88rem; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ujob-badge     { font-size:0.7rem; padding:2px 8px; border-radius:20px; font-weight:600; white-space:nowrap; }
+.badge-uploading { background:#eff6ff; color:#2563eb; }
+.badge-done      { background:#f0fdf4; color:var(--success-dark); }
+.badge-error     { background:#fef2f2; color:var(--danger); }
+.ujob-actions   { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+</style>
+
+<script>
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(0) + ' KB';
+  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+}
+
+// Drop zone wiring
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('dragover');
+  startUpload(e.dataTransfer.files);
+});
+
+function resetUpload() {
+  document.getElementById('file-input').value = '';
+  document.getElementById('upload-card').style.display = 'block';
+  document.getElementById('upload-batch').style.display = 'none';
+  document.getElementById('upload-job-list').innerHTML = '';
+}
+
+function mkUploadCard(idx, file) {
+  const d = document.createElement('div');
+  d.className = 'ujob uploading';
+  d.id = `uj${idx}`;
+  d.innerHTML = `
+    <div class="ujob-header">
+      <span class="ujob-name" title="${file.name}">${file.name}</span>
+      <span class="text-muted" style="font-size:0.75rem;flex-shrink:0">${fmtSize(file.size)}</span>
+      <span class="ujob-badge badge-uploading" id="ujbadge${idx}">Uploading</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill blue" id="ujfill${idx}" style="width:0%"></div></div>
+    <div class="progress-text"><span id="ujstat${idx}">Uploading...</span><span id="ujeta${idx}"></span></div>
+    <div class="ujob-actions" id="ujact${idx}" style="display:none"></div>`;
+  return d;
+}
+
+async function uploadOne(idx, file) {
+  const fill   = document.getElementById(`ujfill${idx}`);
+  const stat   = document.getElementById(`ujstat${idx}`);
+  const eta    = document.getElementById(`ujeta${idx}`);
+  const badge  = document.getElementById(`ujbadge${idx}`);
+  const card   = document.getElementById(`uj${idx}`);
+  const act    = document.getElementById(`ujact${idx}`);
+
+  return new Promise(resolve => {
+    const xhr  = new XMLHttpRequest();
+    const form = new FormData();
+    form.append('file', file);
+    const t0 = Date.now();
+
+    xhr.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round(e.loaded / e.total * 90);
+      fill.style.width = pct + '%';
+      const elapsed = (Date.now() - t0) / 1000;
+      if (e.loaded > 0 && e.loaded < e.total) {
+        const rate = e.loaded / elapsed;
+        const rem  = Math.round((e.total - e.loaded) / rate);
+        eta.textContent = rem > 60 ? `~${Math.floor(rem/60)}m ${rem%60}s` : `~${rem}s`;
+      }
+      stat.textContent = `Uploading ${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
+    };
+
+    xhr.onload = () => {
+      fill.style.width = '100%';
+      eta.textContent  = '';
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (data.ok) {
+          fill.classList.remove('blue'); fill.classList.add('success'); fill.style.background = '';
+          card.classList.replace('uploading','done');
+          badge.className = 'ujob-badge badge-done'; badge.textContent = 'Ready';
+          stat.textContent = 'Upload complete — map your columns to continue';
+          act.style.display = 'flex';
+          act.innerHTML = `<a href="${data.mapping_url}" class="btn btn-primary btn-sm">Map Columns → ${data.name}</a>`;
+        } else {
+          _uploadError(idx, data.error || 'Upload failed');
+        }
+      } catch(e) { _uploadError(idx, 'Server error'); }
+      resolve();
+    };
+
+    xhr.onerror = () => { _uploadError(idx, 'Network error'); resolve(); };
+
+    xhr.open('POST', '/upload/file');
+    xhr.send(form);
+  });
+}
+
+function _uploadError(idx, msg) {
+  const fill  = document.getElementById(`ujfill${idx}`);
+  const stat  = document.getElementById(`ujstat${idx}`);
+  const badge = document.getElementById(`ujbadge${idx}`);
+  const card  = document.getElementById(`uj${idx}`);
+  fill.classList.remove('blue','success'); fill.classList.add('error'); fill.style.background = '';
+  fill.style.width = '100%';
+  card.classList.replace('uploading','error');
+  badge.className = 'ujob-badge badge-error'; badge.textContent = 'Failed';
+  stat.textContent = msg;
+}
+
+async function startUpload(fileList) {
+  const files = Array.from(fileList).filter(f => /\.(xlsx|xls|csv)$/i.test(f.name));
+  if (!files.length) { showAlert('Please select .xlsx, .xls, or .csv files.', 'Invalid Files'); return; }
+
+  document.getElementById('upload-card').style.display  = 'none';
+  document.getElementById('upload-batch').style.display = 'block';
+  const list = document.getElementById('upload-job-list');
+  list.innerHTML = '';
+  files.forEach((f, i) => list.appendChild(mkUploadCard(i, f)));
+
+  const sum = document.getElementById('upload-summary');
+  sum.textContent = `0 / ${files.length} complete`;
+
+  // Upload all files in parallel
+  let done = 0;
+  await Promise.all(files.map((f, i) =>
+    uploadOne(i, f).then(() => {
+      done++;
+      sum.textContent = `${done} / ${files.length} complete`;
+    })
+  ));
+}
+</script>
+
+<!-- Sessions -->
+<h3 class="mb-4">Recent Sessions</h3>
+{% if sessions %}
+<div class="flex flex-col gap-3">
+  {% for sess in sessions %}
+  <div class="session-card">
+    <div class="session-info">
+      <h4>{{ sess.name }}</h4>
+      <div class="session-meta">
+        {{ sess.created_at.strftime('%Y-%m-%d %H:%M') }}
+        <span style="color:var(--gray-300)">|</span>
+        {{ sess.total_items or 0 }} items
+        {% if sess.source_type == 'google_sheets' %}
+          <span class="badge badge-blue">Sheets</span>
+        {% endif %}
+        {% if sess.status == 'created' %}
+          <span class="badge badge-gray">Created</span>
+        {% elif sess.status == 'mapping' %}
+          <span class="badge badge-yellow">Mapping</span>
+        {% elif sess.status == 'searching' %}
+          <span class="badge badge-blue">Searching</span>
+        {% elif sess.status == 'reviewing' %}
+          <span class="badge badge-blue">Reviewing</span>
+        {% elif sess.status == 'completed' %}
+          <span class="badge badge-green">Completed</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="session-actions">
+      {% if sess.status == 'mapping' %}
+        <a href="/mapping/{{ sess.id }}" class="btn btn-primary btn-sm">Continue Mapping</a>
+      {% elif sess.status == 'searching' %}
+        <a href="/search/{{ sess.id }}" class="btn btn-primary btn-sm">View Progress</a>
+        {% if sess.source_type != 'google_sheets' %}
+        <a href="/mapping/{{ sess.id }}" class="btn btn-outline btn-sm">Edit Mapping</a>
+        {% endif %}
+      {% elif sess.status == 'reviewing' %}
+        <a href="/review/{{ sess.id }}" class="btn btn-primary btn-sm">Review Images</a>
+        <a href="/generate/{{ sess.id }}" class="btn btn-outline btn-sm">Export</a>
+        {% if sess.source_type != 'google_sheets' %}
+        <a href="/mapping/{{ sess.id }}" class="btn btn-outline btn-sm">Edit Mapping</a>
+        {% endif %}
+      {% elif sess.status == 'completed' %}
+        <a href="/review/{{ sess.id }}" class="btn btn-outline btn-sm">Review</a>
+        <a href="/generate/{{ sess.id }}" class="btn btn-primary btn-sm">Export</a>
+        {% if sess.source_type != 'google_sheets' %}
+        <a href="/mapping/{{ sess.id }}" class="btn btn-outline btn-sm">Edit Mapping</a>
+        {% endif %}
+      {% endif %}
+      <form method="POST" action="/sessions/{{ sess.id }}/delete" style="display:inline" class="delete-form">
+        <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete(this)">Delete</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card text-center" style="padding:48px">
+  <p class="text-muted">No sessions yet. Upload an Excel file or import from Google Sheets to get started.</p>
+</div>
+{% endif %}
+
+<script>
+const zone = document.getElementById('drop-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('dragover');
+  const input = document.getElementById('file-input');
+  input.files = e.dataTransfer.files;
+  document.getElementById('upload-form').submit();
+});
+
+function confirmDelete(btn) {
+  const form = btn.closest('form');
+  showDanger('This session and all its data will be permanently deleted.', () => form.submit(), 'Delete Session');
+}
+</script>
+{% endblock %}

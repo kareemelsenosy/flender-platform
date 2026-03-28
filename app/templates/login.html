@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FLENDER — Login</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="login-container">
+    <div class="login-card">
+      <h1 style="font-family:'Bebas Neue','Arial Narrow',sans-serif;font-weight:400;letter-spacing:6px;font-size:2.4rem">FLENDER</h1>
+      <p class="subtitle">Order Sheet Organizer</p>
+
+      {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+      {% endif %}
+
+      <div id="login-form" {% if show_register %}style="display:none"{% endif %}>
+        <form method="POST" action="/login">
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" name="username" class="form-control" required autofocus>
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" name="password" class="form-control" required>
+          </div>
+          <button type="submit" class="btn btn-primary w-full btn-lg">Sign In</button>
+        </form>
+        <p class="text-center mt-4 text-sm text-muted">
+          No account? <a href="#" onclick="toggleForm()" style="color:var(--black);font-weight:600">Register</a>
+        </p>
+      </div>
+
+      <div id="register-form" {% if not show_register %}style="display:none"{% endif %}>
+        <form method="POST" action="/register">
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" name="username" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" name="password" class="form-control" required minlength="4">
+          </div>
+          <button type="submit" class="btn btn-primary w-full btn-lg">Create Account</button>
+        </form>
+        <p class="text-center mt-4 text-sm text-muted">
+          Have an account? <a href="#" onclick="toggleForm()" style="color:var(--black);font-weight:600">Sign In</a>
+        </p>
+      </div>
+    </div>
+  </div>
+  <script>
+    function toggleForm() {
+      const l = document.getElementById('login-form');
+      const r = document.getElementById('register-form');
+      l.style.display = l.style.display === 'none' ? '' : 'none';
+      r.style.display = r.style.display === 'none' ? '' : 'none';
+    }
+  </script>
+</body>
+</html>

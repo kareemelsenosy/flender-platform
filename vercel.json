@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "app/main.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/static/(.*)",
+      "dest": "/static/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "app/main.py"
+    }
+  ],
+  "env": {
+    "DATABASE_URL": "@flender_database_url",
+    "SECRET_KEY": "@flender_secret_key",
+    "CLAUDE_API_KEY": "@flender_claude_api_key",
+    "GEMINI_API_KEY": "@flender_gemini_api_key",
+    "GOOGLE_SEARCH_KEY": "@flender_google_search_key",
+    "GOOGLE_CSE_ID": "@flender_google_cse_id",
+    "UPLOAD_DIR": "/tmp/uploads",
+    "OUTPUT_DIR": "/tmp/output"
+  }
+}

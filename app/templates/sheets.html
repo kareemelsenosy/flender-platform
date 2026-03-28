@@ -1,0 +1,448 @@
+{% extends "base.html" %}
+{% block title %}FLENDER — Google Sheets Import{% endblock %}
+{% block content %}
+<h2 class="mb-4">Import from Google Sheets</h2>
+
+{% if not has_credentials %}
+<div class="alert alert-info mb-4">
+  <strong>Setup Required:</strong> Upload your Google service account credentials in
+  <a href="/settings" style="color:var(--black);font-weight:600">Settings</a> before importing.
+</div>
+{% endif %}
+
+<!-- Config card -->
+<div class="card mb-4" id="import-card">
+  <div class="form-group mb-3">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <label style="margin:0">Google Sheets URLs</label>
+      <button type="button" class="btn btn-outline" style="font-size:0.78rem;padding:4px 12px" onclick="addRow()"
+        {% if not has_credentials %}disabled{% endif %}>+ Add Sheet</button>
+    </div>
+    <div id="url-list" style="display:flex;flex-direction:column;gap:8px"></div>
+    <small class="text-muted" style="margin-top:6px;display:block">
+      Add multiple spreadsheet URLs to import them all in parallel. Each must be shared with your service account.
+    </small>
+  </div>
+
+  <div class="form-group mb-4">
+    <label class="flex items-center gap-2" style="cursor:pointer;font-weight:500">
+      <input type="checkbox" id="search-missing" checked>
+      <span>Search images for items without photos</span>
+    </label>
+  </div>
+
+  <button id="import-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="importAll()"
+    {% if not has_credentials %}disabled{% endif %}>
+    Import All &amp; Convert to Excel
+  </button>
+</div>
+
+<!-- Batch progress section -->
+<div id="batch-section" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h3 style="margin:0">Importing Spreadsheets</h3>
+    <span id="batch-summary" class="text-muted" style="font-size:0.85rem"></span>
+  </div>
+  <div id="job-list" style="display:flex;flex-direction:column;gap:12px"></div>
+</div>
+
+<!-- Post-import actions -->
+<div id="post-import" style="display:none" class="mt-4"></div>
+
+<!-- How it works -->
+<div class="card mt-4" style="background:var(--gray-50)">
+  <h4 class="mb-2">How it works</h4>
+  <ol style="padding-left:20px;font-size:0.85rem;color:var(--gray-500);line-height:1.8">
+    <li>Add one or more Google Sheets URLs above</li>
+    <li>All sheets import <strong>simultaneously</strong> — each with its own progress bar</li>
+    <li>Images from =IMAGE() formulas and Dropbox links are automatically imported</li>
+    <li>Review images, then export as a formatted Excel order sheet</li>
+    <li>Optionally search for missing images across all sheets at once</li>
+  </ol>
+</div>
+
+<style>
+.job-card { background:var(--white); border:1px solid var(--gray-200); border-radius:var(--radius-sm); padding:16px 20px; transition:border-color 0.2s; }
+.job-card.running  { border-left:3px solid var(--black); }
+.job-card.importing{ border-left:3px solid #2563eb; }
+.job-card.done     { border-left:3px solid var(--success); }
+.job-card.error    { border-left:3px solid var(--danger); }
+.job-card.pending  { border-left:3px solid var(--gray-300); }
+
+.job-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:12px; }
+.job-title  { font-weight:600; font-size:0.9rem; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.job-badge  { font-size:0.7rem; padding:2px 8px; border-radius:20px; white-space:nowrap; font-weight:600; }
+.badge-pending   { background:var(--gray-100); color:var(--gray-500); }
+.badge-importing { background:#eff6ff; color:#2563eb; }
+.badge-done      { background:#f0fdf4; color:var(--success-dark); }
+.badge-error     { background:#fef2f2; color:var(--danger); }
+
+/* progress-bar / progress-fill / progress-text classes come from main.css */
+.job-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+
+.url-row { display:flex; gap:8px; align-items:center; }
+.url-row input { flex:1; }
+.url-row .rm { cursor:pointer; color:var(--gray-400); padding:4px 8px; line-height:1; font-size:1.1rem; background:none; border:none; }
+.url-row .rm:hover { color:var(--danger); }
+</style>
+
+<script>
+function fmtTime(sec) {
+  if (sec <= 0) return '';
+  if (sec > 60) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `~${m}m ${s}s remaining`;
+  }
+  return `~${sec}s remaining`;
+}
+
+let rowId = 0;
+function addRow(val) {
+  rowId++;
+  const id = `r${rowId}`;
+  const d = document.createElement('div');
+  d.className = 'url-row';
+  d.id = id;
+  d.innerHTML = `<input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${val||''}"><button class="rm" onclick="rmRow('${id}')">✕</button>`;
+  document.getElementById('url-list').appendChild(d);
+}
+function rmRow(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+  if (!document.querySelectorAll('.url-row').length) addRow();
+}
+function getUrls() {
+  return Array.from(document.querySelectorAll('.url-row input')).map(i=>i.value.trim()).filter(Boolean);
+}
+addRow();
+
+// ── Auto-reconnect to active imports on page load ─────────────────────────
+(async function() {
+  try {
+    const r = await fetch('/api/active-tasks');
+    const data = await r.json();
+    const sheetTasks = (data.tasks || []).filter(t => t.type === 'sheets');
+    if (!sheetTasks.length) return;
+    // Auto-reconnect immediately — no button click needed
+    reconnectBatch(sheetTasks[0].batch_id);
+  } catch(_) {}
+})();
+
+function reconnectBatch(batch_id) {
+  document.getElementById('import-card').style.display = 'none';
+  const batchSection = document.getElementById('batch-section');
+  batchSection.style.display = 'block';
+  const jobList = document.getElementById('job-list');
+  jobList.innerHTML = '<div class="text-muted" style="font-size:0.85rem;padding:8px 0">Reconnecting...</div>';
+  document.getElementById('batch-summary').textContent = 'Reconnecting...';
+
+  const anims = {}, t0 = {}, prev = {};
+
+  const es = new EventSource(`/sheets/batch/${batch_id}/progress`);
+  es.onmessage = (e) => {
+    const batch = JSON.parse(e.data);
+
+    // Build cards if not yet created
+    if (jobList.querySelector('.job-card') === null) {
+      jobList.innerHTML = '';
+      (batch.jobs || []).forEach((job, idx) => {
+        jobList.appendChild(mkCard(idx, job.url || `Sheet ${idx+1}`));
+        prev[idx] = 'pending';
+      });
+    }
+
+    (batch.jobs || []).forEach((job, idx) => {
+      const st = job.status;
+      if (st === 'importing' && prev[idx] !== 'importing') {
+        t0[idx] = Date.now();
+        setJob(idx, 'importing', {pct: 50, status: 'Importing...', blue: true});
+        anims[idx] = animateJob(idx, t0[idx]);
+      }
+      if (st === 'done') {
+        clearInterval(anims[idx]); delete anims[idx];
+        const parts = [job.with_images > 0 ? `${job.with_images} with images` : '', job.without_images > 0 ? `${job.without_images} without images` : ''].filter(Boolean).join(' · ');
+        const acts = [
+          `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
+          `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
+        ].join('');
+        setJob(idx, 'done', {title: job.title || job.url, status: `${job.items} items${parts ? ' · ' + parts : ''}`, eta: 'Done', actions: acts});
+      }
+      if (st === 'error') {
+        clearInterval(anims[idx]); delete anims[idx];
+        setJob(idx, 'error', {error: job.error || 'Import failed'});
+      }
+      prev[idx] = st;
+    });
+    document.getElementById('batch-summary').textContent = `${batch.done} / ${batch.total} complete`;
+
+    if (batch.complete || (batch.done >= batch.total && batch.total > 0)) {
+      es.close();
+      document.getElementById('batch-summary').textContent = `All ${batch.total} sheets imported`;
+      // Show "New Import" button so user doesn't need to refresh
+      const newBtn = document.createElement('button');
+      newBtn.className = 'btn btn-outline btn-sm';
+      newBtn.style.marginTop = '12px';
+      newBtn.textContent = '+ New Import';
+      newBtn.onclick = () => {
+        document.getElementById('batch-section').style.display = 'none';
+        document.getElementById('job-list').innerHTML = '';
+        document.getElementById('import-card').style.display = 'block';
+        newBtn.remove();
+      };
+      document.getElementById('batch-section').appendChild(newBtn);
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    document.getElementById('batch-summary').textContent = 'Connection lost — refresh to try again';
+  };
+}
+
+// ── Job card factory ──────────────────────────────────────────────────────
+function mkCard(idx, url) {
+  const short = url.length > 55 ? url.slice(0,52)+'...' : url;
+  const d = document.createElement('div');
+  d.className = 'job-card pending';
+  d.id = `jc${idx}`;
+  d.innerHTML = `
+    <div class="job-header">
+      <span class="job-title" id="jtitle${idx}" title="${url}">${short}</span>
+      <span class="job-badge badge-pending" id="jbadge${idx}">Pending</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="jfill${idx}" style="width:0%"></div></div>
+    <div class="progress-text"><span id="jstat${idx}">Waiting...</span><span id="jeta${idx}"></span></div>
+    <div class="job-actions" id="jact${idx}" style="display:none"></div>`;
+  return d;
+}
+
+function setJob(idx, state, o={}) {
+  const card = document.getElementById(`jc${idx}`);
+  const badge= document.getElementById(`jbadge${idx}`);
+  const fill = document.getElementById(`jfill${idx}`);
+  const stat = document.getElementById(`jstat${idx}`);
+  const eta  = document.getElementById(`jeta${idx}`);
+  const act  = document.getElementById(`jact${idx}`);
+
+  card.className = `job-card ${state}`;
+  badge.className = `job-badge badge-${state}`;
+  const labels = {pending:'Pending', importing:'Importing...', done:'Done', error:'Failed'};
+  badge.textContent = labels[state]||state;
+
+  if (o.pct!=null) fill.style.width = o.pct+'%';
+  if (o.blue)   { fill.classList.remove('success','error'); fill.classList.add('blue'); }
+  if (o.status) stat.textContent = o.status;
+  if (o.eta!=null) eta.textContent = o.eta;
+  if (state==='done') { fill.classList.remove('blue','error'); fill.classList.add('success'); fill.style.width='100%'; fill.style.background=''; }
+  if (state==='error'){ fill.classList.remove('blue','success'); fill.classList.add('error'); fill.style.width='100%'; fill.style.background=''; if(o.error) stat.textContent=o.error; eta.textContent=''; }
+  if (o.title) document.getElementById(`jtitle${idx}`).textContent = o.title;
+  if (o.actions) { act.style.display='flex'; act.innerHTML=o.actions; }
+}
+
+// ── Stage animation ───────────────────────────────────────────────────────
+const STAGES = [
+  {pct:12,status:'Connecting to Google...',t:0.8},
+  {pct:28,status:'Reading spreadsheet tabs...',t:2},
+  {pct:48,status:'Extracting product data...',t:3.5},
+  {pct:66,status:'Downloading images from sheet...',t:5.5},
+];
+function animateJob(idx, t0) {
+  let si=0;
+  return setInterval(()=>{
+    const card=document.getElementById(`jc${idx}`);
+    if(!card||!card.classList.contains('importing')){return;}
+    const el=(Date.now()-t0)/1000;
+    if(si<STAGES.length){
+      if(el>=STAGES[si].t){
+        const s=STAGES[si++];
+        setJob(idx,'importing',{pct:s.pct,status:s.status,blue:true});
+      }
+    } else {
+      const fill=document.getElementById(`jfill${idx}`);
+      const cur=parseFloat(fill.style.width)||66;
+      if(cur<88) fill.style.width=(cur+0.35)+'%';
+      document.getElementById(`jeta${idx}`).textContent=fmtTime(Math.round(el));
+    }
+  },300);
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────
+async function importAll() {
+  const urls = getUrls();
+  if(!urls.length){showAlert('Please enter at least one Google Sheets URL.','Missing URL');return;}
+
+  const searchMissing = document.getElementById('search-missing').checked;
+  document.getElementById('import-btn').disabled=true;
+  document.getElementById('import-card').style.display='none';
+
+  const batchSection=document.getElementById('batch-section');
+  batchSection.style.display='block';
+  const jobList=document.getElementById('job-list');
+  jobList.innerHTML='';
+  urls.forEach((url,i)=>jobList.appendChild(mkCard(i,url)));
+  document.getElementById('batch-summary').textContent=`0 / ${urls.length} complete`;
+
+  const resp = await fetch('/sheets/import-batch',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({urls}),
+  });
+  if(!resp.ok){
+    const err=await resp.json().catch(()=>({error:'Server error'}));
+    showAlert(err.error||'Failed to start import.','Error');
+    document.getElementById('import-card').style.display='block';
+    batchSection.style.display='none';
+    document.getElementById('import-btn').disabled=false;
+    return;
+  }
+  const {batch_id}=await resp.json();
+
+  const anims={}, t0={};
+  const prev=Array(urls.length).fill('pending');
+
+  const es=new EventSource(`/sheets/batch/${batch_id}/progress`);
+  es.onmessage=(e)=>{
+    const batch=JSON.parse(e.data);
+    (batch.jobs||[]).forEach((job,idx)=>{
+      const st=job.status;
+      if(st==='importing'&&prev[idx]!=='importing'){
+        t0[idx]=Date.now();
+        setJob(idx,'importing',{pct:5,status:'Connecting to Google...',blue:true});
+        anims[idx]=animateJob(idx,t0[idx]);
+      }
+      if(st==='done'){
+        clearInterval(anims[idx]);delete anims[idx];
+        const elapsed=t0[idx]?Math.round((Date.now()-t0[idx])/1000):0;
+        const parts=[job.with_images>0?`${job.with_images} with images`:'',job.without_images>0?`${job.without_images} without images`:''].filter(Boolean).join(' · ');
+        const acts=[
+          `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
+          `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
+          (searchMissing&&job.without_images>0)?`<a href="/search/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Search ${job.without_images} Missing</a>`:'',
+        ].filter(Boolean).join('');
+        setJob(idx,'done',{title:job.title||job.url,status:`${job.items} items${parts?' · '+parts:''}`,eta:elapsed?`Completed in ${elapsed}s`:'Done',actions:acts});
+      }
+      if(st==='error'){
+        clearInterval(anims[idx]);delete anims[idx];
+        setJob(idx,'error',{error:job.error||'Import failed'});
+      }
+      prev[idx]=st;
+    });
+    document.getElementById('batch-summary').textContent=`${batch.done} / ${batch.total} complete`;
+
+    if(batch.complete||(batch.done>=batch.total&&batch.total>0)){
+      es.close();
+      document.getElementById('batch-summary').textContent=`All ${batch.total} sheets imported`;
+      _showPostImport(batch.jobs,searchMissing);
+    }
+  };
+  es.onerror=()=>{es.close();document.getElementById('batch-summary').textContent='Connection lost';};
+}
+
+function _showPostImport(jobs,searchMissing){
+  const container=document.getElementById('post-import');
+  const withMissing=jobs.filter(j=>j.status==='done'&&j.without_images>0);
+  const allIds=jobs.filter(j=>j.status==='done').map(j=>j.session_id);
+  if(!searchMissing||!withMissing.length||!allIds.length){container.style.display='none';return;}
+  const totalMissing=withMissing.reduce((s,j)=>s+j.without_images,0);
+  container.style.display='block';
+  container.innerHTML=`
+    <div class="card" style="border:2px solid var(--black)">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+        <div>
+          <h4 style="margin-bottom:4px">Search Missing Images</h4>
+          <p class="text-muted" style="font-size:0.85rem;margin:0">${totalMissing} items across ${withMissing.length} sheet(s) have no image</p>
+        </div>
+        <button class="btn btn-primary" id="search-all-btn" onclick="searchAllMissing(${JSON.stringify(allIds)})">
+          Search All ${totalMissing} Images in Parallel
+        </button>
+      </div>
+    </div>`;
+}
+
+async function searchAllMissing(ids){
+  document.getElementById('search-all-btn').disabled=true;
+  const resp=await fetch('/search/batch/start',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({session_ids:ids,search_mode:'web'}),
+  });
+  if(!resp.ok){showAlert('Failed to start batch search.','Error');document.getElementById('search-all-btn').disabled=false;return;}
+
+  const container=document.getElementById('post-import');
+  container.innerHTML=`
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h4 style="margin:0">Searching Images in Parallel</h4>
+        <span id="ms-sum" class="text-muted" style="font-size:0.85rem">Starting...</span>
+      </div>
+      <div id="ms-bars" style="display:flex;flex-direction:column;gap:12px"></div>
+    </div>`;
+
+  const barsEl=document.getElementById('ms-bars');
+  const t0={};
+  ids.forEach(sid=>{
+    t0[sid]=Date.now();
+    const d=document.createElement('div');
+    d.id=`ms${sid}`;
+    d.innerHTML=`
+      <div class="job-header" style="margin-bottom:5px">
+        <span class="job-title" style="font-size:0.85rem">Session #${sid}</span>
+        <span id="mset${sid}" class="text-muted" style="font-size:0.78rem"></span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill blue" id="msf${sid}" style="width:0%"></div></div>
+      <div class="progress-text">
+        <span id="mss${sid}">Queued...</span>
+        <span id="msc${sid}"></span>
+      </div>`;
+    barsEl.appendChild(d);
+  });
+
+  const es=new EventSource(`/search/batch/progress?session_ids=${ids.join(',')}`);
+  es.onmessage=(e)=>{
+    const snap=JSON.parse(e.data);
+    let td=0,tt=0;
+    ids.forEach(sid=>{
+      const p=snap[String(sid)]||{};
+      const done=p.done||0,total=p.total||0;
+      const pct=total>0?Math.round(done/total*100):0;
+      const fill=document.getElementById(`msf${sid}`);
+      if(fill) fill.style.width=pct+'%';
+      const sc=document.getElementById(`msc${sid}`);
+      if(sc&&total>0) sc.textContent=`${done} / ${total}`;
+      const ss=document.getElementById(`mss${sid}`);
+      if(ss) ss.textContent=p.current?`Searching: ${p.current}`:(p.running?'Running...':'Done');
+      const et=document.getElementById(`mset${sid}`);
+      if(et&&done>0&&total>0){
+        const el=(Date.now()-t0[sid])/1000;
+        const rem=Math.round((el/done)*(total-done));
+        et.textContent=done>=total?'Done!':fmtTime(rem);
+      }
+      td+=done; tt+=total;
+    });
+    const sumEl=document.getElementById('ms-sum');
+    if(sumEl&&tt>0) sumEl.textContent=`${td} / ${tt} items`;
+
+    if(snap.complete){
+      es.close();
+      if(sumEl) sumEl.textContent='All done!';
+      ids.forEach(sid=>{
+        const fill=document.getElementById(`msf${sid}`);
+        if(fill){fill.style.width='100%';fill.style.background='';fill.classList.remove('blue');fill.classList.add('success');}
+        const ss=document.getElementById(`mss${sid}`);
+        if(ss) ss.textContent='Complete';
+        const et=document.getElementById(`mset${sid}`);
+        if(et) et.textContent='Done!';
+      });
+      const linksDiv=document.createElement('div');
+      linksDiv.className='job-actions';
+      linksDiv.style.marginTop='14px';
+      ids.forEach(sid=>{
+        const a=document.createElement('a');
+        a.href=`/review/${sid}`;a.className='btn btn-outline';
+        a.style.fontSize='0.8rem';a.textContent=`Review #${sid}`;
+        linksDiv.appendChild(a);
+      });
+      document.querySelector('#post-import .card').appendChild(linksDiv);
+    }
+  };
+  es.onerror=()=>{es.close();};
+}
+</script>
+{% endblock %}

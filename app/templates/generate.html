@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}FLENDER — Export{% endblock %}
+{% block content %}
+
+<!-- Step indicator -->
+<div class="steps" style="margin-bottom:24px">
+  <div class="step done"><span class="step-num">Step 1</span>Upload</div>
+  <div class="step done"><span class="step-num">Step 2</span>Mapping</div>
+  <div class="step done"><span class="step-num">Step 3</span>Search</div>
+  <div class="step done"><span class="step-num">Step 4</span>Review</div>
+  <div class="step active"><span class="step-num">Step 5</span>Export</div>
+</div>
+
+<div class="card" style="padding: 40px;">
+  <h2 class="mb-4 text-center">Export Order Sheet</h2>
+  <p class="text-muted text-center mb-2">{{ session.name }}</p>
+  <p class="text-center mb-6"><span class="badge badge-green" style="font-size:0.8rem;padding:5px 14px">{{ approved_count }} approved items</span></p>
+
+  <div class="form-group">
+    <label class="flex items-center gap-2" style="cursor:pointer">
+      <input type="checkbox" id="save-images" checked>
+      <span>Save images to folder</span>
+    </label>
+    <p class="text-sm text-muted mt-1">
+      Images saved as <code>{ManufacturerCode}_1.jpg</code> — a ZIP download will appear after generation.
+    </p>
+  </div>
+
+  <div style="background:var(--gray-50);padding:16px;border-radius:var(--radius-xs);border:1px solid var(--gray-200)" class="mb-4">
+    <h4 class="mb-2" style="font-size:0.85rem">Output Format</h4>
+    <ul style="font-size:0.8rem;color:var(--gray-500);padding-left:16px;margin:0;line-height:1.8">
+      <li>23-column standard ordersheet format</li>
+      <li>Product groups with merged picture cells</li>
+      <li>QTY column (editable, yellow) with auto-calculated totals</li>
+      <li>Embedded product images</li>
+      <li>Pictures column with clickable links</li>
+    </ul>
+  </div>
+
+  <button id="export-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="doExport()">
+    Generate & Download Excel
+  </button>
+
+  <div id="export-progress" style="display:none" class="mt-4">
+    <div class="progress-container">
+      <div class="progress-bar">
+        <div class="progress-fill" id="export-fill" style="width:0%"></div>
+      </div>
+      <div class="progress-text">
+        <span id="export-status">Preparing...</span>
+        <span id="export-eta"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="download-area" class="mt-4 text-center" style="display:none"></div>
+</div>
+
+<script>
+const SESSION_ID = {{ session.id }};
+let pollInterval = null;
+
+function fmtTime(sec) {
+  if (sec <= 0) return '';
+  if (sec > 60) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `~${m}m ${s}s remaining`;
+  }
+  return `~${sec}s remaining`;
+}
+
+function startPolling(startTime) {
+  pollInterval = setInterval(async () => {
+    try {
+      const resp = await fetch(`/generate/${SESSION_ID}/progress`);
+      const p = await resp.json();
+      const fill = document.getElementById('export-fill');
+      const statusEl = document.getElementById('export-status');
+      const etaEl = document.getElementById('export-eta');
+      const elapsed = (Date.now() - startTime) / 1000;
+
+      if (p.stage === 'downloading' && p.total > 0) {
+        const pct = Math.round((p.downloaded / p.total) * 80);
+        fill.style.width = Math.min(pct, 80) + '%';
+        statusEl.textContent = `Downloading images: ${p.downloaded} / ${p.total}`;
+        if (p.downloaded > 2) {
+          const perImage = elapsed / p.downloaded;
+          const remaining = Math.round(perImage * (p.total - p.downloaded));
+          etaEl.textContent = fmtTime(remaining);
+        } else {
+          etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+        }
+      } else if (p.stage === 'saving') {
+        fill.style.width = '90%';
+        statusEl.textContent = 'Saving Excel file...';
+        etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+      } else if (p.stage === 'done') {
+        fill.style.width = '95%';
+        statusEl.textContent = 'Finalizing...';
+        etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+      } else {
+        etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+      }
+    } catch (e) {}
+  }, 500);
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
+async function doExport() {
+  const btn = document.getElementById('export-btn');
+  const progress = document.getElementById('export-progress');
+  const downloadArea = document.getElementById('download-area');
+  const saveImages = document.getElementById('save-images').checked;
+  const fill = document.getElementById('export-fill');
+  const statusEl = document.getElementById('export-status');
+  const etaEl = document.getElementById('export-eta');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Generating...';
+  progress.style.display = 'block';
+  fill.style.width = '2%';
+  fill.style.background = '';
+  statusEl.textContent = 'Starting generation...';
+  etaEl.textContent = '';
+
+  const startTime = Date.now();
+  startPolling(startTime);
+
+  try {
+    const resp = await fetch(`/generate/${SESSION_ID}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({save_images: saveImages}),
+    });
+
+    stopPolling();
+
+    let data;
+    const text = await resp.text();
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = { error: 'Server error during generation. Check that items have been approved.' };
+    }
+
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+    if (data.ok) {
+      fill.style.width = '100%';
+      statusEl.textContent = 'Excel generated successfully!';
+      etaEl.textContent = `Completed in ${elapsed}s`;
+      btn.style.display = 'none';
+      downloadArea.style.display = 'block';
+
+      let html = `
+        <a href="${data.download_url}" class="btn btn-primary btn-lg" style="width:100%;margin-bottom:8px" download>
+          Download ${data.filename}
+        </a>
+        <p class="text-sm text-muted mb-3">Link expires in 30 minutes</p>
+      `;
+
+      if (saveImages && data.images_zip_url) {
+        html += `
+          <a href="${data.images_zip_url}" class="btn btn-outline" style="width:100%" download>
+            Download Images ZIP
+          </a>
+        `;
+      }
+
+      downloadArea.innerHTML = html;
+
+      // Auto-download the Excel file
+      const a = document.createElement('a');
+      a.href = data.download_url;
+      a.download = data.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } else {
+      fill.style.width = '100%';
+      fill.style.background = 'var(--danger)';
+      statusEl.textContent = 'Error: ' + (data.error || 'Unknown error');
+      etaEl.textContent = `Failed after ${elapsed}s`;
+      btn.disabled = false;
+      btn.innerHTML = 'Generate & Download Excel';
+    }
+  } catch (e) {
+    stopPolling();
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    fill.style.width = '100%';
+    fill.style.background = 'var(--danger)';
+    statusEl.textContent = 'Error: ' + e.message;
+    etaEl.textContent = `Failed after ${elapsed}s`;
+    btn.disabled = false;
+    btn.innerHTML = 'Generate & Download Excel';
+  }
+}
+</script>
+{% endblock %}

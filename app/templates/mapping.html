@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}FLENDER — Column Mapping{% endblock %}
+{% block content %}
+
+<!-- Step indicator -->
+<div class="steps">
+  <div class="step done"><span class="step-num">Step 1</span>Upload</div>
+  <div class="step active"><span class="step-num">Step 2</span>Column Mapping</div>
+  <div class="step"><span class="step-num">Step 3</span>Image Search</div>
+  <div class="step"><span class="step-num">Step 4</span>Review</div>
+  <div class="step"><span class="step-num">Step 5</span>Export</div>
+</div>
+
+<div class="flex justify-between items-center mb-4">
+  <div>
+    <h2>Column Mapping</h2>
+    <p class="text-sm text-muted">{{ session.name }} &middot; {{ total_rows }} rows &middot; {{ total_unique }} unique items</p>
+  </div>
+  <button class="btn btn-primary" id="ai-suggest-btn" onclick="aiSuggest()">
+    AI Suggest Mapping
+  </button>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+{% if is_remap %}
+<div class="alert" style="border-color:var(--warning);background:#fffbeb;color:#92400e">
+  <strong>Re-mapping Mode</strong> — You're editing an existing session's column mapping. Applying will re-parse the file and reset the image search.
+</div>
+{% endif %}
+
+{% if saved_formats %}
+<div class="flex gap-2 mb-4 items-center flex-wrap">
+  <span class="text-sm text-muted">Saved Formats:</span>
+  {% for fmt in saved_formats %}
+  <form method="POST" action="/mapping/{{ session.id }}/apply-format/{{ fmt.id }}" style="display:inline">
+    <button type="submit" class="btn btn-outline btn-sm">{{ fmt.name }}</button>
+  </form>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card" style="min-width:0;overflow:hidden">
+  <div id="ai-status" style="display:none" class="alert alert-info mb-3"></div>
+
+  <form method="POST" action="/mapping/{{ session.id }}">
+    {% for field in standard_fields %}
+    <div class="mapping-row">
+      <div class="mapping-label">
+        {{ field.replace('_', ' ').title() }}
+        {% if field in ['item_code', 'brand'] %}
+        <span style="color:var(--danger)">*</span>
+        {% endif %}
+      </div>
+      <select name="map_{{ field }}" id="map_{{ field }}" class="form-control">
+        <option value="">-- Not mapped --</option>
+        {% for h in headers %}
+        <option value="{{ h }}" {% if auto_mapping.get(field) == h %}selected{% endif %}>{{ h }}</option>
+        {% endfor %}
+      </select>
+      <div class="mapping-badge" id="badge_{{ field }}" style="text-align:center">
+        {% if auto_mapping.get(field) %}
+        <span class="badge badge-gray" style="font-size:0.6rem">AUTO</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+
+    <div class="mt-4 flex gap-3 items-center" style="flex-wrap:wrap">
+      <button type="submit" class="btn btn-primary">Apply Mapping & Continue</button>
+      <input type="text" name="save_format_name" class="form-control" placeholder="Save as format (optional)" style="max-width:200px;font-size:0.8rem">
+    </div>
+  </form>
+</div>
+
+<!-- Full-width Data Preview -->
+<div class="card mt-4" style="min-width:0;overflow:hidden">
+  <div class="flex justify-between items-center mb-3">
+    <div>
+      <h4>Data Preview</h4>
+      <p class="text-sm text-muted">All columns from your file — first 5 rows</p>
+    </div>
+    <span class="badge badge-gray">{{ headers|length }} columns</span>
+  </div>
+  <div style="overflow-x:auto;overflow-y:auto;max-height:320px;max-width:100%;border:1px solid var(--gray-200);border-radius:var(--radius-xs);">
+    <table style="border-collapse:collapse;white-space:nowrap;font-size:0.8rem;">
+      <thead>
+        <tr>
+          {% for h in headers %}
+          <th style="padding:10px 14px; background:var(--black); color:white; text-align:left; font-weight:600; font-size:0.75rem; position:sticky; top:0; z-index:1; white-space:nowrap; text-transform:none; letter-spacing:0;">{{ h }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in sample_rows %}
+        <tr style="{% if loop.index is odd %}background:var(--gray-50){% else %}background:var(--white){% endif %}">
+          {% for h in headers %}
+          <td style="padding:9px 14px; border-bottom:1px solid var(--gray-100); color:var(--gray-700); max-width:200px; overflow:hidden; text-overflow:ellipsis;">{{ row.get('_raw', {}).get(h, '') }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function aiSuggest() {
+  const btn = document.getElementById('ai-suggest-btn');
+  const status = document.getElementById('ai-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> AI Analyzing...';
+  status.style.display = 'block';
+  status.className = 'alert alert-info mb-3';
+  status.textContent = 'AI is analyzing your column headers and sample data...';
+
+  try {
+    const resp = await fetch('/mapping/{{ session.id }}/ai-suggest', {method: 'POST'});
+    const data = await resp.json();
+
+    if (data.error) {
+      status.className = 'alert alert-danger mb-3';
+      status.textContent = data.error;
+      btn.disabled = false;
+      btn.innerHTML = 'AI Suggest Mapping';
+      return;
+    }
+
+    const mappings = data.mappings || {};
+    let applied = 0;
+    for (const [field, info] of Object.entries(mappings)) {
+      const select = document.getElementById('map_' + field);
+      const badge = document.getElementById('badge_' + field);
+      if (select && info.header) {
+        for (const opt of select.options) {
+          if (opt.value === info.header) {
+            select.value = info.header;
+            if (badge) {
+              const conf = Math.round((info.confidence || 0) * 100);
+              let cls = conf >= 80 ? 'confidence-high' : (conf >= 50 ? 'confidence-medium' : 'confidence-poor');
+              let label = conf >= 80 ? 'HIGH' : (conf >= 50 ? 'MED' : 'LOW');
+              badge.innerHTML = `<span class="badge ${cls}" style="font-size:0.65rem">AI ${label}</span>`;
+            }
+            applied++;
+            break;
+          }
+        }
+      }
+    }
+
+    status.className = 'alert alert-success mb-3';
+    let msg = `AI successfully mapped ${applied} fields. Review and edit the selections above, then click "Apply Mapping".`;
+    if (data.notes) msg += ` Note: ${data.notes}`;
+    status.textContent = msg;
+
+  } catch (e) {
+    status.className = 'alert alert-danger mb-3';
+    status.textContent = 'Failed to get AI suggestions: ' + e.message;
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = 'AI Suggest Mapping';
+}
+</script>
+{% endblock %}

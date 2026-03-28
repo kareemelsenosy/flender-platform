@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}FLENDER — Settings{% endblock %}
+{% block content %}
+<h2 class="mb-6">Settings</h2>
+
+  <!-- Brand Search URLs -->
+  <div class="card mb-4">
+    <h3 class="mb-2">Brand Search URLs</h3>
+    <p class="text-sm text-muted mb-4">Priority search domains for specific brands. The tool searches these sites first.</p>
+
+    <div id="brand-list">
+      {% for bc in brand_configs %}
+      <div class="brand-entry">
+        <div class="flex justify-between items-center mb-1">
+          <strong>{{ bc.brand_name }}</strong>
+          <button class="btn btn-danger btn-sm" onclick="deleteBrand({{ bc.id }})">Delete</button>
+        </div>
+        <div class="text-sm text-muted mb-1">{{ bc.site_urls | join(', ') }}</div>
+        {% if bc.search_notes %}
+        <div class="text-sm" style="color:var(--gray-700)">
+          <span class="badge badge-gray" style="font-size:0.6rem">AI</span>
+          {{ bc.search_notes }}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="mt-4" style="border-top:1px solid var(--gray-200);padding-top:16px">
+      <div class="form-group">
+        <label>Brand Name</label>
+        <input type="text" id="new-brand-name" placeholder="e.g. Stone Island">
+      </div>
+      <div class="form-group">
+        <label>Search URLs (one per line)</label>
+        <textarea id="new-brand-urls" rows="3" placeholder="stoneisland.com&#10;stoneisland.co.uk"></textarea>
+      </div>
+      <div class="form-group">
+        <label>
+          AI Search Instructions
+          <span class="badge badge-gray" style="margin-left:6px;font-size:0.6rem">AI</span>
+          <span class="text-muted" style="font-weight:400"> (optional)</span>
+        </label>
+        <textarea id="new-brand-notes" rows="3" placeholder="Hints for AI when searching this brand:&#10;- Product images under /media/catalog/product/&#10;- SKU has no dashes, e.g. GKP00911&#10;- Prioritize cdn.brand.com"></textarea>
+        <small class="text-muted">Auto-applied every time you search items from this brand.</small>
+      </div>
+      <button class="btn btn-primary" onclick="saveBrand()">Add / Update Brand</button>
+    </div>
+  </div>
+
+  <!-- Google Credentials -->
+  <div class="card mb-4">
+    <h3 class="mb-2">Google Sheets Integration</h3>
+    <p class="text-sm text-muted mb-4">Upload Google service account JSON credentials for Sheets import.</p>
+
+    {% if has_google_creds %}
+    <div class="alert alert-success mb-3">Google credentials are configured.</div>
+    {% else %}
+    <div class="alert alert-info mb-3">No Google credentials uploaded yet.</div>
+    {% endif %}
+
+    <form id="google-creds-form">
+      <div class="form-group">
+        <label>Service Account JSON File</label>
+        <div id="creds-drop-zone" onclick="document.getElementById('google-creds-file').click()"
+          class="upload-zone" style="padding:24px">
+          <p style="font-size:0.9rem;font-weight:600;margin-bottom:4px" id="creds-filename">Click to choose JSON file</p>
+          <p class="text-sm text-muted">or drag & drop your credentials.json here</p>
+        </div>
+        <input type="file" id="google-creds-file" accept=".json" style="display:none">
+      </div>
+      <button type="submit" class="btn btn-primary">Upload Credentials</button>
+    </form>
+  </div>
+
+  <!-- Saved Formats -->
+  <div class="card mb-4">
+    <h3 class="mb-2">Saved Column Mapping Formats</h3>
+    <p class="text-sm text-muted mb-4">Manage saved formats for quick reuse during column mapping.</p>
+
+    {% if saved_formats %}
+    <div class="table-container">
+      <table>
+        <thead><tr><th>Name</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+          {% for fmt in saved_formats %}
+          <tr>
+            <td><strong>{{ fmt.name }}</strong></td>
+            <td class="text-sm text-muted">{{ fmt.created_at.strftime('%Y-%m-%d') if fmt.created_at else '' }}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteFormat({{ fmt.id }})">Delete</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted text-sm">No saved formats yet. Save one from the column mapping page.</p>
+    {% endif %}
+  </div>
+
+<script>
+async function saveBrand() {
+  const name = document.getElementById('new-brand-name').value.trim();
+  const urls = document.getElementById('new-brand-urls').value.trim().split('\n').filter(u => u.trim());
+  const notes = document.getElementById('new-brand-notes').value.trim();
+  if (!name) { showAlert('Brand name is required.', 'Missing Field'); return; }
+  if (!urls.length) { showAlert('At least one URL is required.', 'Missing Field'); return; }
+
+  const resp = await fetch('/settings/brand', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({brand_name: name, site_urls: urls, search_notes: notes}),
+  });
+  if (resp.ok) location.reload();
+  else showAlert('Failed to save brand configuration.', 'Error');
+}
+
+function deleteBrand(id) {
+  showDanger('This brand configuration will be permanently deleted.', async () => {
+    await fetch(`/settings/brand/${id}/delete`, {method: 'POST'});
+    location.reload();
+  }, 'Delete Brand');
+}
+
+function deleteFormat(id) {
+  showDanger('This saved format will be permanently deleted.', async () => {
+    await fetch(`/settings/format/${id}/delete`, {method: 'POST'});
+    location.reload();
+  }, 'Delete Format');
+}
+
+const credsZone = document.getElementById('creds-drop-zone');
+const credsFile = document.getElementById('google-creds-file');
+credsZone.addEventListener('dragover', e => { e.preventDefault(); credsZone.classList.add('dragover'); });
+credsZone.addEventListener('dragleave', () => { credsZone.classList.remove('dragover'); });
+credsZone.addEventListener('drop', e => {
+  e.preventDefault();
+  credsZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) {
+    credsFile.files = e.dataTransfer.files;
+    document.getElementById('creds-filename').textContent = e.dataTransfer.files[0].name;
+    credsZone.style.borderColor = 'var(--success)';
+  }
+});
+credsFile.addEventListener('change', () => {
+  if (credsFile.files[0]) {
+    document.getElementById('creds-filename').textContent = credsFile.files[0].name;
+    credsZone.style.borderColor = 'var(--success)';
+  }
+});
+
+document.getElementById('google-creds-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const file = document.getElementById('google-creds-file').files[0];
+  if (!file) { showAlert('Please select a JSON file first.', 'Missing File'); return; }
+
+  const formData = new FormData();
+  formData.append('credentials', file);
+
+  const resp = await fetch('/settings/google-credentials', {
+    method: 'POST',
+    body: formData,
+  });
+  if (resp.ok) {
+    showModal('Success', 'Google credentials uploaded successfully.', [
+      { label: 'OK', cls: 'btn-primary', action: () => location.reload() }
+    ]);
+  } else {
+    const data = await resp.json();
+    showAlert(data.error || 'Upload failed', 'Error');
+  }
+});
+</script>
+{% endblock %}

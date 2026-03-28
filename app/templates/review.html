@@ -1,0 +1,390 @@
+{% extends "base.html" %}
+{% block title %}FLENDER — Review Images{% endblock %}
+{% block head %}
+<style>
+  html, body { overflow: hidden !important; height: 100% !important; }
+
+  /* Local file:// placeholder — shown instead of a blocked <img> */
+  .thumb-placeholder.local-file {
+    flex-direction: column;
+    gap: 2px;
+    background: var(--gray-100);
+    color: var(--gray-400);
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .thumb-placeholder.local-file svg { opacity: 0.5; }
+
+  .image-card .thumb-placeholder.local-file,
+  .image-card .thumb-placeholder.candidate-local {
+    width: 100%;
+    height: 150px;
+    border-radius: 0;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.7rem;
+  }
+
+  .selected-preview .thumb-placeholder.selected-local {
+    width: 100%;
+    max-width: 400px;
+    height: 220px;
+    border-radius: var(--radius);
+    flex-direction: column;
+    gap: 8px;
+    font-size: 0.8rem;
+    background: var(--gray-50);
+    border: 1px dashed var(--gray-300);
+    margin: 0 auto;
+  }
+</style>
+{% endblock %}
+
+{% block layout %}
+<!-- Download overlay -->
+<div class="download-overlay" id="download-overlay">
+  <div class="download-modal">
+    <h3 class="mb-3" id="dl-title">Downloading Images</h3>
+    <div class="progress-container mb-3">
+      <div class="progress-bar">
+        <div class="progress-fill" id="dl-fill" style="width:0%"></div>
+      </div>
+      <div class="progress-text">
+        <span id="dl-status">Preparing ZIP...</span>
+        <span id="dl-eta"></span>
+      </div>
+    </div>
+    <p class="text-sm text-muted text-center" id="dl-detail">Fetching approved images and building ZIP file...</p>
+  </div>
+</div>
+
+<!-- Full-screen review layout (no sidebar) -->
+<div style="display:flex;flex-direction:column;height:100vh;">
+  <!-- Top nav bar -->
+  <div class="review-nav">
+    <a href="/" class="flex items-center gap-3" style="text-decoration:none">
+      <span class="review-nav-brand" style="font-family:'Bebas Neue','Arial Narrow',sans-serif;font-weight:400;letter-spacing:4px;font-size:1.3rem">FLENDER</span>
+      <span style="color:rgba(255,255,255,0.4);font-size:0.75rem;font-weight:500">Order Sheet Organizer</span>
+    </a>
+    <div class="flex gap-2 items-center">
+      <button onclick="startDownloadImages()" class="btn btn-sm btn-outline" style="background:rgba(255,255,255,0.1);color:white;border-color:rgba(255,255,255,0.2)">Download All Images</button>
+      <a href="/generate/{{ session.id }}" class="btn btn-sm" style="background:white;color:var(--black)">Export Excel</a>
+      {% if session.source_type != 'google_sheets' %}
+      <a href="/mapping/{{ session.id }}" class="btn btn-sm btn-outline" style="background:rgba(255,255,255,0.1);color:white;border-color:rgba(255,255,255,0.2)">Edit Mapping</a>
+      {% endif %}
+      <a href="/" class="review-nav" style="padding:0">Dashboard</a>
+    </div>
+  </div>
+
+  <div class="review-layout">
+    <!-- Sidebar -->
+    <div class="review-sidebar">
+      <div class="sidebar-header">
+        <strong>{{ session.name }}</strong>
+        <div class="sidebar-filters">
+          <button class="active" onclick="filterItems('all')">All</button>
+          <button onclick="filterItems('approved')">Approved</button>
+          <button onclick="filterItems('edited')">Edited</button>
+          <button onclick="filterItems('noimage')">No Image</button>
+        </div>
+        <div class="stats-bar" id="stats-bar">Loading...</div>
+        <a href="/generate/{{ session.id }}" class="btn btn-primary btn-sm" style="width:100%;margin-top:12px">Export Excel</a>
+      </div>
+      <div class="sidebar-items" id="sidebar-items"></div>
+    </div>
+
+    <!-- Main -->
+    <div class="review-main" id="review-main">
+      <div class="text-center text-muted" style="padding-top:100px">Loading items...</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SESSION_ID = {{ session.id }};
+let state = {};
+let keys = [];
+let currentKey = null;
+let filter = 'all';
+
+function isLocalFile(url) {
+  return url && url.startsWith('file://');
+}
+
+function localFilePlaceholder(url, cls) {
+  const fname = url ? url.replace(/^file:\/\//, '').split(/[\\/]/).pop() : '';
+  return `<div class="thumb-placeholder local-file ${cls || ''}" title="${fname}">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+    <span>Local file</span>
+  </div>`;
+}
+
+function getConfidenceLabel(score) {
+  if (score >= 0.7) return { label: 'HIGH', cls: 'confidence-high' };
+  if (score >= 0.4) return { label: 'MED', cls: 'confidence-medium' };
+  return { label: 'LOW', cls: 'confidence-poor' };
+}
+
+async function loadState() {
+  const resp = await fetch(`/review/${SESSION_ID}/state`);
+  state = await resp.json();
+  keys = Object.keys(state);
+  updateSidebar();
+  if (keys.length > 0) selectItem(keys[0]);
+}
+
+function updateSidebar() {
+  const container = document.getElementById('sidebar-items');
+  const filtered = keys.filter(k => {
+    if (filter === 'approved') return state[k].approved_url && state[k].status === 'approved';
+    if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
+    if (filter === 'noimage') return !state[k].approved_url;
+    return true;
+  });
+
+  const approved = keys.filter(k => state[k].approved_url && state[k].status === 'approved').length;
+  const edited = keys.filter(k => !state[k].auto_selected && state[k].status === 'approved').length;
+  const noImg = keys.filter(k => !state[k].approved_url).length;
+  document.getElementById('stats-bar').textContent =
+    `${approved} approved \u00b7 ${edited} edited \u00b7 ${noImg} no image \u00b7 ${keys.length} total`;
+
+  container.innerHTML = filtered.map(k => {
+    const item = state[k];
+    const info = item.item || {};
+    const thumbUrl = item.approved_url;
+    const isActive = k === currentKey;
+
+    let badge, badgeCls;
+    if (!item.approved_url) { badge = 'NO IMG'; badgeCls = 'badge-red'; }
+    else if (item.auto_selected) { badge = 'AUTO'; badgeCls = 'badge-gray'; }
+    else { badge = 'EDITED'; badgeCls = 'badge-green'; }
+
+    return `<div class="review-item ${isActive ? 'active' : ''}" onclick="selectItem('${k}')">
+      ${thumbUrl
+        ? (isLocalFile(thumbUrl)
+          ? localFilePlaceholder(thumbUrl)
+          : `<img src="${thumbUrl}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" loading="lazy"><div class="thumb-placeholder" style="display:none">ERR</div>`)
+        : '<div class="thumb-placeholder">N/A</div>'}
+      <div class="review-item-info">
+        <div class="code">${info.item_code || k}</div>
+        <div class="brand">${info.brand || ''} <span class="badge ${badgeCls}">${badge}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.querySelectorAll('.sidebar-filters button').forEach(btn => {
+    const f = btn.textContent.toLowerCase().replace(' ', '');
+    btn.classList.toggle('active', f === filter);
+  });
+}
+
+function filterItems(f) {
+  filter = f;
+  updateSidebar();
+}
+
+function selectItem(key) {
+  currentKey = key;
+  updateSidebar();
+  renderMain(key);
+  const activeEl = document.querySelector('.review-item.active');
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+function renderMain(key) {
+  const entry = state[key];
+  if (!entry) return;
+  const item = entry.item || {};
+  const candidates = entry.candidates || [];
+  const scores = entry.scores || {};
+  const main = document.getElementById('review-main');
+  const selectedUrl = entry.approved_url || '';
+
+  main.scrollTop = 0;
+
+  main.innerHTML = `
+    <div class="main-header">
+      <div class="item-detail">
+        <h3>${item.item_code || key}</h3>
+        <div class="item-meta">
+          ${item.brand ? item.brand + ' &middot; ' : ''}
+          ${item.style_name || ''}
+          ${item.color_name ? ' &middot; ' + item.color_name : ''}
+          ${item.wholesale_price ? ' &middot; \u20ac' + Number(item.wholesale_price).toFixed(2) : ''}
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-outline btn-sm" onclick="showCustomUrlInput('${key}', ${entry.id})">Paste URL</button>
+      </div>
+    </div>
+
+    ${selectedUrl ? `
+      <div class="selected-preview mb-6">
+        ${isLocalFile(selectedUrl)
+          ? localFilePlaceholder(selectedUrl, 'selected-local')
+          : `<img src="${selectedUrl}" alt="Selected image" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22><rect fill=%22%23f4f4f4%22 width=%22200%22 height=%22200%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23a3a3a3%22 font-size=%2214%22>Failed to load</text></svg>'">`}
+      </div>
+    ` : '<div class="alert alert-info mb-4">No image selected. Click a candidate below or paste a URL.</div>'}
+
+    <div id="custom-url-input" style="display:none" class="mb-4">
+      <div class="flex gap-2">
+        <input type="text" id="custom-url-field" placeholder="Paste image URL here..." style="flex:1">
+        <button class="btn btn-primary btn-sm" onclick="submitCustomUrl('${key}', ${entry.id})">Set</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('custom-url-input').style.display='none'">Cancel</button>
+      </div>
+    </div>
+
+    <h4 class="mb-3">Candidates (${candidates.length})</h4>
+    <div class="image-grid mb-4">
+      ${candidates.map((url, i) => {
+        const sc = scores[url] || 0;
+        const conf = getConfidenceLabel(sc);
+        const escapedUrl = url.replace(/'/g, "\\'");
+        return `
+        <div class="image-card ${url === selectedUrl ? 'selected' : ''}" onclick="approveUrl('${key}', ${entry.id}, '${escapedUrl}')">
+          ${isLocalFile(url)
+            ? localFilePlaceholder(url, 'candidate-local')
+            : `<img src="${url}" alt="" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22140%22><rect fill=%22%23fce4ec%22 width=%22160%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23991b1b%22 font-size=%2212%22>Error</text></svg>'">`}
+          <div class="score ${conf.cls}">${conf.label}</div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <button class="no-image-btn" onclick="approveUrl('${key}', ${entry.id}, '')">
+      Mark as No Image
+    </button>
+  `;
+}
+
+function showCustomUrlInput(key, itemId) {
+  document.getElementById('custom-url-input').style.display = 'block';
+  document.getElementById('custom-url-field').focus();
+}
+
+async function submitCustomUrl(key, itemId) {
+  const url = document.getElementById('custom-url-field').value.trim();
+  if (!url) return;
+  await fetch(`/review/${SESSION_ID}/set-url`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: itemId, url: url}),
+  });
+  state[key].approved_url = url;
+  state[key].status = 'approved';
+  state[key].auto_selected = false;
+  if (!state[key].candidates.includes(url)) state[key].candidates.unshift(url);
+  updateSidebar();
+  renderMain(key);
+}
+
+async function approveUrl(key, itemId, url) {
+  await fetch(`/review/${SESSION_ID}/approve`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: itemId, url: url}),
+  });
+  state[key].approved_url = url;
+  state[key].status = 'approved';
+  state[key].auto_selected = false;
+  updateSidebar();
+  renderMain(key);
+}
+
+async function startDownloadImages() {
+  const overlay = document.getElementById('download-overlay');
+  const fill = document.getElementById('dl-fill');
+  const statusEl = document.getElementById('dl-status');
+  const etaEl = document.getElementById('dl-eta');
+  const detailEl = document.getElementById('dl-detail');
+  const titleEl = document.getElementById('dl-title');
+
+  overlay.classList.add('active');
+  fill.style.width = '10%';
+  fill.style.background = '';
+  statusEl.textContent = 'Connecting to server...';
+  etaEl.textContent = '';
+  titleEl.textContent = 'Downloading Images';
+  detailEl.textContent = 'Fetching approved images and building ZIP file...';
+
+  const startTime = Date.now();
+  const approvedCount = keys.filter(k => state[k].approved_url && state[k].approved_url.startsWith('http')).length;
+
+  let progress = 10;
+  const interval = setInterval(() => {
+    if (progress < 85) {
+      progress += Math.random() * 5;
+      fill.style.width = Math.min(progress, 85) + '%';
+      const elapsed = (Date.now() - startTime) / 1000;
+      const estTotal = (elapsed / (progress / 100));
+      const remaining = Math.max(0, Math.round(estTotal - elapsed));
+      statusEl.textContent = `Downloading ${approvedCount} images...`;
+      etaEl.textContent = remaining > 0 ? `~${remaining}s remaining` : '';
+    }
+  }, 500);
+
+  try {
+    const resp = await fetch(`/review/${SESSION_ID}/download-images`);
+    clearInterval(interval);
+
+    if (resp.ok) {
+      fill.style.width = '100%';
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      statusEl.textContent = 'ZIP ready!';
+      etaEl.textContent = `Completed in ${elapsed}s`;
+      detailEl.textContent = 'Download starting automatically...';
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = resp.headers.get('content-disposition')?.split('filename=')[1]?.replace(/"/g, '') || 'images.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setTimeout(() => overlay.classList.remove('active'), 2000);
+    } else {
+      throw new Error('Download failed');
+    }
+  } catch (e) {
+    clearInterval(interval);
+    fill.style.width = '100%';
+    fill.style.background = 'var(--danger)';
+    statusEl.textContent = 'Error: ' + e.message;
+    detailEl.textContent = 'Click anywhere to close';
+    overlay.onclick = () => { overlay.classList.remove('active'); overlay.onclick = null; };
+  }
+}
+
+// Keyboard navigation
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const filtered = keys.filter(k => {
+    if (filter === 'approved') return state[k].approved_url && state[k].status === 'approved';
+    if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
+    if (filter === 'noimage') return !state[k].approved_url;
+    return true;
+  });
+  const idx = filtered.indexOf(currentKey);
+  if (e.key === 'ArrowUp' && idx > 0) { selectItem(filtered[idx - 1]); e.preventDefault(); }
+  if (e.key === 'ArrowDown' && idx < filtered.length - 1) { selectItem(filtered[idx + 1]); e.preventDefault(); }
+  if (e.key >= '1' && e.key <= '9') {
+    const entry = state[currentKey];
+    if (entry) {
+      const n = parseInt(e.key) - 1;
+      if (entry.candidates[n]) approveUrl(currentKey, entry.id, entry.candidates[n]);
+    }
+  }
+  if (e.key === 'n' || e.key === 'N') {
+    const entry = state[currentKey];
+    if (entry) approveUrl(currentKey, entry.id, '');
+  }
+});
+
+loadState();
+</script>
+{% endblock %}
