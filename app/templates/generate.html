@@ -16,30 +16,32 @@
   <p class="text-muted text-center mb-2">{{ session.name }}</p>
   <p class="text-center mb-6"><span class="badge badge-green" style="font-size:0.8rem;padding:5px 14px">{{ approved_count }} approved items</span></p>
 
-  <div class="form-group">
-    <label class="flex items-center gap-2" style="cursor:pointer">
-      <input type="checkbox" id="save-images" checked>
-      <span>Save images to folder</span>
-    </label>
-    <p class="text-sm text-muted mt-1">
-      Images saved as <code>{ManufacturerCode}_1.jpg</code> — a ZIP download will appear after generation.
-    </p>
-  </div>
+  <div id="config-area">
+    <div class="form-group">
+      <label class="flex items-center gap-2" style="cursor:pointer">
+        <input type="checkbox" id="save-images" checked>
+        <span>Save images to folder</span>
+      </label>
+      <p class="text-sm text-muted mt-1">
+        Images saved as <code>{ManufacturerCode}_1.jpg</code> — a ZIP download will appear after generation.
+      </p>
+    </div>
 
-  <div style="background:var(--gray-50);padding:16px;border-radius:var(--radius-xs);border:1px solid var(--gray-200)" class="mb-4">
-    <h4 class="mb-2" style="font-size:0.85rem">Output Format</h4>
-    <ul style="font-size:0.8rem;color:var(--gray-500);padding-left:16px;margin:0;line-height:1.8">
-      <li>23-column standard ordersheet format</li>
-      <li>Product groups with merged picture cells</li>
-      <li>QTY column (editable, yellow) with auto-calculated totals</li>
-      <li>Embedded product images</li>
-      <li>Pictures column with clickable links</li>
-    </ul>
-  </div>
+    <div style="background:var(--gray-50);padding:16px;border-radius:var(--radius-xs);border:1px solid var(--gray-200)" class="mb-4">
+      <h4 class="mb-2" style="font-size:0.85rem">Output Format</h4>
+      <ul style="font-size:0.8rem;color:var(--gray-500);padding-left:16px;margin:0;line-height:1.8">
+        <li>23-column standard ordersheet format</li>
+        <li>Product groups with merged picture cells</li>
+        <li>QTY column (editable, yellow) with auto-calculated totals</li>
+        <li>Embedded product images</li>
+        <li>Pictures column with clickable links</li>
+      </ul>
+    </div>
 
-  <button id="export-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="doExport()">
-    Generate & Download Excel
-  </button>
+    <button id="export-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="doExport()">
+      Generate & Download Excel
+    </button>
+  </div>
 
   <div id="export-progress" style="display:none" class="mt-4">
     <div class="progress-container">
@@ -51,6 +53,10 @@
         <span id="export-eta"></span>
       </div>
     </div>
+    <p class="text-sm text-muted text-center mt-3" style="line-height:1.6">
+      You can navigate away — progress will appear in the sidebar.<br>
+      Download links will show when the export finishes.
+    </p>
   </div>
 
   <div id="download-area" class="mt-4 text-center" style="display:none"></div>
@@ -58,7 +64,8 @@
 
 <script>
 const SESSION_ID = {{ session.id }};
-let pollInterval = null;
+let pollTimer = null;
+let exportStartTime = null;
 
 function fmtTime(sec) {
   if (sec <= 0) return '';
@@ -69,15 +76,22 @@ function fmtTime(sec) {
   return `~${sec}s remaining`;
 }
 
-function startPolling(startTime) {
-  pollInterval = setInterval(async () => {
+function pollProgress() {
+  pollTimer = setInterval(async () => {
     try {
       const resp = await fetch(`/generate/${SESSION_ID}/progress`);
       const p = await resp.json();
       const fill = document.getElementById('export-fill');
       const statusEl = document.getElementById('export-status');
       const etaEl = document.getElementById('export-eta');
-      const elapsed = (Date.now() - startTime) / 1000;
+      const elapsed = exportStartTime ? (Date.now() - exportStartTime) / 1000 : 0;
+
+      if (p.stage === 'waiting') {
+        // Export finished (progress cleared) — check completed exports
+        clearInterval(pollTimer);
+        checkCompleted();
+        return;
+      }
 
       if (p.stage === 'downloading' && p.total > 0) {
         const pct = Math.round((p.downloaded / p.total) * 80);
@@ -94,43 +108,88 @@ function startPolling(startTime) {
         fill.style.width = '90%';
         statusEl.textContent = 'Saving Excel file...';
         etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
-      } else if (p.stage === 'done') {
-        fill.style.width = '95%';
-        statusEl.textContent = 'Finalizing...';
-        etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+      } else if (p.stage && p.stage.startsWith('Error')) {
+        clearInterval(pollTimer);
+        fill.style.width = '100%';
+        fill.style.background = 'var(--danger)';
+        statusEl.textContent = p.stage;
+        etaEl.textContent = '';
+        document.getElementById('export-btn').disabled = false;
+        document.getElementById('export-btn').innerHTML = 'Retry Export';
+        document.getElementById('export-btn').style.display = '';
       } else {
+        statusEl.textContent = p.stage || 'Processing...';
         etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
       }
     } catch (e) {}
-  }, 500);
+  }, 800);
 }
 
-function stopPolling() {
-  if (pollInterval) {
-    clearInterval(pollInterval);
-    pollInterval = null;
+async function checkCompleted() {
+  // Poll active-tasks to find the completed export
+  try {
+    const resp = await fetch('/api/active-tasks');
+    const data = await resp.json();
+    const done = (data.tasks || []).find(t => t.type === 'export_done' && t.session_id === SESSION_ID);
+    if (done) {
+      showDownload(done.download_url, done.images_zip_url);
+    } else {
+      // Not found yet, retry in 2s
+      setTimeout(checkCompleted, 2000);
+    }
+  } catch(e) {
+    setTimeout(checkCompleted, 2000);
   }
+}
+
+function showDownload(downloadUrl, imagesUrl) {
+  const fill = document.getElementById('export-fill');
+  const statusEl = document.getElementById('export-status');
+  const etaEl = document.getElementById('export-eta');
+  const downloadArea = document.getElementById('download-area');
+  const elapsed = exportStartTime ? Math.round((Date.now() - exportStartTime) / 1000) : 0;
+
+  fill.style.width = '100%';
+  statusEl.textContent = 'Export complete!';
+  etaEl.textContent = elapsed > 0 ? `Completed in ${elapsed}s` : '';
+  document.getElementById('export-btn').style.display = 'none';
+  downloadArea.style.display = 'block';
+
+  let html = `
+    <a href="${downloadUrl}" class="btn btn-primary btn-lg" style="width:100%;margin-bottom:8px" download>
+      Download Excel
+    </a>
+    <p class="text-sm text-muted mb-3">Link expires in 30 minutes</p>
+  `;
+  if (imagesUrl) {
+    html += `<a href="${imagesUrl}" class="btn btn-outline" style="width:100%" download>Download Images ZIP</a>`;
+  }
+  downloadArea.innerHTML = html;
+
+  // Auto-download
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 async function doExport() {
   const btn = document.getElementById('export-btn');
   const progress = document.getElementById('export-progress');
-  const downloadArea = document.getElementById('download-area');
   const saveImages = document.getElementById('save-images').checked;
   const fill = document.getElementById('export-fill');
   const statusEl = document.getElementById('export-status');
-  const etaEl = document.getElementById('export-eta');
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Generating...';
+  btn.innerHTML = '<span class="spinner"></span> Starting...';
   progress.style.display = 'block';
   fill.style.width = '2%';
   fill.style.background = '';
-  statusEl.textContent = 'Starting generation...';
-  etaEl.textContent = '';
+  statusEl.textContent = 'Starting export...';
 
-  const startTime = Date.now();
-  startPolling(startTime);
+  exportStartTime = Date.now();
 
   try {
     const resp = await fetch(`/generate/${SESSION_ID}`, {
@@ -138,65 +197,24 @@ async function doExport() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({save_images: saveImages}),
     });
+    const data = await resp.json();
 
-    stopPolling();
-
-    let data;
-    const text = await resp.text();
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      data = { error: 'Server error during generation. Check that items have been approved.' };
-    }
-
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
-
-    if (data.ok) {
-      fill.style.width = '100%';
-      statusEl.textContent = 'Excel generated successfully!';
-      etaEl.textContent = `Completed in ${elapsed}s`;
+    if (data.ok || data.started) {
       btn.style.display = 'none';
-      downloadArea.style.display = 'block';
-
-      let html = `
-        <a href="${data.download_url}" class="btn btn-primary btn-lg" style="width:100%;margin-bottom:8px" download>
-          Download ${data.filename}
-        </a>
-        <p class="text-sm text-muted mb-3">Link expires in 30 minutes</p>
-      `;
-
-      if (saveImages && data.images_zip_url) {
-        html += `
-          <a href="${data.images_zip_url}" class="btn btn-outline" style="width:100%" download>
-            Download Images ZIP
-          </a>
-        `;
-      }
-
-      downloadArea.innerHTML = html;
-
-      // Auto-download the Excel file
-      const a = document.createElement('a');
-      a.href = data.download_url;
-      a.download = data.filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      document.getElementById('config-area').querySelector('.form-group').style.display = 'none';
+      statusEl.textContent = 'Export running in background...';
+      pollProgress();
     } else {
       fill.style.width = '100%';
       fill.style.background = 'var(--danger)';
       statusEl.textContent = 'Error: ' + (data.error || 'Unknown error');
-      etaEl.textContent = `Failed after ${elapsed}s`;
       btn.disabled = false;
       btn.innerHTML = 'Generate & Download Excel';
     }
   } catch (e) {
-    stopPolling();
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
     fill.style.width = '100%';
     fill.style.background = 'var(--danger)';
     statusEl.textContent = 'Error: ' + e.message;
-    etaEl.textContent = `Failed after ${elapsed}s`;
     btn.disabled = false;
     btn.innerHTML = 'Generate & Download Excel';
   }

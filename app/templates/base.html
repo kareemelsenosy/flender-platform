@@ -40,8 +40,8 @@
 
       <!-- Active background tasks indicator -->
       <div id="sidebar-tasks" style="display:none;padding:12px 16px;border-top:1px solid var(--gray-100)">
-        <div style="font-size:0.72rem;font-weight:700;color:var(--gray-400);letter-spacing:0.5px;margin-bottom:8px;text-transform:uppercase">Background Tasks</div>
-        <div id="sidebar-task-list" style="display:flex;flex-direction:column;gap:6px"></div>
+        <div style="font-size:0.72rem;font-weight:700;color:var(--gray-400);letter-spacing:0.5px;margin-bottom:8px;text-transform:uppercase">Tasks</div>
+        <div id="sidebar-task-list" style="display:flex;flex-direction:column;gap:8px"></div>
       </div>
 
       <div class="sidebar-footer">
@@ -194,36 +194,54 @@
   }
 
   // ── Active task sidebar widget ──────────────────────────────────────────────
+  let _hasActiveTasks = false;
+
   function _renderSidebarTasks(tasks) {
     const panel = document.getElementById('sidebar-tasks');
     const list  = document.getElementById('sidebar-task-list');
     if (!panel || !list) return;
-    if (!tasks.length) { panel.style.display = 'none'; return; }
+    if (!tasks.length) { panel.style.display = 'none'; _hasActiveTasks = false; return; }
     panel.style.display = 'block';
+    _hasActiveTasks = tasks.some(t => t.running);
     list.innerHTML = '';
+
     tasks.forEach(t => {
       const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0;
-      const href = t.type === 'search'
-        ? `/search/${t.session_id}`
-        : '/sheets';
-      const label = t.type === 'search'
-        ? (t.session_name || `Search #${t.session_id}`)
-        : 'Sheets Import';
-      const d = document.createElement('a');
-      d.href = href;
-      d.style.cssText = 'display:block;text-decoration:none;';
+      const isDone = t.status === 'done';
+      const barColor = isDone ? 'var(--success, #22c55e)' : '#2563eb';
+      const label = t.label || t.type;
+
+      const d = document.createElement('div');
+      d.style.cssText = 'background:var(--gray-50);border-radius:8px;padding:10px 12px;';
+      if (isDone) d.style.borderLeft = '3px solid var(--success, #22c55e)';
+
+      let actionsHtml = '';
+      if (isDone && t.type === 'export_done') {
+        actionsHtml = `<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">`;
+        if (t.download_url) actionsHtml += `<a href="${t.download_url}" style="font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:6px;background:var(--black);color:var(--white);text-decoration:none">Download Excel</a>`;
+        if (t.images_zip_url) actionsHtml += `<a href="${t.images_zip_url}" style="font-size:0.7rem;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--gray-300);color:var(--black);text-decoration:none">Images ZIP</a>`;
+        actionsHtml += `</div>`;
+      } else if (isDone && t.url) {
+        const actionLabel = t.action_label || (t.type === 'search' ? 'Review Images' : 'View');
+        actionsHtml = `<a href="${t.url}" style="display:inline-block;margin-top:6px;font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:6px;background:var(--black);color:var(--white);text-decoration:none">${actionLabel}</a>`;
+      } else if (t.running && t.url) {
+        actionsHtml = `<a href="${t.url}" style="display:inline-block;margin-top:4px;font-size:0.68rem;color:#2563eb;text-decoration:none;font-weight:600">View →</a>`;
+      }
+
+      const statusText = isDone ? '✓ Complete' : (t.stage || `${t.done} / ${t.total}`);
+
       d.innerHTML = `
-        <div style="font-size:0.76rem;font-weight:600;color:var(--black);margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</div>
-        <div style="background:var(--gray-100);height:4px;border-radius:99px;overflow:hidden">
-          <div style="height:100%;border-radius:99px;background:#2563eb;width:${pct}%;transition:width 0.5s"></div>
+        <div style="font-size:0.76rem;font-weight:600;color:var(--black);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${label}">${label}</div>
+        <div style="background:var(--gray-200);height:4px;border-radius:99px;overflow:hidden">
+          <div style="height:100%;border-radius:99px;background:${barColor};width:${isDone ? 100 : pct}%;transition:width 0.5s"></div>
         </div>
-        <div style="font-size:0.7rem;color:var(--gray-400);margin-top:2px">${t.done} / ${t.total}</div>`;
+        <div style="font-size:0.68rem;color:var(--gray-400);margin-top:3px">${statusText}</div>
+        ${actionsHtml}`;
       list.appendChild(d);
     });
   }
 
   // ── Notification + task polling ─────────────────────────────────────────────
-  // Only poll when user is logged in (sidebar exists)
   if (document.querySelector('.sidebar')) {
     const _pollAll = async () => {
       try {
@@ -236,10 +254,10 @@
         (d1.notifications || []).forEach(n => showToast(n.title, n.message, n.actions, n.type));
         _renderSidebarTasks(d2.tasks || []);
       } catch(_) {}
-      setTimeout(_pollAll, 15000);
+      // Poll faster when tasks are running, slower when idle
+      setTimeout(_pollAll, _hasActiveTasks ? 3000 : 15000);
     };
-    // Start polling after page renders
-    setTimeout(_pollAll, 3000);
+    setTimeout(_pollAll, 2000);
   }
   </script>
 

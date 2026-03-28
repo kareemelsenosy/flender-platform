@@ -26,6 +26,10 @@ router = APIRouter()
 _progress: dict[int, dict] = {}
 _progress_lock = threading.Lock()
 
+# Recently completed exports — {user_id: [{session_id, name, download_url, ...}, ...]}
+# Kept for 5 minutes so the sidebar can show download buttons
+_completed_exports: dict[int, list] = {}
+
 
 @router.get("/generate/{session_id}/progress")
 async def generate_progress(session_id: int, request: Request, db: DBSession = Depends(get_db)):
@@ -62,6 +66,115 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
     })
 
 
+def _run_export_background(session_id: int, user_id: int, item_dicts: list,
+                           sess_name: str, sess_config: dict,
+                           brand: str, save_images: bool):
+    """Run export in background thread so user can navigate away."""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        def on_progress(downloaded: int, total: int, stage: str):
+            with _progress_lock:
+                _progress[session_id] = {"stage": stage, "downloaded": downloaded, "total": total}
+
+        config = {
+            "save_images_to_folder": save_images,
+            "image_size": sess_config.get("image_size", [150, 150]),
+            "row_height_px": sess_config.get("row_height_px", 100),
+        }
+        generator = OrderSheetGenerator(config, progress_callback=on_progress)
+        out_dir = str(OUTPUT_DIR / f"session_{session_id}")
+
+        out_path = generator.generate(
+            items=item_dicts,
+            output_dir=out_dir,
+            input_filename=sess_name,
+            brand=brand,
+        )
+
+        # Create download token for Excel
+        token = uuid.uuid4().hex
+        images_folder = os.path.join(out_dir, "images") if save_images else None
+        gen_file = GeneratedFile(
+            session_id=session_id,
+            token=token,
+            file_path=out_path,
+            filename=os.path.basename(out_path),
+            image_folder_path=images_folder,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        db.add(gen_file)
+
+        sess = db.query(Session).get(session_id)
+        if sess:
+            sess.status = "completed"
+        db.commit()
+
+        result = {
+            "download_url": f"/download/{token}",
+            "images_zip_url": "",
+        }
+
+        # If images were saved, create ZIP
+        if save_images and images_folder and os.path.isdir(images_folder):
+            zip_path = os.path.join(out_dir, "images.zip")
+            try:
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for root, _dirs, files in os.walk(images_folder):
+                        for f in files:
+                            full = os.path.join(root, f)
+                            arc = os.path.relpath(full, images_folder)
+                            zf.write(full, arc)
+                zip_token = uuid.uuid4().hex
+                zip_gen = GeneratedFile(
+                    session_id=session_id,
+                    token=zip_token,
+                    file_path=zip_path,
+                    filename="images.zip",
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+                )
+                db.add(zip_gen)
+                db.commit()
+                result["images_zip_url"] = f"/download-zip/{zip_token}"
+            except Exception:
+                pass
+
+        # Move from active to completed
+        with _progress_lock:
+            _progress.pop(session_id, None)
+
+        entry = {
+            "session_id": session_id,
+            "name": sess_name,
+            "download_url": result["download_url"],
+            "images_zip_url": result["images_zip_url"],
+            "completed_at": datetime.now(timezone.utc).timestamp(),
+        }
+        _completed_exports.setdefault(user_id, []).append(entry)
+
+        # Clean up old entries (> 5 min)
+        now = datetime.now(timezone.utc).timestamp()
+        _completed_exports[user_id] = [e for e in _completed_exports[user_id] if now - e["completed_at"] < 300]
+
+        # Notify user
+        from app.services.notifications import add_notification
+        add_notification(
+            user_id, "export_done",
+            "Export Complete",
+            f"Your export is ready — {sess_name}",
+            session_id,
+            actions=[{"label": "Download", "url": result["download_url"]}],
+        )
+
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(f"Export failed for session {session_id}: {exc}")
+        with _progress_lock:
+            _progress[session_id] = {"stage": f"Error: {exc}", "downloaded": 0, "total": 0}
+    finally:
+        db.close()
+
+
 @router.post("/generate/{session_id}")
 async def generate_excel(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
@@ -72,6 +185,11 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     if not sess:
         return JSONResponse({"error": "not found"}, status_code=404)
 
+    # Already exporting?
+    with _progress_lock:
+        if session_id in _progress:
+            return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
+
     # Get approved items
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
@@ -81,11 +199,10 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     if not items:
         return JSONResponse({"error": "No approved items"}, status_code=400)
 
-    # Check if save_images requested
     body = await request.json() if request.headers.get("content-type") == "application/json" else {}
     save_images = body.get("save_images", False)
 
-    # Build item dicts for generator — include all fields for 23-column format
+    # Build item dicts
     item_dicts = []
     for item in items:
         item_dicts.append({
@@ -100,92 +217,23 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
             "sizes": item.sizes,
             "approved_url": item.approved_url,
             "brand": item.brand,
-            "barcode": "",  # From parsed data if available
-            "item_group": "",  # From parsed data if available
+            "barcode": "",
+            "item_group": "",
         })
 
-    # Determine brand from first item
     brand = items[0].brand if items else ""
 
-    config = {
-        "save_images_to_folder": save_images,
-        "image_size": sess.config.get("image_size", [150, 150]),
-        "row_height_px": sess.config.get("row_height_px", 100),
-    }
-
-    # Progress callback updates shared dict for polling — lock prevents dirty reads (M4)
+    # Initialize progress and start background thread
     with _progress_lock:
-        _progress[session_id] = {"stage": "starting", "downloaded": 0, "total": 0}
+        _progress[session_id] = {"stage": "starting", "downloaded": 0, "total": len(item_dicts)}
 
-    def on_progress(downloaded: int, total: int, stage: str):
-        with _progress_lock:
-            _progress[session_id] = {"stage": stage, "downloaded": downloaded, "total": total}
+    threading.Thread(
+        target=_run_export_background,
+        args=(session_id, uid, item_dicts, sess.name, sess.config, brand, save_images),
+        daemon=True,
+    ).start()
 
-    generator = OrderSheetGenerator(config, progress_callback=on_progress)
-    out_dir = str(OUTPUT_DIR / f"session_{session_id}")
-
-    # Run in thread so progress polling works during generation
-    loop = asyncio.get_event_loop()
-    out_path = await loop.run_in_executor(
-        None,
-        lambda: generator.generate(
-            items=item_dicts,
-            output_dir=out_dir,
-            input_filename=sess.name,
-            brand=brand,
-        ),
-    )
-
-    # Create download token for Excel
-    token = uuid.uuid4().hex
-    images_folder = os.path.join(out_dir, "images") if save_images else None
-    gen_file = GeneratedFile(
-        session_id=session_id,
-        token=token,
-        file_path=out_path,
-        filename=os.path.basename(out_path),
-        image_folder_path=images_folder,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
-    )
-    db.add(gen_file)
-    sess.status = "completed"
-    db.commit()
-
-    result = {
-        "ok": True,
-        "filename": gen_file.filename,
-        "download_url": f"/download/{token}",
-    }
-
-    # If images were saved, create ZIP and add download link
-    if save_images and images_folder and os.path.isdir(images_folder):
-        zip_path = os.path.join(out_dir, "images.zip")
-        try:
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for root, _dirs, files in os.walk(images_folder):
-                    for f in files:
-                        full = os.path.join(root, f)
-                        arc = os.path.relpath(full, images_folder)
-                        zf.write(full, arc)
-            zip_token = uuid.uuid4().hex
-            zip_gen = GeneratedFile(
-                session_id=session_id,
-                token=zip_token,
-                file_path=zip_path,
-                filename="images.zip",
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
-            )
-            db.add(zip_gen)
-            db.commit()
-            result["images_zip_url"] = f"/download-zip/{zip_token}"
-        except Exception:
-            pass  # ZIP creation failed, skip
-
-    # Clean up progress tracking
-    with _progress_lock:
-        _progress.pop(session_id, None)
-
-    return JSONResponse(result)
+    return JSONResponse({"ok": True, "started": True, "message": "Export started in background"})
 
 
 def cleanup_expired_files(db_session) -> int:
