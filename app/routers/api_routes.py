@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
+from app.database import get_db
 from app.services.notifications import poll_notifications
 
 router = APIRouter()
@@ -33,8 +35,12 @@ async def notifications_poll(request: Request):
 
 
 @router.get("/api/active-tasks")
-async def active_tasks(request: Request):
-    """Return all background tasks (running + recently completed) for the sidebar."""
+async def active_tasks(request: Request, db: DBSession = Depends(get_db)):
+    """Return all background tasks (running + recently completed) for the sidebar.
+
+    Uses the request-scoped DB session from FastAPI's Depends(get_db) instead of
+    creating new SessionLocal() instances per query — avoids connection pool pressure.
+    """
     uid = get_current_user_id(request)
     if not uid:
         return JSONResponse({"tasks": []})
@@ -42,6 +48,7 @@ async def active_tasks(request: Request):
     from app.routers.sheets_routes import _batch_progress, _user_batches
     from app.routers.search_routes import _search_progress
     from app.routers.generate_routes import _progress as _gen_progress, _progress_lock as _gen_lock, _completed_exports
+    from app.models import Session as SessionModel
 
     tasks = []
 
@@ -63,20 +70,12 @@ async def active_tasks(request: Request):
                 "label": "Sheets Import",
             })
 
-    # ── Image searches ───────────────────────────────────────────────────────
-    def _query_searching():
-        from app.database import SessionLocal
-        from app.models import Session as SessionModel
-        db = SessionLocal()
-        try:
-            return db.query(SessionModel).filter(
-                SessionModel.user_id == uid,
-                SessionModel.status.in_(["searching", "reviewing"]),
-            ).order_by(SessionModel.updated_at.desc()).limit(5).all()
-        finally:
-            db.close()
+    # ── Image searches — use request-scoped DB session ────────────────────────
+    sessions = db.query(SessionModel).filter(
+        SessionModel.user_id == uid,
+        SessionModel.status.in_(["searching", "reviewing"]),
+    ).order_by(SessionModel.updated_at.desc()).limit(5).all()
 
-    sessions = await asyncio.to_thread(_query_searching)
     for sess in sessions:
         prog = _search_progress.get(sess.id)
         if prog:
@@ -97,37 +96,36 @@ async def active_tasks(request: Request):
                 "action_label": "View Progress" if running else "Review Images",
             })
 
-    # ── Export / generate tasks ──────────────────────────────────────────────
+    # ── Export / generate tasks — use in-memory data + single DB query ────────
     with _gen_lock:
         gen_snapshot = dict(_gen_progress)
 
-    for sid, prog in gen_snapshot.items():
-        # Verify this session belongs to the user
-        def _check_owner(sid=sid):
-            from app.database import SessionLocal
-            from app.models import Session as SessionModel
-            db = SessionLocal()
-            try:
-                s = db.query(SessionModel).filter(SessionModel.id == sid, SessionModel.user_id == uid).first()
-                return s.name if s else None
-            finally:
-                db.close()
-
-        name = await asyncio.to_thread(_check_owner)
-        if name:
-            downloaded = prog.get("downloaded", 0)
-            total = prog.get("total", 0)
-            tasks.append({
-                "type": "export",
-                "session_id": sid,
-                "done": downloaded,
-                "total": total,
-                "running": True,
-                "status": "running",
-                "url": f"/generate/{sid}",
-                "label": f"Export: {name}",
-                "stage": prog.get("stage", ""),
-            })
+    if gen_snapshot:
+        # Single query to verify ownership of all exporting sessions
+        gen_sids = list(gen_snapshot.keys())
+        owned_sessions = {
+            s.id: s.name
+            for s in db.query(SessionModel.id, SessionModel.name).filter(
+                SessionModel.id.in_(gen_sids),
+                SessionModel.user_id == uid,
+            ).all()
+        }
+        for sid, prog in gen_snapshot.items():
+            name = owned_sessions.get(sid)
+            if name:
+                downloaded = prog.get("downloaded", 0)
+                total = prog.get("total", 0)
+                tasks.append({
+                    "type": "export",
+                    "session_id": sid,
+                    "done": downloaded,
+                    "total": total,
+                    "running": True,
+                    "status": "running",
+                    "url": f"/generate/{sid}",
+                    "label": f"Export: {name}",
+                    "stage": prog.get("stage", ""),
+                })
 
     # ── Recently completed exports (kept for 5 min) ──────────────────────────
     for entry in list(_completed_exports.get(uid, [])):

@@ -8,9 +8,31 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import SECRET_KEY, BASE_DIR
 from app.database import init_db
+
+
+class CacheStaticMiddleware:
+    """Add Cache-Control headers to static file responses."""
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http" and scope["path"].startswith("/static/"):
+            async def send_with_cache(message):
+                if message["type"] == "http.response.start":
+                    headers = dict(message.get("headers", []))
+                    # Cache static files for 1 day
+                    new_headers = list(message.get("headers", []))
+                    new_headers.append((b"cache-control", b"public, max-age=86400"))
+                    message = {**message, "headers": new_headers}
+                await send(message)
+            await self.app(scope, receive, send_with_cache)
+        else:
+            await self.app(scope, receive, send)
+
 
 
 @asynccontextmanager
@@ -47,6 +69,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FLENDER Platform", lifespan=lifespan)
+app.add_middleware(CacheStaticMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")

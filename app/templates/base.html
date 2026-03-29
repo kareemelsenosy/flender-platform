@@ -255,9 +255,9 @@
         _renderSidebarTasks(d2.tasks || []);
       } catch(_) {}
       // Poll faster when tasks are running, slower when idle
-      setTimeout(_pollAll, _hasActiveTasks ? 3000 : 15000);
+      setTimeout(_pollAll, _hasActiveTasks ? 5000 : 30000);
     };
-    setTimeout(_pollAll, 2000);
+    setTimeout(_pollAll, 3000);
   }
   </script>
 

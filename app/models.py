@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text,
+    Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -36,11 +36,11 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     source_type = Column(String(20), nullable=False)  # excel_upload, csv_upload, google_sheets
     source_ref = Column(Text)  # filename or Google Sheets URL
-    status = Column(String(20), default="created")  # created, mapping, searching, reviewing, completed
+    status = Column(String(20), default="created", index=True)  # created, mapping, searching, reviewing, completed
     column_mapping_json = Column(Text, default="{}")  # JSON string
     config_json = Column(Text, default="{}")  # session-specific config
     total_items = Column(Integer, default=0)
@@ -109,7 +109,12 @@ class UniqueItem(Base):
 
     session = relationship("Session", back_populates="unique_items")
 
-    __table_args__ = (UniqueConstraint("session_id", "item_code", "color_code"),)
+    __table_args__ = (
+        UniqueConstraint("session_id", "item_code", "color_code"),
+        Index("ix_unique_items_session_id", "session_id"),
+        Index("ix_unique_items_session_search", "session_id", "search_status"),
+        Index("ix_unique_items_session_review", "session_id", "review_status"),
+    )
 
     @property
     def sizes(self) -> list:
@@ -234,7 +239,7 @@ class GeneratedFile(Base):
     __tablename__ = "generated_files"
 
     id = Column(Integer, primary_key=True)
-    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
     token = Column(String(64), unique=True, nullable=False)
     file_path = Column(String(500), nullable=False)
     filename = Column(String(255), nullable=False)

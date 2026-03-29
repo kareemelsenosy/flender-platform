@@ -21,4 +21,4 @@ if 'alembic_version' not in insp.get_table_names():
 
 alembic upgrade head || echo "Migration warning (may be first run)"
 
-exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
+exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1

@@ -18,11 +18,13 @@ connect_args = {"check_same_thread": False} if _is_sqlite else {}
 engine_kwargs: dict = {"connect_args": connect_args}
 if _is_postgres:
     # Connection pool tuned for production; SQLite doesn't support pool settings
+    # pool_size=20 to handle 20 search workers + web requests
+    # pool_recycle=900 avoids aggressive reconnection churn
     engine_kwargs.update({
-        "pool_size": 10,
-        "max_overflow": 20,
+        "pool_size": 20,
+        "max_overflow": 10,
         "pool_pre_ping": True,
-        "pool_recycle": 300,
+        "pool_recycle": 900,
     })
 
 engine = create_engine(_url, **engine_kwargs)
