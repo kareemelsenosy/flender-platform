@@ -385,6 +385,9 @@
       finishBar();
     }
 
+    // Expose globally so onclick="navigate(...)" works
+    window.navigate = navigate;
+
     // Intercept ALL internal link clicks
     document.addEventListener('click', function(e) {
       const a = e.target.closest('a[href]');
@@ -396,6 +399,62 @@
       if (url.pathname === location.pathname && !url.search) return; // same page
       e.preventDefault();
       navigate(a.href);
+    });
+
+    // Intercept POST form submissions — submit via fetch, follow redirect, swap content
+    document.addEventListener('submit', async function(e) {
+      const form = e.target.closest('form');
+      if (!form) return;
+      const action = form.action || location.href;
+      const method = (form.method || 'get').toLowerCase();
+      if (method !== 'post') return;
+      // Skip forms that open in new tab, or are for file uploads without JSON response
+      if (form.target && form.target !== '_self') return;
+      // Skip delete forms — they redirect to '/' which is fine via full nav
+      if (action.includes('/delete')) return;
+      // Skip login/register forms
+      if (action.includes('/login') || action.includes('/register')) return;
+      e.preventDefault();
+      showBar();
+      try {
+        const r = await fetch(action, {
+          method: 'POST',
+          body: new FormData(form),
+          credentials: 'same-origin',
+          redirect: 'follow',
+        });
+        const html = await r.text();
+        const finalUrl = r.url;
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const newMain = doc.querySelector('.main-content');
+        if (!newMain) { location.href = finalUrl; return; }
+
+        document.querySelector('.main-content').innerHTML = newMain.innerHTML;
+        const newTitle = doc.querySelector('title');
+        if (newTitle) document.title = newTitle.textContent;
+
+        // Update active sidebar link
+        const newPath = new URL(finalUrl).pathname;
+        document.querySelectorAll('.sidebar-link').forEach(link => {
+          try {
+            const lp = new URL(link.href, location.origin).pathname;
+            link.classList.toggle('active', lp === newPath || (lp !== '/' && newPath.startsWith(lp)));
+          } catch {}
+        });
+
+        document.querySelector('.main-content').querySelectorAll('script').forEach(old => {
+          const s = document.createElement('script');
+          if (old.src) s.src = old.src; else s.textContent = old.textContent;
+          old.replaceWith(s);
+        });
+
+        history.pushState({}, '', finalUrl);
+        window.scrollTo(0, 0);
+      } catch(err) {
+        location.href = action;
+        return;
+      }
+      finishBar();
     });
 
     // Back / forward

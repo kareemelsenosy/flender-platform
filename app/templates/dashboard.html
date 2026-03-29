@@ -17,7 +17,7 @@
   </div>
 
   <div class="card">
-    <div class="upload-zone" onclick="window.location.href='/sheets'" style="cursor:pointer">
+    <div class="upload-zone" onclick="navigate('/sheets')" style="cursor:pointer">
       <h3>Import from Google Sheets</h3>
       <p class="text-sm text-muted">Paste a Google Sheets URL</p>
       <p class="text-sm text-muted" style="margin-top:4px">Auto-imports images &amp; data</p>
@@ -244,5 +244,10 @@ function confirmDelete(btn) {
   const form = btn.closest('form');
   showDanger('This session and all its data will be permanently deleted.', () => form.submit(), 'Delete Session');
 }
+// Eagerly prefetch likely next pages after load
+setTimeout(() => {
+  document.querySelectorAll('a[href^="/mapping/"],a[href^="/review/"],a[href^="/generate/"]')
+    .forEach(a => a.dispatchEvent(new MouseEvent('mouseover', {bubbles: true})));
+}, 800);
 </script>
 {% endblock %}
