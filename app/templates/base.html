@@ -256,7 +256,7 @@
   if (document.querySelector('.sidebar')) {
     const _pollAll = async () => {
       // Skip polling when tab is hidden to save bandwidth
-      if (document.hidden) {
+      if (window._tabHidden) {
         setTimeout(_pollAll, 2000); // check again soon
         return;
       }
@@ -283,148 +283,132 @@
     const cache = {};
     const bar = document.getElementById('nav-progress');
     let barTimer = null;
+    // Skip these paths — they're not app pages or need full navigation
+    const SKIP = ['/logout', '/login', '/upload', '/upload/file'];
 
-    // Pages safe for instant nav (sidebar links that extend base.html)
-    const NAV_PATHS = ['/', '/sheets', '/settings'];
-
-    function isNavLink(href) {
+    function canInstantNav(href) {
       try {
         const url = new URL(href, location.origin);
         if (url.origin !== location.origin) return false;
-        return NAV_PATHS.includes(url.pathname);
+        if (SKIP.some(s => url.pathname === s || url.pathname.startsWith(s + '/'))) return false;
+        if (url.pathname.includes('/delete')) return false;
+        return true;
       } catch { return false; }
     }
 
-    // Prefetch on hover
+    // Prefetch on hover (any internal link)
     document.addEventListener('mouseover', function(e) {
       const a = e.target.closest('a[href]');
-      if (!a || !isNavLink(a.href)) return;
-      const path = new URL(a.href).pathname;
-      if (!cache[path]) {
-        cache[path] = fetch(path, { credentials: 'same-origin' })
+      if (!a || a.download || !canInstantNav(a.href)) return;
+      const url = new URL(a.href, location.origin);
+      const key = url.pathname + url.search;
+      if (!cache[key]) {
+        cache[key] = fetch(url.href, { credentials: 'same-origin' })
           .then(r => r.ok ? r.text() : null)
           .catch(() => null);
       }
     }, { passive: true });
 
-    // Progress bar helpers
     function showBar() {
       clearTimeout(barTimer);
       bar.style.transition = 'none';
       bar.style.width = '0';
-      bar.offsetHeight; // force reflow
-      bar.style.transition = 'width 0.4s ease';
+      bar.offsetHeight;
+      bar.style.transition = 'width 0.35s ease';
       bar.style.width = '70%';
     }
     function finishBar() {
       bar.style.transition = 'width 0.15s ease';
       bar.style.width = '100%';
       barTimer = setTimeout(() => {
-        bar.style.transition = 'opacity 0.3s';
+        bar.style.transition = 'opacity 0.25s';
         bar.style.opacity = '0';
-        setTimeout(() => { bar.style.width = '0'; bar.style.opacity = '1'; }, 300);
+        setTimeout(() => { bar.style.width = '0'; bar.style.opacity = '1'; }, 250);
       }, 150);
     }
 
-    // Swap main content
-    async function navigate(path) {
+    async function navigate(href) {
+      const url = new URL(href, location.origin);
+      const key = url.pathname + url.search;
       showBar();
       try {
-        let html = cache[path] ? await cache[path] : null;
+        let html = cache[key] ? await cache[key] : null;
         if (!html) {
-          html = await fetch(path, { credentials: 'same-origin' }).then(r => r.ok ? r.text() : null);
+          const r = await fetch(url.href, { credentials: 'same-origin' });
+          // Server redirected us (e.g. session expired → /login) — follow it
+          if (!r.ok || r.redirected) { location.href = r.url || href; return; }
+          html = await r.text();
         }
-        delete cache[path]; // invalidate after use
+        delete cache[key];
 
-        if (!html) { location.href = path; return; }
+        if (!html) { location.href = href; return; }
 
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');
-        const newTitle = doc.querySelector('title');
-        if (!newMain) { location.href = path; return; }
+        // If the page doesn't have .main-content (e.g. login page), do a real nav
+        if (!newMain) { location.href = href; return; }
 
         // Swap content
         const main = document.querySelector('.main-content');
         main.innerHTML = newMain.innerHTML;
 
         // Update title
+        const newTitle = doc.querySelector('title');
         if (newTitle) document.title = newTitle.textContent;
 
-        // Update active sidebar link
+        // Update active sidebar link based on new path
+        const newPath = url.pathname;
         document.querySelectorAll('.sidebar-link').forEach(link => {
-          const lp = new URL(link.href, location.origin).pathname;
-          link.classList.toggle('active', lp === path || (path !== '/' && lp !== '/' && path.startsWith(lp)));
+          try {
+            const lp = new URL(link.href, location.origin).pathname;
+            const active = lp === newPath ||
+              (lp !== '/' && newPath.startsWith(lp));
+            link.classList.toggle('active', active);
+          } catch {}
         });
 
-        // Execute inline scripts in new content
+        // Re-execute scripts inside the new content
         main.querySelectorAll('script').forEach(old => {
           const s = document.createElement('script');
-          if (old.src) { s.src = old.src; } else { s.textContent = old.textContent; }
+          if (old.src) s.src = old.src;
+          else s.textContent = old.textContent;
           old.replaceWith(s);
         });
 
-        // Update URL
-        history.pushState({}, '', path);
+        history.pushState({path: newPath}, '', url.href);
         window.scrollTo(0, 0);
 
-        // Execute any block scripts from the new page
-        const newScripts = doc.querySelectorAll('body > script');
-        newScripts.forEach(old => {
-          // Skip our own base scripts (modal, toast, nav, polling)
-          if (old.textContent.includes('showModal') || old.textContent.includes('showToast') ||
-              old.textContent.includes('_pollAll') || old.textContent.includes('NAV_PATHS')) return;
-          const s = document.createElement('script');
-          s.textContent = old.textContent;
-          document.body.appendChild(s);
-        });
-
       } catch(e) {
-        location.href = path;
+        location.href = href;
         return;
       }
       finishBar();
     }
 
-    // Intercept sidebar link clicks
+    // Intercept ALL internal link clicks
     document.addEventListener('click', function(e) {
       const a = e.target.closest('a[href]');
-      if (!a || !isNavLink(a.href)) return;
-      if (e.metaKey || e.ctrlKey || e.shiftKey) return; // allow new tab
+      if (!a || a.download) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (a.target && a.target !== '_self') return;
+      if (!canInstantNav(a.href)) return;
+      const url = new URL(a.href, location.origin);
+      if (url.pathname === location.pathname && !url.search) return; // same page
       e.preventDefault();
-      const path = new URL(a.href).pathname;
-      if (path === location.pathname) return; // already there
-      navigate(path);
+      navigate(a.href);
     });
 
-    // Handle back/forward
+    // Back / forward
     window.addEventListener('popstate', function() {
-      if (isNavLink(location.href)) {
-        navigate(location.pathname);
-      } else {
-        location.reload();
-      }
+      navigate(location.href);
     });
   })();
 
   // ── Pause polling when tab is hidden ──────────────────────────────────────
-  (function() {
-    let _pollTimer = null;
-    const _origSetTimeout = window.setTimeout;
-    let _pollPaused = false;
-    let _pendingPoll = null;
-
-    document.addEventListener('visibilitychange', function() {
-      _pollPaused = document.hidden;
-      // When tab becomes visible again and we had a pending poll, run it now
-      if (!_pollPaused && _pendingPoll) {
-        _pendingPoll();
-        _pendingPoll = null;
-      }
-    });
-
-    // Expose for polling code
-    window._isTabHidden = () => document.hidden;
-  })();
+  document.addEventListener('visibilitychange', function() {
+    window._tabHidden = document.hidden;
+  });
+  window._tabHidden = document.hidden;
   </script>
 
   {% block scripts %}{% endblock %}
