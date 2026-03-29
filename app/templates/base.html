@@ -5,9 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}FLENDER Platform{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/css/main.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="dns-prefetch" href="https://fonts.googleapis.com">
+  <!-- Critical layout CSS inlined to prevent FOUC -->
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;overflow:auto}
+    body{font-family:'DM Sans',system-ui,-apple-system,sans-serif;background:#fafafa;color:#1f1f1f}
+    .app-layout{display:flex;min-height:100vh}
+    .sidebar{width:260px;background:#fff;border-right:1px solid #f4f4f4;position:fixed;top:0;left:0;bottom:0;display:flex;flex-direction:column;z-index:100}
+    .main-content{margin-left:260px;padding:32px 40px;flex:1;min-height:100vh}
+  </style>
+  <link rel="stylesheet" href="/static/css/main.css">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   {% block head %}{% endblock %}
 </head>
@@ -245,6 +255,11 @@
   // ── Notification + task polling ─────────────────────────────────────────────
   if (document.querySelector('.sidebar')) {
     const _pollAll = async () => {
+      // Skip polling when tab is hidden to save bandwidth
+      if (document.hidden) {
+        setTimeout(_pollAll, 2000); // check again soon
+        return;
+      }
       try {
         const [r1, r2] = await Promise.all([
           fetch('/api/notifications/poll'),
@@ -255,11 +270,161 @@
         (d1.notifications || []).forEach(n => showToast(n.title, n.message, n.actions, n.type));
         _renderSidebarTasks(d2.tasks || []);
       } catch(_) {}
-      // Poll faster when tasks are running, slower when idle
       setTimeout(_pollAll, _hasActiveTasks ? 5000 : 30000);
     };
-    setTimeout(_pollAll, 3000);
+    setTimeout(_pollAll, 2000);
   }
+  </script>
+
+  <!-- ── Instant Navigation (prefetch on hover + content swap) ───────────── -->
+  <div id="nav-progress" style="position:fixed;top:0;left:0;height:3px;background:var(--black);z-index:99999;width:0;transition:width 0.2s ease;pointer-events:none"></div>
+  <script>
+  (function() {
+    const cache = {};
+    const bar = document.getElementById('nav-progress');
+    let barTimer = null;
+
+    // Pages safe for instant nav (sidebar links that extend base.html)
+    const NAV_PATHS = ['/', '/sheets', '/settings'];
+
+    function isNavLink(href) {
+      try {
+        const url = new URL(href, location.origin);
+        if (url.origin !== location.origin) return false;
+        return NAV_PATHS.includes(url.pathname);
+      } catch { return false; }
+    }
+
+    // Prefetch on hover
+    document.addEventListener('mouseover', function(e) {
+      const a = e.target.closest('a[href]');
+      if (!a || !isNavLink(a.href)) return;
+      const path = new URL(a.href).pathname;
+      if (!cache[path]) {
+        cache[path] = fetch(path, { credentials: 'same-origin' })
+          .then(r => r.ok ? r.text() : null)
+          .catch(() => null);
+      }
+    }, { passive: true });
+
+    // Progress bar helpers
+    function showBar() {
+      clearTimeout(barTimer);
+      bar.style.transition = 'none';
+      bar.style.width = '0';
+      bar.offsetHeight; // force reflow
+      bar.style.transition = 'width 0.4s ease';
+      bar.style.width = '70%';
+    }
+    function finishBar() {
+      bar.style.transition = 'width 0.15s ease';
+      bar.style.width = '100%';
+      barTimer = setTimeout(() => {
+        bar.style.transition = 'opacity 0.3s';
+        bar.style.opacity = '0';
+        setTimeout(() => { bar.style.width = '0'; bar.style.opacity = '1'; }, 300);
+      }, 150);
+    }
+
+    // Swap main content
+    async function navigate(path) {
+      showBar();
+      try {
+        let html = cache[path] ? await cache[path] : null;
+        if (!html) {
+          html = await fetch(path, { credentials: 'same-origin' }).then(r => r.ok ? r.text() : null);
+        }
+        delete cache[path]; // invalidate after use
+
+        if (!html) { location.href = path; return; }
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const newMain = doc.querySelector('.main-content');
+        const newTitle = doc.querySelector('title');
+        if (!newMain) { location.href = path; return; }
+
+        // Swap content
+        const main = document.querySelector('.main-content');
+        main.innerHTML = newMain.innerHTML;
+
+        // Update title
+        if (newTitle) document.title = newTitle.textContent;
+
+        // Update active sidebar link
+        document.querySelectorAll('.sidebar-link').forEach(link => {
+          const lp = new URL(link.href, location.origin).pathname;
+          link.classList.toggle('active', lp === path || (path !== '/' && lp !== '/' && path.startsWith(lp)));
+        });
+
+        // Execute inline scripts in new content
+        main.querySelectorAll('script').forEach(old => {
+          const s = document.createElement('script');
+          if (old.src) { s.src = old.src; } else { s.textContent = old.textContent; }
+          old.replaceWith(s);
+        });
+
+        // Update URL
+        history.pushState({}, '', path);
+        window.scrollTo(0, 0);
+
+        // Execute any block scripts from the new page
+        const newScripts = doc.querySelectorAll('body > script');
+        newScripts.forEach(old => {
+          // Skip our own base scripts (modal, toast, nav, polling)
+          if (old.textContent.includes('showModal') || old.textContent.includes('showToast') ||
+              old.textContent.includes('_pollAll') || old.textContent.includes('NAV_PATHS')) return;
+          const s = document.createElement('script');
+          s.textContent = old.textContent;
+          document.body.appendChild(s);
+        });
+
+      } catch(e) {
+        location.href = path;
+        return;
+      }
+      finishBar();
+    }
+
+    // Intercept sidebar link clicks
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a[href]');
+      if (!a || !isNavLink(a.href)) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return; // allow new tab
+      e.preventDefault();
+      const path = new URL(a.href).pathname;
+      if (path === location.pathname) return; // already there
+      navigate(path);
+    });
+
+    // Handle back/forward
+    window.addEventListener('popstate', function() {
+      if (isNavLink(location.href)) {
+        navigate(location.pathname);
+      } else {
+        location.reload();
+      }
+    });
+  })();
+
+  // ── Pause polling when tab is hidden ──────────────────────────────────────
+  (function() {
+    let _pollTimer = null;
+    const _origSetTimeout = window.setTimeout;
+    let _pollPaused = false;
+    let _pendingPoll = null;
+
+    document.addEventListener('visibilitychange', function() {
+      _pollPaused = document.hidden;
+      // When tab becomes visible again and we had a pending poll, run it now
+      if (!_pollPaused && _pendingPoll) {
+        _pendingPoll();
+        _pendingPoll = null;
+      }
+    });
+
+    // Expose for polling code
+    window._isTabHidden = () => document.hidden;
+  })();
   </script>
 
   {% block scripts %}{% endblock %}

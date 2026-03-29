@@ -49,9 +49,11 @@ class SecurityHeadersMiddleware:
                 headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
                 # HSTS — tell browsers to always use HTTPS
                 headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
-                # Cache static files for 1 day
+                # Cache static files for 7 days; HTML pages no-cache for instant nav
                 if is_static:
-                    headers.append((b"cache-control", b"public, max-age=86400"))
+                    headers.append((b"cache-control", b"public, max-age=604800, immutable"))
+                else:
+                    headers.append((b"cache-control", b"no-cache"))
                 message = {**message, "headers": headers}
             await send(message)
 
