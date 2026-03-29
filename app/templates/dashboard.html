@@ -242,7 +242,7 @@ async function startUpload(fileList) {
 <script>
 function confirmDelete(btn) {
   const form = btn.closest('form');
-  showDanger('This session and all its data will be permanently deleted.', () => form.submit(), 'Delete Session');
+  showDanger('This session and all its data will be permanently deleted.', () => form.requestSubmit(), 'Delete Session');
 }
 // Eagerly prefetch likely next pages after load
 setTimeout(() => {

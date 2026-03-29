@@ -283,17 +283,22 @@
     const cache = {};
     const bar = document.getElementById('nav-progress');
     let barTimer = null;
-    // Skip these paths — they're not app pages or need full navigation
-    const SKIP = ['/logout', '/login', '/upload', '/upload/file'];
+    // Skip only non-GET endpoints or external URLs
+    const SKIP = ['/upload', '/upload/file'];
 
     function canInstantNav(href) {
       try {
         const url = new URL(href, location.origin);
         if (url.origin !== location.origin) return false;
         if (SKIP.some(s => url.pathname === s || url.pathname.startsWith(s + '/'))) return false;
-        if (url.pathname.includes('/delete')) return false;
         return true;
       } catch { return false; }
+    }
+
+    // Full document replace — used when navigating between layouts (login ↔ app)
+    function writeDoc(html, finalUrl) {
+      history.pushState({}, '', finalUrl);
+      document.open(); document.write(html); document.close();
     }
 
     // Prefetch on hover (any internal link)
@@ -345,8 +350,8 @@
 
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');
-        // If the page doesn't have .main-content (e.g. login page), do a real nav
-        if (!newMain) { location.href = href; return; }
+        // If the page doesn't have .main-content (login page, etc.) — replace whole document
+        if (!newMain) { writeDoc(html, finalUrl); return; }
 
         // Swap content
         const main = document.querySelector('.main-content');
@@ -408,12 +413,8 @@
       const action = form.action || location.href;
       const method = (form.method || 'get').toLowerCase();
       if (method !== 'post') return;
-      // Skip forms that open in new tab, or are for file uploads without JSON response
+      // Skip forms that open in new tab
       if (form.target && form.target !== '_self') return;
-      // Skip delete forms — they redirect to '/' which is fine via full nav
-      if (action.includes('/delete')) return;
-      // Skip login/register forms
-      if (action.includes('/login') || action.includes('/register')) return;
       e.preventDefault();
       showBar();
       try {
@@ -427,7 +428,7 @@
         const finalUrl = r.url;
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');
-        if (!newMain) { location.href = finalUrl; return; }
+        if (!newMain) { writeDoc(html, finalUrl); return; }
 
         document.querySelector('.main-content').innerHTML = newMain.innerHTML;
         const newTitle = doc.querySelector('title');

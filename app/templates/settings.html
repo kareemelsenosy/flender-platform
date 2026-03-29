@@ -111,21 +111,21 @@ async function saveBrand() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({brand_name: name, site_urls: urls, search_notes: notes}),
   });
-  if (resp.ok) location.reload();
+  if (resp.ok) navigate(location.pathname);
   else showAlert('Failed to save brand configuration.', 'Error');
 }
 
 function deleteBrand(id) {
   showDanger('This brand configuration will be permanently deleted.', async () => {
     await fetch(`/settings/brand/${id}/delete`, {method: 'POST'});
-    location.reload();
+    navigate(location.pathname);
   }, 'Delete Brand');
 }
 
 function deleteFormat(id) {
   showDanger('This saved format will be permanently deleted.', async () => {
     await fetch(`/settings/format/${id}/delete`, {method: 'POST'});
-    location.reload();
+    navigate(location.pathname);
   }, 'Delete Format');
 }
 
@@ -163,7 +163,7 @@ document.getElementById('google-creds-form').addEventListener('submit', async (e
   });
   if (resp.ok) {
     showModal('Success', 'Google credentials uploaded successfully.', [
-      { label: 'OK', cls: 'btn-primary', action: () => location.reload() }
+      { label: 'OK', cls: 'btn-primary', action: () => navigate(location.pathname) }
     ]);
   } else {
     const data = await resp.json();
