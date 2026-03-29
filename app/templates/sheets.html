@@ -122,11 +122,59 @@ addRow();
     const r = await fetch('/api/active-tasks');
     const data = await r.json();
     const sheetTasks = (data.tasks || []).filter(t => t.type === 'sheets');
-    if (!sheetTasks.length) return;
-    // Auto-reconnect immediately — no button click needed
-    reconnectBatch(sheetTasks[0].batch_id);
+    if (sheetTasks.length) {
+      // Active import running — reconnect to SSE
+      reconnectBatch(sheetTasks[0].batch_id);
+      return;
+    }
   } catch(_) {}
+
+  // No active import — check for recently completed batches from server
+  {% if completed_jobs_json %}
+  const completedJobs = {{ completed_jobs_json | safe }};
+  if (completedJobs.length) {
+    showCompletedJobs(completedJobs);
+  }
+  {% endif %}
 })();
+
+function showCompletedJobs(jobs) {
+  document.getElementById('import-card').style.display = 'none';
+  const batchSection = document.getElementById('batch-section');
+  batchSection.style.display = 'block';
+  const jobList = document.getElementById('job-list');
+  jobList.innerHTML = '';
+
+  jobs.forEach((job, idx) => {
+    jobList.appendChild(mkCard(idx, job.url || job.title || `Sheet ${idx+1}`));
+    if (job.status === 'done') {
+      const parts = [job.with_images > 0 ? `${job.with_images} with images` : '', job.without_images > 0 ? `${job.without_images} without images` : ''].filter(Boolean).join(' \u00b7 ');
+      const acts = [
+        `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
+        `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
+      ].join('');
+      setJob(idx, 'done', {title: job.title || job.url, status: `${job.items} items${parts ? ' \u00b7 ' + parts : ''}`, eta: 'Done', actions: acts});
+    } else if (job.status === 'error') {
+      setJob(idx, 'error', {error: job.error || 'Import failed'});
+    }
+  });
+
+  const doneCount = jobs.filter(j => j.status === 'done').length;
+  document.getElementById('batch-summary').textContent = `All ${jobs.length} sheets imported (${doneCount} succeeded)`;
+
+  // Show "New Import" button
+  const newBtn = document.createElement('button');
+  newBtn.className = 'btn btn-outline btn-sm';
+  newBtn.style.marginTop = '12px';
+  newBtn.textContent = '+ New Import';
+  newBtn.onclick = () => {
+    batchSection.style.display = 'none';
+    jobList.innerHTML = '';
+    document.getElementById('import-card').style.display = 'block';
+    newBtn.remove();
+  };
+  batchSection.appendChild(newBtn);
+}
 
 function reconnectBatch(batch_id) {
   document.getElementById('import-card').style.display = 'none';

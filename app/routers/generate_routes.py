@@ -60,9 +60,42 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
         UniqueItem.review_status == "approved",
     ).count()
 
+    # Check if export is currently running
+    with _progress_lock:
+        is_exporting = session_id in _progress
+
+    # Check if export recently completed
+    completed_entry = None
+    for entry in _completed_exports.get(uid, []):
+        if entry.get("session_id") == session_id:
+            completed_entry = entry
+            break
+
+    # Also check DB for generated files (covers case where server restarted)
+    if not completed_entry and not is_exporting:
+        gen_file = db.query(GeneratedFile).filter(
+            GeneratedFile.session_id == session_id,
+            GeneratedFile.expires_at > datetime.now(timezone.utc),
+        ).order_by(GeneratedFile.expires_at.desc()).first()
+        if gen_file:
+            completed_entry = {
+                "download_url": f"/download/{gen_file.token}",
+                "images_zip_url": "",
+            }
+            # Check for images zip too
+            zip_file = db.query(GeneratedFile).filter(
+                GeneratedFile.session_id == session_id,
+                GeneratedFile.filename == "images.zip",
+                GeneratedFile.expires_at > datetime.now(timezone.utc),
+            ).first()
+            if zip_file:
+                completed_entry["images_zip_url"] = f"/download-zip/{zip_file.token}"
+
     return templates.TemplateResponse(request, "generate.html", {
         "session": sess,
         "approved_count": approved_count,
+        "is_exporting": is_exporting,
+        "completed": completed_entry,
     })
 
 

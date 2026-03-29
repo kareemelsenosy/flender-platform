@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import uuid
@@ -22,6 +23,9 @@ router = APIRouter()
 _batch_progress: dict[str, dict] = {}
 # Track which batches belong to which user: user_id -> [batch_id, ...]
 _user_batches: dict[int, list[str]] = {}
+# Completed batches kept for 10 minutes so users can return to sheets page
+# user_id -> [{"batch_id": ..., "jobs": [...], "completed_at": timestamp}, ...]
+_completed_batches: dict[int, list[dict]] = {}
 
 
 def _persist_batch(batch_id: str, uid: int) -> None:
@@ -200,8 +204,17 @@ async def sheets_page(request: Request, db: DBSession = Depends(get_db)):
     cred_path = _get_credentials_path(uid)
     has_credentials = os.path.exists(cred_path)
 
+    # Check for recently completed batches so the page can show results on revisit
+    import time as _t
+    now = _t.time()
+    completed_jobs = []
+    for batch in _completed_batches.get(uid, []):
+        if now - batch["completed_at"] < 600:  # 10 min
+            completed_jobs.extend(batch.get("jobs", []))
+
     return templates.TemplateResponse(request, "sheets.html", {
         "has_credentials": has_credentials,
+        "completed_jobs_json": json.dumps(completed_jobs) if completed_jobs else "",
     })
 
 
@@ -306,6 +319,22 @@ async def import_sheets_batch(request: Request):
         await asyncio.gather(*[_run_job(i, url) for i, url in enumerate(urls)])
         _batch_progress[batch_id]["running"] = False
         _persist_batch(batch_id, uid)
+
+        # Save completed batch info for page revisits (kept 10 min)
+        from datetime import datetime, timezone
+        _completed_batches.setdefault(uid, []).append({
+            "batch_id": batch_id,
+            "jobs": list(_batch_progress[batch_id].get("jobs", [])),
+            "completed_at": datetime.now(timezone.utc).timestamp(),
+        })
+        # Prune old completed batches (> 10 min)
+        import time as _t
+        now = _t.time()
+        _completed_batches[uid] = [
+            b for b in _completed_batches[uid]
+            if now - b["completed_at"] < 600
+        ]
+
         # Remove from active user batches
         try:
             _user_batches.get(uid, []).remove(batch_id)

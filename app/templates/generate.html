@@ -117,6 +117,7 @@ function pollProgress() {
         document.getElementById('export-btn').disabled = false;
         document.getElementById('export-btn').innerHTML = 'Retry Export';
         document.getElementById('export-btn').style.display = '';
+        document.getElementById('config-area').style.display = '';
       } else {
         statusEl.textContent = p.stage || 'Processing...';
         etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
@@ -132,7 +133,7 @@ async function checkCompleted() {
     const data = await resp.json();
     const done = (data.tasks || []).find(t => t.type === 'export_done' && t.session_id === SESSION_ID);
     if (done) {
-      showDownload(done.download_url, done.images_zip_url);
+      showDownload(done.download_url, done.images_zip_url, false);
     } else {
       // Not found yet, retry in 2s
       setTimeout(checkCompleted, 2000);
@@ -142,14 +143,18 @@ async function checkCompleted() {
   }
 }
 
-function showDownload(downloadUrl, imagesUrl) {
+function showDownload(downloadUrl, imagesUrl, autoDownload) {
   const fill = document.getElementById('export-fill');
   const statusEl = document.getElementById('export-status');
   const etaEl = document.getElementById('export-eta');
   const downloadArea = document.getElementById('download-area');
+  const progress = document.getElementById('export-progress');
   const elapsed = exportStartTime ? Math.round((Date.now() - exportStartTime) / 1000) : 0;
 
+  document.getElementById('config-area').style.display = 'none';
+  progress.style.display = 'block';
   fill.style.width = '100%';
+  fill.style.background = '';
   statusEl.textContent = 'Export complete!';
   etaEl.textContent = elapsed > 0 ? `Completed in ${elapsed}s` : '';
   document.getElementById('export-btn').style.display = 'none';
@@ -164,15 +169,34 @@ function showDownload(downloadUrl, imagesUrl) {
   if (imagesUrl) {
     html += `<a href="${imagesUrl}" class="btn btn-outline" style="width:100%" download>Download Images ZIP</a>`;
   }
+  html += `
+    <button class="btn btn-outline" style="width:100%;margin-top:8px" onclick="resetExport()">
+      Re-export with New Settings
+    </button>
+  `;
   downloadArea.innerHTML = html;
 
-  // Auto-download
-  const a = document.createElement('a');
-  a.href = downloadUrl;
-  a.download = '';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  // Auto-download only when user just triggered the export (not on page revisit)
+  if (autoDownload !== false) {
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+}
+
+function resetExport() {
+  document.getElementById('config-area').style.display = '';
+  document.getElementById('export-progress').style.display = 'none';
+  document.getElementById('download-area').style.display = 'none';
+  document.getElementById('export-btn').style.display = '';
+  document.getElementById('export-btn').disabled = false;
+  document.getElementById('export-btn').innerHTML = 'Generate & Download Excel';
+  const fill = document.getElementById('export-fill');
+  fill.style.width = '0%';
+  fill.style.background = '';
 }
 
 async function doExport() {
@@ -201,7 +225,7 @@ async function doExport() {
 
     if (data.ok || data.started) {
       btn.style.display = 'none';
-      document.getElementById('config-area').querySelector('.form-group').style.display = 'none';
+      document.getElementById('config-area').style.display = 'none';
       statusEl.textContent = 'Export running in background...';
       pollProgress();
     } else {
@@ -219,5 +243,19 @@ async function doExport() {
     btn.innerHTML = 'Generate & Download Excel';
   }
 }
+
+// ── Auto-reconnect: restore state when returning to this page ─────────────
+{% if is_exporting %}
+// Export is currently running — show progress and start polling
+document.getElementById('config-area').style.display = 'none';
+document.getElementById('export-progress').style.display = 'block';
+document.getElementById('export-status').textContent = 'Export running in background...';
+document.getElementById('export-btn').style.display = 'none';
+exportStartTime = Date.now();
+pollProgress();
+{% elif completed %}
+// Export already completed — show download buttons
+showDownload('{{ completed.download_url }}', '{{ completed.images_zip_url or "" }}', false);
+{% endif %}
 </script>
 {% endblock %}

@@ -240,17 +240,6 @@ async function startUpload(fileList) {
 {% endif %}
 
 <script>
-const zone = document.getElementById('drop-zone');
-zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
-zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-zone.addEventListener('drop', e => {
-  e.preventDefault();
-  zone.classList.remove('dragover');
-  const input = document.getElementById('file-input');
-  input.files = e.dataTransfer.files;
-  document.getElementById('upload-form').submit();
-});
-
 function confirmDelete(btn) {
   const form = btn.closest('form');
   showDanger('This session and all its data will be permanently deleted.', () => form.submit(), 'Delete Session');
