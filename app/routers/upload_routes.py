@@ -17,6 +17,8 @@ from app.models import Session, UniqueItem, UploadedFile, User
 
 router = APIRouter()
 
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: DBSession = Depends(get_db)):
@@ -44,12 +46,23 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     if not uid:
         return RedirectResponse("/login", status_code=302)
 
+    # Validate file extension
+    filename = file.filename or "upload"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in (".xlsx", ".xls", ".csv"):
+        return RedirectResponse("/", status_code=302)
+
+    # Read with size limit
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        return RedirectResponse("/", status_code=302)
+
     # Save file to disk
     session_dir = UPLOAD_DIR / f"user_{uid}"
     session_dir.mkdir(parents=True, exist_ok=True)
-    file_path = session_dir / file.filename
+    file_path = session_dir / filename
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(content)
 
     # Create session
     ext = os.path.splitext(file.filename)[1].lower()
@@ -104,6 +117,9 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
         counter += 1
 
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        return JSONResponse({"error": "File too large (max 50MB)"}, status_code=413)
+
     with open(file_path, "wb") as f:
         f.write(content)
 

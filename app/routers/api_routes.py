@@ -15,8 +15,13 @@ router = APIRouter()
 
 
 @router.get("/api/health")
-async def health_check():
-    return JSONResponse({"status": "ok"})
+async def health_check(db: DBSession = Depends(get_db)):
+    try:
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
+        return JSONResponse({"status": "ok", "database": "connected"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "database": str(e)}, status_code=503)
 
 
 @router.get("/dashboard")
