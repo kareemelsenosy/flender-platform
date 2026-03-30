@@ -152,7 +152,6 @@ async def server_error_handler(request: Request, exc):
 
 
 # ── Register routers ────────────────────────────────────────────────────────
-from app.routers import _verify_route  # TEMPORARY
 from app.routers import (  # noqa: E402
     api_routes,
     auth_routes,
@@ -174,4 +173,3 @@ app.include_router(review_routes.router)
 app.include_router(generate_routes.router)
 app.include_router(sheets_routes.router)
 app.include_router(settings_routes.router)
-app.include_router(_verify_route.router)  # TEMPORARY
