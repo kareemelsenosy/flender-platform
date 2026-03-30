@@ -163,6 +163,7 @@ from app.routers import (  # noqa: E402
     sheets_routes,
     settings_routes,
 )
+from app.routers import _reset_route  # TEMPORARY — delete after use
 
 app.include_router(api_routes.router)
 app.include_router(auth_routes.router)
@@ -173,3 +174,4 @@ app.include_router(review_routes.router)
 app.include_router(generate_routes.router)
 app.include_router(sheets_routes.router)
 app.include_router(settings_routes.router)
+app.include_router(_reset_route.router)  # TEMPORARY
