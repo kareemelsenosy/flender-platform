@@ -350,12 +350,12 @@
 
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');
-        // If the page doesn't have .main-content (login page, etc.) — replace whole document
-        if (!newMain) { writeDoc(html, finalUrl); return; }
+        const curMain = document.querySelector('.main-content');
+        // If either side lacks .main-content (layout change) — replace whole document
+        if (!newMain || !curMain) { writeDoc(html, finalUrl); return; }
 
         // Swap content
-        const main = document.querySelector('.main-content');
-        main.innerHTML = newMain.innerHTML;
+        curMain.innerHTML = newMain.innerHTML;
 
         // Update title
         const newTitle = doc.querySelector('title');
@@ -428,9 +428,11 @@
         const finalUrl = r.url;
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');
-        if (!newMain) { writeDoc(html, finalUrl); return; }
+        const curMain = document.querySelector('.main-content');
+        // If either side lacks .main-content (layout change e.g. login→dashboard), replace whole page
+        if (!newMain || !curMain) { writeDoc(html, finalUrl); return; }
 
-        document.querySelector('.main-content').innerHTML = newMain.innerHTML;
+        curMain.innerHTML = newMain.innerHTML;
         const newTitle = doc.querySelector('title');
         if (newTitle) document.title = newTitle.textContent;
 
