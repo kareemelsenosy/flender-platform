@@ -235,24 +235,29 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     body = await request.json() if request.headers.get("content-type") == "application/json" else {}
     save_images = body.get("save_images", False)
 
-    # Build item dicts
+    # Build item dicts — expand each item into one row per size
     item_dicts = []
     for item in items:
-        item_dicts.append({
-            "item_code": item.item_code,
-            "style_name": item.style_name,
-            "color_name": item.color_name,
-            "color_code": item.color_code,
-            "gender": item.gender,
-            "wholesale_price": item.wholesale_price,
-            "retail_price": item.retail_price,
-            "qty_available": item.qty_available,
-            "sizes": item.sizes,
-            "approved_url": item.approved_url,
-            "brand": item.brand,
-            "barcode": "",
-            "item_group": "",
-        })
+        sizes = item.sizes or []
+        if not sizes:
+            sizes = [""]  # one row even with no size data
+        for size in sizes:
+            item_dicts.append({
+                "item_code": item.item_code,
+                "style_name": item.style_name,
+                "color_name": item.color_name,
+                "color_code": item.color_code,
+                "gender": item.gender,
+                "wholesale_price": item.wholesale_price,
+                "retail_price": item.retail_price,
+                "qty_available": item.qty_available,
+                "size": str(size),  # single size per row
+                "approved_url": item.approved_url,
+                "additional_urls": item.additional_urls,
+                "brand": item.brand,
+                "barcode": item.barcode or "",
+                "item_group": "",
+            })
 
     brand = items[0].brand if items else ""
 

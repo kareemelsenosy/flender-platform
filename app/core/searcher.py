@@ -19,7 +19,11 @@ from bs4 import BeautifulSoup
 def _make_http_session() -> requests.Session:
     """Shared session with connection pooling for all search requests."""
     s = requests.Session()
-    adapter = HTTPAdapter(pool_connections=40, pool_maxsize=80)
+    adapter = HTTPAdapter(
+        pool_connections=100,
+        pool_maxsize=200,
+        max_retries=2,
+    )
     s.mount("https://", adapter)
     s.mount("http://", adapter)
     return s
@@ -27,7 +31,7 @@ def _make_http_session() -> requests.Session:
 
 _HTTP = _make_http_session()
 
-MAX_CANDIDATES = 5
+MAX_CANDIDATES = 8
 REQUEST_TIMEOUT = 15
 
 _HEADERS = {
@@ -90,6 +94,44 @@ BRAND_DOMAINS: dict[str, str] = {
     "huf": "hufworldwide.com",
     "another cotton lab": "anothercottonlab.com",
     "thisisneverthat": "thisisneverthat.com",
+    # Sportswear / Footwear
+    "hoka": "hoka.com",
+    "hoka one one": "hoka.com",
+    "asics": "asics.com",
+    "puma": "puma.com",
+    "reebok": "reebok.com",
+    "saucony": "saucony.com",
+    "on": "on.com",
+    "on running": "on.com",
+    "salomon": "salomon.com",
+    "columbia": "columbia.com",
+    "under armour": "underarmour.com",
+    "fila": "fila.com",
+    "mizuno": "mizuno.com",
+    "brooks": "brooksrunning.com",
+    # Streetwear
+    "carhartt wip": "carhartt-wip.com",
+    "carhartt": "carhartt-wip.com",
+    "karl kani": "karlkani.com",
+    "stussy": "stussy.com",
+    "stüssy": "stussy.com",
+    "supreme": "supremenewyork.com",
+    "bape": "bape.com",
+    "a bathing ape": "bape.com",
+    "obey": "obeyclothing.com",
+    "dickies": "dickies.com",
+    # Casual / Fashion
+    "tommy jeans": "tommy.com",
+    "polo ralph lauren": "ralphlauren.com",
+    "gant": "gant.com",
+    "napapijri": "napapijri.com",
+    "cp company": "cpcompany.com",
+    "c.p. company": "cpcompany.com",
+    "barbour": "barbour.com",
+    "fred perry": "fredperry.com",
+    "superdry": "superdry.com",
+    "jack wolfskin": "jack-wolfskin.com",
+    "mammut": "mammut.com",
 }
 
 _CDN_PATTERNS = [
@@ -141,6 +183,11 @@ class ImageSearcher:
             tasks["brand_site"] = lambda: self._bing_site_search(
                 site_urls[0], item_code, color_name, style_name
             )
+            # Also try a second brand-site search focusing on style/product name
+            if style_name and style_name.lower() != item_code.lower():
+                tasks["brand_site_style"] = lambda: self._bing_site_search(
+                    site_urls[0], style_name, color_name, None
+                )
 
         if self.google_api_key and self.google_cse_id:
             tasks["google"] = lambda: self._google_search(
@@ -148,6 +195,7 @@ class ImageSearcher:
             )
 
         tasks["bing"] = lambda: self._bing_search(brand, item_code, color_name, style_name)
+        tasks["google_scrape"] = lambda: self._google_images_scrape(brand, item_code, color_name, style_name)
         tasks["ddg"]  = lambda: self._duckduckgo_search(brand, item_code, color_name, style_name)
 
         # Fire all sources at the same time
@@ -201,11 +249,16 @@ class ImageSearcher:
 
         domain = BRAND_DOMAINS.get(brand.lower().strip())
         if domain and domain in lower:
-            score += 0.25
+            score += 0.35  # strong boost for official brand domain
         else:
             brand_slug = re.sub(r"[^\w]", "", brand).lower()
             if brand_slug and len(brand_slug) > 3 and brand_slug in lower:
-                score += 0.10
+                score += 0.15
+            # Penalize URLs from wrong brand domains
+            for other_brand, other_domain in BRAND_DOMAINS.items():
+                if other_brand != brand.lower().strip() and other_domain in lower:
+                    score -= 0.30  # penalize images from wrong brand's site
+                    break
 
         if any(p in lower for p in _CDN_PATTERNS) or any(p in lower for p in _PRODUCT_PATHS):
             score += 0.10
@@ -252,6 +305,7 @@ class ImageSearcher:
 
         urls: list[str] = []
         soup = BeautifulSoup(resp.text, "html.parser")
+        # Method 1: iusc anchor tags with JSON metadata
         for tag in soup.find_all("a", class_="iusc"):
             m = tag.get("m", "")
             if not m:
@@ -263,8 +317,19 @@ class ImageSearcher:
             except Exception:
                 pass
 
+        # Method 2: imgurl= in raw HTML
         imgurl_matches = re.findall(r'imgurl=(https?://[^&"\']+)', resp.text)
         urls.extend([urllib.parse.unquote(u) for u in imgurl_matches])
+
+        # Method 3: murl from any JSON-like blobs in the page
+        murl_matches = re.findall(r'"murl"\s*:\s*"(https?://[^"]+)"', resp.text)
+        urls.extend(murl_matches)
+
+        # Method 4: turl (thumbnail) as last resort — still useful for finding the source
+        if len(urls) < 3:
+            turl_matches = re.findall(r'"turl"\s*:\s*"(https?://[^"]+)"', resp.text)
+            urls.extend(turl_matches)
+
         return self._dedupe(urls)
 
     def _google_search(self, brand: str, item_code: str,
@@ -290,6 +355,48 @@ class ImageSearcher:
             return [it["link"] for it in data.get("items", []) if "link" in it]
         except Exception:
             return []
+
+    def _google_images_scrape(self, brand: str, item_code: str,
+                              color_name: str | None, style_name: str | None) -> list[str]:
+        """Scrape Google Images search results (no API key needed)."""
+        parts = [brand, item_code]
+        if style_name:
+            parts.append(style_name)
+        if color_name:
+            parts.append(color_name)
+        query = " ".join(p for p in parts if p)
+
+        google_headers = {
+            "User-Agent": _HEADERS["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&tbm=isch&hl=en"
+        resp = self._get(url, headers=google_headers)
+        if resp is None:
+            return []
+
+        urls: list[str] = []
+        # Google embeds image URLs in various JSON-like structures in the page
+        # Pattern 1: ["url","https://..."] pairs
+        img_matches = re.findall(r'\["(https?://[^"]+\.(?:jpg|jpeg|png|webp)(?:\?[^"]*)?)",[0-9]+,[0-9]+\]', resp.text)
+        urls.extend(img_matches)
+
+        # Pattern 2: ou:"url" (original URL in metadata)
+        ou_matches = re.findall(r'"ou"\s*:\s*"(https?://[^"]+)"', resp.text)
+        urls.extend(ou_matches)
+
+        # Pattern 3: data-src attributes
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for img in soup.find_all("img"):
+            src = img.get("data-src") or img.get("data-iurl") or ""
+            if src.startswith("http") and not "gstatic.com" in src:
+                urls.append(src)
+
+        # Filter out Google/tracking URLs
+        filtered = [u for u in urls if "google.com" not in u and "gstatic.com" not in u
+                    and "googleapis.com" not in u and len(u) > 20]
+        return self._dedupe(filtered)[:self.max_candidates]
 
     def _duckduckgo_search(self, brand: str, item_code: str,
                            color_name: str | None, style_name: str | None) -> list[str]:
@@ -331,11 +438,14 @@ class ImageSearcher:
                                  timeout=REQUEST_TIMEOUT, allow_redirects=True)
                 if resp.status_code == 200:
                     return resp
-                # back-off only on rate-limit; don't block other threads with sleep
-                if resp.status_code == 429 and attempt < retries:
-                    import time; time.sleep(1.5 ** attempt)
+                # Retry on rate-limit or server errors
+                if resp.status_code in (429, 502, 503) and attempt < retries:
+                    import time; time.sleep(1.5 ** (attempt + 1))
+                    continue
             except requests.RequestException:
-                pass
+                if attempt < retries:
+                    import time; time.sleep(1.0)
+                    continue
         return None
 
     @staticmethod

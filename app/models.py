@@ -98,6 +98,7 @@ class UniqueItem(Base):
     retail_price = Column(Float)
     sizes_json = Column(Text, default="[]")
     qty_available = Column(Float)
+    barcode = Column(String(255))
 
     # Search & review state
     search_status = Column(String(20), default="pending")  # pending, done
@@ -105,6 +106,7 @@ class UniqueItem(Base):
     scores_json = Column(Text, default="{}")  # JSON dict {url: score}
     review_status = Column(String(20), default="pending")  # pending, approved, skipped
     approved_url = Column(Text)
+    additional_urls_json = Column(Text, default="[]")  # extra images for folder download
     auto_selected = Column(Boolean, default=False)
 
     session = relationship("Session", back_populates="unique_items")
@@ -115,6 +117,14 @@ class UniqueItem(Base):
         Index("ix_unique_items_session_search", "session_id", "search_status"),
         Index("ix_unique_items_session_review", "session_id", "review_status"),
     )
+
+    @property
+    def additional_urls(self) -> list:
+        return json.loads(self.additional_urls_json or "[]")
+
+    @additional_urls.setter
+    def additional_urls(self, val: list):
+        self.additional_urls_json = json.dumps(val)
 
     @property
     def sizes(self) -> list:
@@ -153,6 +163,7 @@ class UniqueItem(Base):
             "retail_price": self.retail_price,
             "sizes": self.sizes,
             "qty_available": self.qty_available,
+            "barcode": self.barcode,
             "candidates": self.candidates,
             "scores": self.scores,
             "review_status": self.review_status,

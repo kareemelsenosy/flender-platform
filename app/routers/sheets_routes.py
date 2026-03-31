@@ -82,45 +82,63 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str) -> dict:
         reader_inst = reader
 
         total_items = 0
-        seen_keys: set = set()
+        # Aggregate all rows by (item_code, color_code) — collect sizes + qty
+        aggregated: dict[tuple, dict] = {}
 
         for tab in result["tabs"]:
             items = reader_inst.extract_items_from_tab(tab)
             for item in items:
                 item_code = item.get("item_code", "").strip()
-                color_code = (item.get("color_name", "") or "").strip()
+                color_code = (item.get("color_code", "") or "").strip()
                 if not item_code:
                     continue
                 key = (item_code, color_code)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                whs = _parse_price(item.get("wholesale_price"))
-                rrp = _parse_price(item.get("retail_price"))
+                if key not in aggregated:
+                    aggregated[key] = {
+                        "item_code": item_code,
+                        "color_code": color_code,
+                        "brand": item.get("brand", ""),
+                        "style_name": item.get("style_name", ""),
+                        "color_name": item.get("color_name", ""),
+                        "gender": item.get("gender", ""),
+                        "wholesale_price": _parse_price(item.get("wholesale_price")),
+                        "retail_price": _parse_price(item.get("retail_price")),
+                        "qty_available": 0,
+                        "barcode": item.get("barcode", ""),
+                        "image_url": item.get("image_url") or item.get("dropbox_url") or "",
+                        "sizes": [],
+                    }
+                agg = aggregated[key]
+                size = item.get("size")
+                if size and size not in agg["sizes"]:
+                    agg["sizes"].append(size)
                 qty = _parse_price(item.get("qty_available"))
+                if qty:
+                    agg["qty_available"] = (agg["qty_available"] or 0) + qty
 
-                ui = UniqueItem(
-                    session_id=sess.id,
-                    item_code=item_code,
-                    color_code=color_code,
-                    brand=item.get("brand", ""),
-                    style_name=item.get("style_name", ""),
-                    color_name=item.get("color_name", ""),
-                    gender=item.get("gender", ""),
-                    wholesale_price=whs,
-                    retail_price=rrp,
-                    qty_available=qty,
-                )
-                image_url = item.get("image_url") or item.get("dropbox_url") or ""
-                if image_url:
-                    ui.approved_url = image_url
-                    ui.review_status = "approved"
-                    ui.auto_selected = True
-                    ui.search_status = "done"
-                ui.sizes = [item.get("size")] if item.get("size") else []
-                db.add(ui)
-                total_items += 1
+        for agg in aggregated.values():
+            ui = UniqueItem(
+                session_id=sess.id,
+                item_code=agg["item_code"],
+                color_code=agg["color_code"],
+                brand=agg["brand"],
+                style_name=agg["style_name"],
+                color_name=agg["color_name"],
+                gender=agg["gender"],
+                wholesale_price=agg["wholesale_price"],
+                retail_price=agg["retail_price"],
+                qty_available=agg["qty_available"],
+                barcode=agg["barcode"],
+            )
+            image_url = agg["image_url"]
+            if image_url:
+                ui.approved_url = image_url
+                ui.review_status = "approved"
+                ui.auto_selected = True
+                ui.search_status = "done"
+            ui.sizes = agg["sizes"]
+            db.add(ui)
+            total_items += 1
 
         sess.total_items = total_items
         sess.searched_items = total_items
@@ -136,37 +154,33 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str) -> dict:
             db.add(sess)
             db.commit()
             total_items = 0
-            for tab in result["tabs"]:
-                for item in reader_inst.extract_items_from_tab(tab):
-                    item_code = item.get("item_code", "").strip()
-                    color_code = (item.get("color_name", "") or "").strip()
-                    if not item_code:
-                        continue
-                    try:
-                        ui2 = UniqueItem(
-                            session_id=sess.id,
-                            item_code=item_code,
-                            color_code=color_code,
-                            brand=item.get("brand", ""),
-                            style_name=item.get("style_name", ""),
-                            color_name=item.get("color_name", ""),
-                            gender=item.get("gender", ""),
-                            wholesale_price=_parse_price(item.get("wholesale_price")),
-                            retail_price=_parse_price(item.get("retail_price")),
-                            qty_available=_parse_price(item.get("qty_available")),
-                        )
-                        image_url = item.get("image_url") or item.get("dropbox_url") or ""
-                        if image_url:
-                            ui2.approved_url = image_url
-                            ui2.review_status = "approved"
-                            ui2.auto_selected = True
-                            ui2.search_status = "done"
-                        ui2.sizes = [item.get("size")] if item.get("size") else []
-                        db.add(ui2)
-                        db.commit()
-                        total_items += 1
-                    except Exception:
-                        db.rollback()
+            for agg in aggregated.values():
+                try:
+                    ui2 = UniqueItem(
+                        session_id=sess.id,
+                        item_code=agg["item_code"],
+                        color_code=agg["color_code"],
+                        brand=agg["brand"],
+                        style_name=agg["style_name"],
+                        color_name=agg["color_name"],
+                        gender=agg["gender"],
+                        wholesale_price=agg["wholesale_price"],
+                        retail_price=agg["retail_price"],
+                        qty_available=agg["qty_available"],
+                        barcode=agg["barcode"],
+                    )
+                    image_url = agg["image_url"]
+                    if image_url:
+                        ui2.approved_url = image_url
+                        ui2.review_status = "approved"
+                        ui2.auto_selected = True
+                        ui2.search_status = "done"
+                    ui2.sizes = agg["sizes"]
+                    db.add(ui2)
+                    db.commit()
+                    total_items += 1
+                except Exception:
+                    db.rollback()
             sess.total_items = total_items
             sess.searched_items = total_items
             db.commit()

@@ -177,7 +177,7 @@ class OrderSheetGenerator:
             if url:
                 unique_urls.setdefault(url, []).append(gi)
 
-        # Also collect per-item URLs for save_images
+        # Also collect per-item URLs for save_images (including additional URLs)
         all_item_urls = {}
         if images_dir:
             for ri, item in enumerate(items):
@@ -186,6 +186,11 @@ class OrderSheetGenerator:
                     all_item_urls[url] = True
                     if url not in unique_urls:
                         unique_urls.setdefault(url, [])
+                for extra_url in item.get("additional_urls", []):
+                    if extra_url and extra_url.startswith("http"):
+                        all_item_urls[extra_url] = True
+                        if extra_url not in unique_urls:
+                            unique_urls.setdefault(extra_url, [])
 
         total_images = len(unique_urls)
         downloaded_count = 0
@@ -286,8 +291,7 @@ class OrderSheetGenerator:
                     cell.alignment = LEFT
 
                 elif header == "Size":
-                    sizes = item.get("sizes", [])
-                    cell.value = " / ".join(str(s) for s in sizes) if isinstance(sizes, list) else str(sizes)
+                    cell.value = item.get("size", "")
                     cell.fill = gfill
                     cell.font = BODY_FONT
                     cell.alignment = CENTER
@@ -373,6 +377,10 @@ class OrderSheetGenerator:
                 img_url = item.get("approved_url", "")
                 if img_url and img_url in url_to_bytes:
                     self._save_image_file(url_to_bytes[img_url], images_dir, item)
+                # Save additional images with incrementing suffix
+                for extra_url in item.get("additional_urls", []):
+                    if extra_url and extra_url in url_to_bytes:
+                        self._save_image_file(url_to_bytes[extra_url], images_dir, item)
 
 
         last_data_row = DATA_START + len(items) - 1
@@ -403,11 +411,13 @@ class OrderSheetGenerator:
             target_h = min(IMAGE_PX, int(max(IMAGE_PT / num_rows, TEXT_ROW_H) * num_rows / 0.75))
 
             img_bytes = io.BytesIO(image_data[gi])
-            raw_img = PILImage.open(img_bytes)
-            raw_img.thumbnail((self.img_size[0], target_h), PILImage.LANCZOS)
+            raw_img = PILImage.open(img_bytes).convert("RGB")
+            # Resize for Excel embedding only (keep original in url_to_bytes for folder saving)
+            display_img = raw_img.copy()
+            display_img.thumbnail((self.img_size[0], target_h), PILImage.LANCZOS)
 
             tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            raw_img.save(tmp.name, format="JPEG", quality=75, optimize=True)
+            display_img.save(tmp.name, format="JPEG", quality=90, optimize=True)
             tmp.close()
             tmp_images.append(tmp.name)
 
@@ -507,30 +517,32 @@ class OrderSheetGenerator:
         return groups
 
     def _download_image(self, url: str) -> io.BytesIO | None:
+        """Download image at full resolution (no thumbnail)."""
         if not url or not url.startswith("http"):
             return None
         try:
-            resp = requests.get(url, headers=_DL_HEADERS, timeout=15)
+            resp = requests.get(url, headers=_DL_HEADERS, timeout=20)
             if resp.status_code != 200:
                 return None
             buf = io.BytesIO(resp.content)
-            img = PILImage.open(buf).convert("RGB")
-            img.thumbnail(self.img_size, PILImage.LANCZOS)
-            out = io.BytesIO()
-            img.save(out, format="JPEG", quality=75)
-            out.seek(0)
-            return out
+            # Validate it's actually an image
+            PILImage.open(buf).verify()
+            buf.seek(0)
+            return buf
         except Exception:
             return None
 
     def _save_image_file(self, img_data: bytes, base_images_dir: str, item: dict):
         """
-        Save image to folder with naming: {ManufacturerCode}_1.jpg
-        Folder name = Item Group if available, else Manufacturer Code
+        Save full-resolution image to folder.
+        Naming: {item_code}_{color_code}_1.jpg
+        Folder name = Item Group if available, else item_code.
         """
         item_code = item.get("item_code", "unknown")
+        color_code = item.get("color_code", "").strip()
         item_group = item.get("item_group", "").strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
+        safe_color = re.sub(r"[^\w\-]", "_", color_code) if color_code else ""
 
         # Determine subfolder
         if item_group:
@@ -541,11 +553,20 @@ class OrderSheetGenerator:
         folder_path = os.path.join(base_images_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
+        # Build filename base with color
+        base_name = f"{safe_code}_{safe_color}" if safe_color else safe_code
+
         # Find next available number
         n = 1
-        while os.path.exists(os.path.join(folder_path, f"{safe_code}_{n}.jpg")):
+        while os.path.exists(os.path.join(folder_path, f"{base_name}_{n}.jpg")):
             n += 1
 
-        path = os.path.join(folder_path, f"{safe_code}_{n}.jpg")
-        with open(path, "wb") as f:
-            f.write(img_data)
+        path = os.path.join(folder_path, f"{base_name}_{n}.jpg")
+
+        # Save as high-quality JPEG at full resolution
+        try:
+            img = PILImage.open(io.BytesIO(img_data)).convert("RGB")
+            img.save(path, format="JPEG", quality=95, optimize=True)
+        except Exception:
+            with open(path, "wb") as f:
+                f.write(img_data)

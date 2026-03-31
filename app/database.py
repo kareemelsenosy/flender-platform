@@ -44,5 +44,24 @@ def get_db():
 
 
 def init_db():
-    """Create all tables."""
+    """Create all tables and run lightweight migrations for new columns."""
     Base.metadata.create_all(bind=engine)
+    _run_migrations()
+
+
+def _run_migrations():
+    """Add columns that may be missing from existing tables."""
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        # Add additional_urls_json to unique_items if missing
+        if "unique_items" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("unique_items")}
+            if "additional_urls_json" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN additional_urls_json TEXT DEFAULT '[]'"
+                ))
+            if "barcode" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN barcode VARCHAR(255)"
+                ))

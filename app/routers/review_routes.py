@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
+import urllib.parse
 import zipfile
 from typing import Set
 
@@ -14,11 +16,14 @@ from starlette.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id, get_current_user_id_db
+from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID
+from app.core.searcher import ImageSearcher
 from app.database import get_db
 from app.main import templates
-from app.models import Session, UniqueItem
+from app.models import BrandSearchConfig, Session, UniqueItem
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _DL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -72,6 +77,7 @@ async def review_state(session_id: int, request: Request, db: DBSession = Depend
             "candidates": item.candidates,
             "scores": item.scores,
             "approved_url": item.approved_url,
+            "additional_urls": item.additional_urls,
             "status": item.review_status,
             "auto_selected": item.auto_selected,
         }
@@ -154,6 +160,111 @@ async def set_custom_url(session_id: int, request: Request, db: DBSession = Depe
     return JSONResponse({"ok": True})
 
 
+@router.post("/review/{session_id}/set-additional")
+async def set_additional_urls(session_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Set additional image URLs (for multi-image selection, up to 3)."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    data = await request.json()
+    item_id = data.get("id")
+    urls = data.get("urls", [])
+
+    item = db.query(UniqueItem).filter(
+        UniqueItem.id == item_id, UniqueItem.session_id == session_id
+    ).first()
+    if not item:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    item.additional_urls = urls[:3]
+    db.commit()
+
+    return JSONResponse({"ok": True})
+
+
+@router.post("/review/{session_id}/re-search")
+async def re_search_item(session_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Re-run image search for a single item with optional custom instructions."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    data = await request.json()
+    item_id = data.get("id")
+    instructions = data.get("instructions", "").strip()
+
+    item = db.query(UniqueItem).filter(
+        UniqueItem.id == item_id, UniqueItem.session_id == session_id
+    ).first()
+    if not item:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    # Load brand search config for this user
+    brand_site_urls = {}
+    user_brands = db.query(BrandSearchConfig).filter(
+        BrandSearchConfig.user_id == uid
+    ).all()
+    for bc in user_brands:
+        brand_site_urls[bc.brand_name.lower()] = bc.site_urls
+
+    search_config = {
+        "brand_site_urls": brand_site_urls,
+        "google_api_key": GOOGLE_SEARCH_KEY,
+        "google_cse_id": GOOGLE_CSE_ID,
+    }
+    searcher = ImageSearcher(search_config)
+
+    item_dict = {
+        "item_code": item.item_code,
+        "color_code": item.color_code,
+        "color_name": item.color_name,
+        "style_name": item.style_name,
+        "brand": item.brand,
+    }
+
+    # Build AI queries using instructions if provided
+    ai_queries = []
+    from app.services.ai_service import ai_available, ai_build_search_queries, ai_optimize_search_query, ai_rank_urls
+    if ai_available():
+        if instructions:
+            ai_queries = ai_build_search_queries(item_dict, item.brand or "", instructions)
+        else:
+            ai_queries = ai_optimize_search_query(item_dict, item.brand or "")
+
+    candidates, scores = searcher.search(item_dict, ai_queries=ai_queries or None)
+
+    # AI re-rank
+    if ai_available() and candidates:
+        web_urls = [u for u in candidates if not u.startswith("file://")]
+        if web_urls:
+            ranked = ai_rank_urls(web_urls, item_dict, item.brand or "")
+            new_scores = {}
+            for i, url in enumerate(ranked):
+                base = scores.get(url, 0.5)
+                bonus = max(0.0, 0.1 - i * 0.02)
+                new_scores[url] = min(round(base + bonus, 2), 1.0)
+            candidates = ranked
+            scores = new_scores
+
+    # Update item in DB
+    item.candidates = candidates
+    item.scores = scores
+    if candidates:
+        best = max(candidates, key=lambda u: scores.get(u, 0))
+        item.approved_url = best
+        item.auto_selected = True
+    item.review_status = "approved"
+    db.commit()
+
+    return JSONResponse({
+        "ok": True,
+        "candidates": candidates,
+        "scores": scores,
+        "approved_url": item.approved_url,
+    })
+
+
 @router.get("/review/{session_id}/download-images")
 async def download_all_images(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     """Download all approved images as a ZIP file."""
@@ -173,42 +284,46 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
     # Download images concurrently for speed
     from concurrent.futures import ThreadPoolExecutor
 
-    def _download_one(item):
-        url = item.approved_url
+    def _detect_ext(ct: str) -> str:
+        ct = ct.lower()
+        if "png" in ct: return ".png"
+        if "webp" in ct: return ".webp"
+        if "gif" in ct: return ".gif"
+        if "svg" in ct: return ".svg"
+        return ".jpg"
+
+    def _download_one(url_info):
+        url, safe_code, color, suffix = url_info
         if not url or not url.startswith("http"):
             return None
         try:
             resp = requests.get(url, headers=_DL_HEADERS, timeout=15)
             if resp.status_code == 200:
-                ct = resp.headers.get("content-type", "").lower()
-                # L5: Detect actual format from Content-Type, not just jpg fallback
-                if "png" in ct:
-                    ext = ".png"
-                elif "webp" in ct:
-                    ext = ".webp"
-                elif "gif" in ct:
-                    ext = ".gif"
-                elif "svg" in ct:
-                    ext = ".svg"
-                else:
-                    ext = ".jpg"
-                safe_code = item.item_code.replace("/", "_").replace("\\", "_")
-                color = (item.color_code or "").replace("/", "_").replace("\\", "_")
-                fname = f"{safe_code}_{color}{ext}" if color else f"{safe_code}{ext}"
+                ext = _detect_ext(resp.headers.get("content-type", ""))
+                base = f"{safe_code}_{color}" if color else safe_code
+                fname = f"{base}_{suffix}{ext}"
                 return (fname, resp.content)
         except Exception:
             pass
         return None
 
+    # Build download tasks: primary + additional URLs
+    download_tasks = []
+    for item in items:
+        safe_code = item.item_code.replace("/", "_").replace("\\", "_")
+        color = (item.color_code or "").replace("/", "_").replace("\\", "_")
+        if item.approved_url:
+            download_tasks.append((item.approved_url, safe_code, color, "1"))
+        for i, extra_url in enumerate(item.additional_urls):
+            download_tasks.append((extra_url, safe_code, color, str(i + 2)))
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # C5: Track filenames to avoid collisions — append counter suffix when needed
         used_names: set[str] = set()
         with ThreadPoolExecutor(max_workers=8) as pool:
-            for result in pool.map(_download_one, items):
+            for result in pool.map(_download_one, download_tasks):
                 if result:
                     fname, content = result
-                    # Deduplicate filename
                     if fname in used_names:
                         base, ext = os.path.splitext(fname)
                         counter = 1

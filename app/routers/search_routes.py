@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 # Track active searches: session_id -> {"done": int, "total": int, "running": bool}
 _search_progress: dict[int, dict] = {}
 
-# I/O-bound search — use high parallelism; each worker now fires its sources in parallel internally
-_DEFAULT_WORKERS = 20
+# I/O-bound search — 10 workers to avoid HTTP pool exhaustion on large batches
+_DEFAULT_WORKERS = 10
 
 
 def _run_search_background(session_id: int, config: dict, user_id: int = None):
