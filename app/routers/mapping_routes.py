@@ -29,6 +29,7 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
 
     # Parse file to get headers
     parser = FileParser()
+    sheet_names = parser.get_sheet_names(sess.uploaded_file.file_path)
     try:
         rows, unique_items, raw_headers = parser.parse(sess.uploaded_file.file_path)
     except Exception as e:
@@ -36,6 +37,7 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
             "session": sess, "error": str(e),
             "headers": [], "auto_mapping": {}, "standard_fields": [],
             "sample_rows": [], "saved_formats": [], "ai_mapping": {},
+            "sheet_names": sheet_names,
         })
 
     # Use existing session mapping if available, otherwise auto-detect
@@ -62,6 +64,7 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
         "total_unique": len(unique_items),
         "ai_mapping": {},
         "is_remap": sess.status not in ("created", "mapping"),
+        "sheet_names": sheet_names,
     })
 
 
@@ -121,10 +124,14 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
     sess.status = "searching"
     sess.searched_items = 0
 
+    # Read selected sheets from form (multi-select)
+    selected_sheets_raw = form.getlist("selected_sheets")
+    selected_sheets = selected_sheets_raw if selected_sheets_raw else None
+
     # M8: Validate mapped column values actually exist in the file's headers
     parser = FileParser()
     try:
-        _, _, raw_headers = parser.parse(sess.uploaded_file.file_path)
+        _, _, raw_headers = parser.parse(sess.uploaded_file.file_path, selected_sheets=selected_sheets)
     except Exception as e:
         return templates.TemplateResponse(request, "mapping.html", {
             "session": sess, "error": f"Could not read file: {e}",
@@ -141,7 +148,8 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             "sample_rows": [], "saved_formats": [], "ai_mapping": {}, "is_remap": True,
         })
 
-    rows, unique_items = parser.parse_with_mapping(sess.uploaded_file.file_path, mapping)
+    rows, unique_items = parser.parse_with_mapping(sess.uploaded_file.file_path, mapping,
+                                                    selected_sheets=selected_sheets)
 
     # Clear old items and search progress
     db.query(UniqueItem).filter(UniqueItem.session_id == sess.id).delete()

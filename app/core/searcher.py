@@ -150,6 +150,8 @@ class ImageSearcher:
         self.google_api_key = self.config.get("google_api_key", "")
         self.google_cse_id = self.config.get("google_cse_id", "")
         self.brand_site_urls: dict[str, list[str]] = self.config.get("brand_site_urls", {})
+        # Extra priority domains that apply to every item in this session
+        self.extra_site_urls: list[str] = self.config.get("extra_site_urls", [])
 
     def search(self, item: dict, ai_queries: list[str] | None = None) -> tuple[list[str], dict[str, float]]:
         """
@@ -178,6 +180,14 @@ class ImageSearcher:
         if ai_queries:
             for i, query in enumerate(ai_queries[:3]):
                 tasks[f"ai_{i}"] = lambda q=query: self._bing_raw(q)
+
+        # Extra priority domains (from step-3 form) — searched first, before brand domains
+        for ei, extra_domain in enumerate(self.extra_site_urls[:3]):
+            d = extra_domain.strip().lstrip("https://").lstrip("http://").rstrip("/")
+            if d:
+                tasks[f"extra_{ei}"] = lambda dom=d: self._bing_site_search(
+                    dom, item_code, color_name, style_name
+                )
 
         if site_urls:
             tasks["brand_site"] = lambda: self._bing_site_search(
@@ -246,6 +256,22 @@ class ImageSearcher:
 
         if color_code and color_code.lower() in lower:
             score += 0.20
+
+        # Color name matching — boost if URL contains color words, penalize obvious mismatches
+        if color_name:
+            color_words = [w.lower() for w in re.split(r"[\s+\-/]", color_name) if len(w) >= 3]
+            color_clean = re.sub(r"[\s+\-/]", "", color_name.lower())
+            if color_clean and color_clean in url_clean:
+                score += 0.15
+            elif any(w in url_clean for w in color_words):
+                score += 0.08
+
+        # Boost for user-specified priority domains (highest priority)
+        for extra_d in self.extra_site_urls:
+            clean_d = extra_d.strip().lstrip("https://").lstrip("http://").rstrip("/")
+            if clean_d and clean_d in lower:
+                score += 0.45
+                break
 
         domain = BRAND_DOMAINS.get(brand.lower().strip())
         if domain and domain in lower:

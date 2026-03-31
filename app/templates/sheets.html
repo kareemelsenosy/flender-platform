@@ -96,6 +96,9 @@ function fmtTime(sec) {
   return `~${sec}s remaining`;
 }
 
+// tab selections: url -> [tabName, ...]
+const _tabSelections = {};
+
 let rowId = 0;
 function addRow(val) {
   rowId++;
@@ -103,7 +106,14 @@ function addRow(val) {
   const d = document.createElement('div');
   d.className = 'url-row';
   d.id = id;
-  d.innerHTML = `<input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${val||''}"><button class="rm" onclick="rmRow('${id}')">✕</button>`;
+  d.innerHTML = `
+    <div style="flex:1">
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${val||''}" onblur="previewTabs('${id}',this.value)">
+        <button class="rm" onclick="rmRow('${id}')">✕</button>
+      </div>
+      <div id="tabs-${id}" style="display:none;margin-top:8px;padding:10px;background:var(--gray-50);border-radius:var(--radius-sm);border:1px solid var(--gray-200)"></div>
+    </div>`;
   document.getElementById('url-list').appendChild(d);
 }
 function rmRow(id) {
@@ -113,6 +123,41 @@ function rmRow(id) {
 }
 function getUrls() {
   return Array.from(document.querySelectorAll('.url-row input')).map(i=>i.value.trim()).filter(Boolean);
+}
+
+async function previewTabs(rowId, url) {
+  url = url.trim();
+  if (!url || !url.includes('spreadsheets')) return;
+  const tabsEl = document.getElementById(`tabs-${rowId}`);
+  tabsEl.style.display = 'block';
+  tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--gray-400)">Loading tabs...</span>';
+  try {
+    const resp = await fetch('/sheets/preview-tabs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const data = await resp.json();
+    if (!data.ok) { tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${data.error||'Failed'}</span>`; return; }
+    const tabs = data.tabs || [];
+    tabsEl.innerHTML = `<div style="font-size:0.75rem;font-weight:600;margin-bottom:6px;color:var(--gray-500)">${data.title} — Select tabs to import:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${tabs.map(t => `
+          <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;background:white;border:1px solid var(--gray-300);padding:3px 8px;border-radius:20px">
+            <input type="checkbox" checked data-url="${url}" data-tab="${t.title}" onchange="updateTabSel('${rowId}','${url}')">
+            ${t.title}
+          </label>`).join('')}
+      </div>`;
+    // init selection — all checked by default
+    _tabSelections[url] = tabs.map(t => t.title);
+  } catch(e) {
+    tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${e.message}</span>`;
+  }
+}
+
+function updateTabSel(rowId, url) {
+  const checked = Array.from(document.querySelectorAll(`#tabs-${rowId} input[type=checkbox]:checked`)).map(c => c.dataset.tab);
+  _tabSelections[url] = checked;
 }
 addRow();
 
@@ -331,7 +376,7 @@ async function importAll() {
 
   const resp = await fetch('/sheets/import-batch',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({urls}),
+    body:JSON.stringify({urls, selected_tabs: _tabSelections}),
   });
   if(!resp.ok){
     const err=await resp.json().catch(()=>({error:'Server error'}));

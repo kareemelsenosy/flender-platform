@@ -48,7 +48,8 @@ def _get_credentials_path(user_id: int) -> str:
     return str(default_path)
 
 
-def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str) -> dict:
+def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
+                          selected_tabs: list[str] | None = None) -> dict:
     """Synchronous import logic — safe to run in a thread."""
     db = SessionLocal()
     try:
@@ -85,7 +86,14 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str) -> dict:
         # Aggregate all rows by (item_code, color_code) — collect sizes + qty
         aggregated: dict[tuple, dict] = {}
 
-        for tab in result["tabs"]:
+        # Filter to selected tabs only (if user made a selection)
+        tabs_to_process = result["tabs"]
+        if selected_tabs:
+            tabs_to_process = [t for t in result["tabs"] if t["title"] in selected_tabs]
+            if not tabs_to_process:
+                tabs_to_process = result["tabs"]  # fallback: all tabs
+
+        for tab in tabs_to_process:
             items = reader_inst.extract_items_from_tab(tab)
             for item in items:
                 item_code = item.get("item_code", "").strip()
@@ -207,6 +215,33 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str) -> dict:
         db.close()
 
 
+@router.post("/sheets/preview-tabs")
+async def preview_tabs(request: Request):
+    """Fetch tab names from a Google Sheets URL (no import). Used by UI for tab selection."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    data = await request.json()
+    url = data.get("url", "").strip()
+    if not url:
+        return JSONResponse({"error": "No URL provided"}, status_code=400)
+
+    cred_path = _get_credentials_path(uid)
+    if not os.path.exists(cred_path):
+        return JSONResponse({"error": "No Google credentials found"}, status_code=400)
+
+    try:
+        from app.core.sheets_reader import SheetsReader, extract_spreadsheet_id
+        spreadsheet_id = extract_spreadsheet_id(url)
+        reader = SheetsReader(cred_path)
+        spreadsheet = reader.gc.open_by_key(spreadsheet_id)
+        tabs = [{"title": ws.title, "row_count": ws.row_count} for ws in spreadsheet.worksheets()]
+        return JSONResponse({"ok": True, "title": spreadsheet.title, "tabs": tabs})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Single import (original endpoint, kept for compatibility) ─────────────────
 
 @router.get("/sheets", response_class=HTMLResponse)
@@ -263,6 +298,8 @@ async def import_sheets_batch(request: Request):
 
     data = await request.json()
     urls: list[str] = [u.strip() for u in data.get("urls", []) if u.strip()]
+    # selected_tabs_per_url: dict mapping url -> list of tab names to import
+    selected_tabs_per_url: dict[str, list[str]] = data.get("selected_tabs", {})
     if not urls:
         return JSONResponse({"error": "No URLs provided"}, status_code=400)
 
@@ -290,7 +327,8 @@ async def import_sheets_batch(request: Request):
         _batch_progress[batch_id]["jobs"][idx]["status"] = "importing"
         _persist_batch(batch_id, uid)
         try:
-            result = await asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path)
+            sel_tabs = selected_tabs_per_url.get(url) or None
+            result = await asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs)
             job = _batch_progress[batch_id]["jobs"][idx]
             if result.get("ok"):
                 job.update({

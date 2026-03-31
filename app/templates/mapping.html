@@ -46,6 +46,24 @@
   <div id="ai-status" style="display:none" class="alert alert-info mb-3"></div>
 
   <form method="POST" action="/mapping/{{ session.id }}">
+
+    {% if sheet_names and sheet_names|length > 1 %}
+    <div class="form-group mb-4" style="padding:14px;background:var(--gray-50);border-radius:var(--radius-sm);border:1px solid var(--gray-200)">
+      <label style="font-weight:600;font-size:0.85rem;margin-bottom:8px;display:block">
+        Excel Sheets — Select which to include:
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        {% for name in sheet_names %}
+        <label style="display:flex;align-items:center;gap:5px;font-size:0.82rem;cursor:pointer;background:white;border:1px solid var(--gray-300);padding:4px 10px;border-radius:20px">
+          <input type="checkbox" name="selected_sheets" value="{{ name }}" checked>
+          {{ name }}
+        </label>
+        {% endfor %}
+      </div>
+      <small class="text-muted" style="margin-top:6px;display:block">All selected tabs will be combined into one import.</small>
+    </div>
+    {% endif %}
+
     {% for field in standard_fields %}
     <div class="mapping-row">
       <div class="mapping-label">

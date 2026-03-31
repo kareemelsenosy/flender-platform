@@ -16,44 +16,54 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
     "item_code": [
         "style number", "style no", "style#", "item code", "item no",
         "sku", "art", "article", "ref", "reference", "product code", "style",
-        "manufacturer code",
+        "manufacturer code", "vendor item no", "vendor item number",
+        "item number", "product no", "product number", "model no", "model number",
+        "model", "article no", "article number",
     ],
     "style_name": [
         "style name", "product name", "description", "name", "title",
-        "web description", "web description 2",
+        "web description", "web description 2", "style description",
+        "product description", "item description", "model name",
     ],
     "color_name": [
         "color name", "colour name", "color", "colour",
+        "color description", "colour description",
     ],
     "color_code": [
         "color code", "colour code", "colorway", "color id", "colour id",
+        "color number", "colour number",
     ],
     "size": [
-        "size", "size name", "size description", "sizes",
+        "size", "size name", "size description", "sizes", "size type",
     ],
     "brand": [
-        "brand", "brand name", "manufacturer", "vendor",
+        "brand", "brand name", "manufacturer", "vendor", "make",
+        "label", "supplier",
     ],
     "wholesale_price": [
         "wholesale price", "whs price", "whs", "cost price", "buy price",
         "net price", "dealer price", "whsl in eur", "whsl in gel",
+        "purchase price", "trade price", "ex works",
     ],
     "retail_price": [
         "retail price", "rrp", "rrp price", "msrp", "recommended retail",
-        "sugg. retail", "suggested retail",
+        "sugg. retail", "suggested retail", "srp", "selling price",
     ],
     "qty_available": [
         "quantity available", "qty available", "available", "stock",
         "qty", "quantity", "avail qty", "avail", "freestock", "free stock",
+        "on hand", "inventory", "units available",
     ],
     "gender": [
-        "gender", "sex", "gender description",
+        "gender", "sex", "gender description", "division",
     ],
     "barcode": [
-        "barcode", "ean", "upc", "gtin",
+        "barcode", "ean", "upc", "gtin", "vendor style",
+        "vendor style no", "vendor style number",
     ],
     "item_group": [
         "item group", "group", "category", "product group",
+        "department", "class", "sub category", "subcategory",
     ],
 }
 
@@ -127,7 +137,15 @@ def _coerce_numeric(value: Any) -> Any:
 class FileParser:
     """Parse Excel/CSV files with auto-column detection."""
 
-    def parse(self, filepath: str) -> tuple[list[dict], list[dict], list[str]]:
+    def get_sheet_names(self, filepath: str) -> list[str]:
+        """Return list of sheet names for Excel files (empty list for CSV)."""
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext in (".xlsx", ".xls"):
+            xl = pd.ExcelFile(filepath, engine="openpyxl")
+            return xl.sheet_names
+        return []
+
+    def parse(self, filepath: str, selected_sheets: list[str] | None = None) -> tuple[list[dict], list[dict], list[str]]:
         """
         Parse a file.
         Returns (rows, unique_items, raw_headers).
@@ -136,7 +154,7 @@ class FileParser:
             raise FileNotFoundError(f"Input file not found: {filepath}")
 
         ext = os.path.splitext(filepath)[1].lower()
-        df_raw = self._load_raw(filepath, ext)
+        df_raw = self._load_raw(filepath, ext, selected_sheets=selected_sheets)
 
         if df_raw.empty:
             raise ValueError("The file appears to be empty.")
@@ -155,10 +173,11 @@ class FileParser:
         unique_items = self._dedupe(rows)
         return rows, unique_items, raw_headers
 
-    def parse_with_mapping(self, filepath: str, mapping: dict[str, str | None]) -> tuple[list[dict], list[dict]]:
+    def parse_with_mapping(self, filepath: str, mapping: dict[str, str | None],
+                           selected_sheets: list[str] | None = None) -> tuple[list[dict], list[dict]]:
         """Parse using a user-provided column mapping instead of auto-detection."""
         ext = os.path.splitext(filepath)[1].lower()
-        df_raw = self._load_raw(filepath, ext)
+        df_raw = self._load_raw(filepath, ext, selected_sheets=selected_sheets)
         header_row_idx = _find_header_row(df_raw)
 
         df = df_raw.iloc[header_row_idx + 1:].copy()
@@ -169,11 +188,16 @@ class FileParser:
         unique_items = self._dedupe(rows)
         return rows, unique_items
 
-    def _load_raw(self, filepath: str, ext: str) -> pd.DataFrame:
+    def _load_raw(self, filepath: str, ext: str,
+                  selected_sheets: list[str] | None = None) -> pd.DataFrame:
         if ext in (".xlsx", ".xls"):
             xl = pd.ExcelFile(filepath, engine="openpyxl")
             skip = {"export summary", "summary", "index", "toc", "contents"}
-            sheets = [s for s in xl.sheet_names if s.lower() not in skip] or xl.sheet_names
+            if selected_sheets:
+                # Use only selected sheets (ignore skip list when user explicitly chose)
+                sheets = [s for s in xl.sheet_names if s in selected_sheets] or xl.sheet_names
+            else:
+                sheets = [s for s in xl.sheet_names if s.lower() not in skip] or xl.sheet_names
 
             if len(sheets) == 1:
                 return xl.parse(sheets[0], header=None, dtype=str)

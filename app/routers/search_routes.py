@@ -66,9 +66,13 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         # Session-level search instructions (applies to all brands)
         session_notes = config.get("search_notes", "")
 
+        # Extra brand URLs entered in Step 3 form — apply to ALL items as priority domains
+        extra_brand_urls = config.get("extra_brand_urls", [])
+
         search_config = {
             **config,
             "brand_site_urls": brand_site_urls,
+            "extra_site_urls": extra_brand_urls,  # priority domains for this session
             "google_api_key": GOOGLE_SEARCH_KEY,
             "google_cse_id": GOOGLE_CSE_ID,
         }

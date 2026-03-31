@@ -251,11 +251,12 @@ Ranking criteria (most important first):
 3. URL path suggests a product image (/product/, /products/, /p/, /catalog/, /item/, scene7, cloudfront, akamaized, shopify, cloudinary)
 4. URL does NOT look like a logo, banner, thumbnail, or avatar
 5. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
+6. If a color is specified, prefer URLs that contain the color name or code — EXCLUDE URLs that suggest a completely different color
 
 Return ONLY a JSON array of the URL numbers in order from best to worst:
 [3, 1, 5, 2, 4]
 
-Only include numbers for URLs that are likely real product images. Omit any that are clearly logos, banners, or irrelevant."""
+Only include numbers for URLs that are likely real product images. Omit any that are clearly logos, banners, irrelevant, or show the wrong color/product entirely."""
 
     text = _call_ai(prompt, max_tokens=1024)
     if not text:
