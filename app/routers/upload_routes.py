@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.config import UPLOAD_DIR
 from app.core.parser import FileParser
+import shutil
 from app.database import get_db
 from app.main import templates
 from app.models import Session, UniqueItem, UploadedFile, User
@@ -160,10 +161,17 @@ async def delete_session(session_id: int, request: Request, db: DBSession = Depe
 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if sess:
-        # Clean up uploaded file
+        # Clean up uploaded Excel/CSV file
         if sess.uploaded_file:
             try:
                 os.remove(sess.uploaded_file.file_path)
+            except OSError:
+                pass
+        # Clean up uploaded images folder (from local search)
+        img_dir = UPLOAD_DIR / f"user_{uid}" / f"session_{session_id}_images"
+        if img_dir.is_dir():
+            try:
+                shutil.rmtree(img_dir)
             except OSError:
                 pass
         db.delete(sess)

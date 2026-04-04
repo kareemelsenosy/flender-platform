@@ -2,19 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
 import threading
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
-from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID
+from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
 from app.core.searcher import ImageSearcher
 from app.services.ai_service import (
     ai_available,
@@ -25,6 +28,9 @@ from app.services.ai_service import (
 from app.database import SessionLocal, get_db
 from app.main import templates
 from app.models import BrandSearchConfig, SearchCache, Session, UniqueItem
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+_MAX_IMAGE_UPLOAD = 500 * 1024 * 1024  # 500 MB total
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -365,6 +371,78 @@ async def batch_search_progress_sse(session_ids: str, request: Request):
             await asyncio.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── Image upload for local search ────────────────────────────────────────────
+
+@router.post("/search/{session_id}/upload-images")
+async def upload_images_for_search(
+    session_id: int,
+    request: Request,
+    files: List[UploadFile] = File(...),
+    db: DBSession = Depends(get_db),
+):
+    """
+    Accept image files (JPG/PNG/WebP/etc. or ZIP) uploaded from the user's browser.
+    Stores them server-side so the local search can run against them.
+    Returns {"ok": True, "folder_path": "...", "image_count": N}.
+    """
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    img_dir = UPLOAD_DIR / f"user_{uid}" / f"session_{session_id}_images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    image_count = 0
+    total_bytes = 0
+
+    for upload in files:
+        content = await upload.read()
+        total_bytes += len(content)
+        if total_bytes > _MAX_IMAGE_UPLOAD:
+            return JSONResponse({"error": "Total upload size exceeds 500 MB limit"}, status_code=413)
+
+        filename = upload.filename or "image"
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".zip":
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    for zname in zf.namelist():
+                        zext = os.path.splitext(zname)[1].lower()
+                        if zext not in _IMAGE_EXTENSIONS:
+                            continue
+                        basename = os.path.basename(zname)
+                        if not basename:
+                            continue
+                        dest = img_dir / basename
+                        # Avoid overwriting with a counter suffix
+                        counter = 1
+                        stem, sfx = os.path.splitext(basename)
+                        while dest.exists():
+                            dest = img_dir / f"{stem}_{counter}{sfx}"
+                            counter += 1
+                        dest.write_bytes(zf.read(zname))
+                        image_count += 1
+            except zipfile.BadZipFile:
+                logger.warning(f"Skipping bad ZIP: {filename}")
+        elif ext in _IMAGE_EXTENSIONS:
+            dest = img_dir / filename
+            counter = 1
+            stem, sfx = os.path.splitext(filename)
+            while dest.exists():
+                dest = img_dir / f"{stem}_{counter}{sfx}"
+                counter += 1
+            dest.write_bytes(content)
+            image_count += 1
+
+    logger.info(f"Session {session_id}: uploaded {image_count} images to {img_dir}")
+    return JSONResponse({"ok": True, "folder_path": str(img_dir), "image_count": image_count})
 
 
 # ── Per-session routes ────────────────────────────────────────────────────────

@@ -45,9 +45,22 @@
     </div>
 
     <div class="form-group" id="local-folder-group" style="display:none">
-      <label>Local Image Folder Path</label>
-      <input type="text" id="local-folder" placeholder="/path/to/images or Dropbox folder path">
-      <small class="text-muted">Enter the path to a local folder containing product images</small>
+      <label>Upload Image Folder</label>
+      <div id="upload-drop-zone"
+           style="border:2px dashed var(--gray-300);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s"
+           onclick="document.getElementById('img-file-input').click()"
+           ondragover="event.preventDefault();this.style.borderColor='var(--black)'"
+           ondragleave="this.style.borderColor='var(--gray-300)'"
+           ondrop="event.preventDefault();this.style.borderColor='var(--gray-300)';handleFileSelect(event.dataTransfer.files)">
+        <div style="font-size:1.8rem;margin-bottom:6px">📂</div>
+        <p style="margin:0;font-weight:600;color:var(--gray-700)">Click or drag &amp; drop images here</p>
+        <p style="margin:4px 0 0;font-size:0.8rem;color:var(--gray-400)">JPG · PNG · WebP · GIF · BMP · ZIP archive · Max 500 MB</p>
+      </div>
+      <input type="file" id="img-file-input" multiple
+             accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.zip"
+             style="display:none" onchange="handleFileSelect(this.files)">
+      <div id="upload-status" style="margin-top:8px;font-size:0.85rem;color:var(--gray-600)"></div>
+      <small class="text-muted">Images are matched to SKUs by filename. ZIP files are automatically extracted.</small>
     </div>
 
     <div class="form-group">
@@ -103,6 +116,8 @@
 <script>
 const sessionId = {{ session.id }};
 let searchStartTime = null;
+let _pendingFiles = null;
+let _uploadedFolderPath = '';
 
 function fmtTime(sec) {
   if (sec <= 0) return '';
@@ -120,6 +135,44 @@ document.querySelectorAll('input[name="search_mode"]').forEach(radio => {
       (mode === 'local' || mode === 'both') ? 'block' : 'none';
   });
 });
+
+function handleFileSelect(files) {
+  if (!files || !files.length) return;
+  _pendingFiles = files;
+  const count = files.length;
+  let totalMB = 0;
+  for (const f of files) totalMB += f.size;
+  totalMB = (totalMB / 1024 / 1024).toFixed(1);
+  const statusEl = document.getElementById('upload-status');
+  statusEl.innerHTML = `<span style="color:var(--black);font-weight:600">✓ ${count} file(s) selected</span> <span style="color:var(--gray-400)">(${totalMB} MB)</span> — will upload when search starts`;
+  document.getElementById('upload-drop-zone').style.borderColor = 'var(--black)';
+}
+
+async function _uploadImages() {
+  if (!_pendingFiles || !_pendingFiles.length) return null;
+  const statusEl = document.getElementById('upload-status');
+  statusEl.innerHTML = '⏳ Uploading images to server…';
+
+  const formData = new FormData();
+  for (const f of _pendingFiles) {
+    formData.append('files', f);
+  }
+
+  const resp = await fetch(`/search/${sessionId}/upload-images`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    showAlert(data.error || 'Failed to upload images.', 'Upload Error');
+    return null;
+  }
+
+  const data = await resp.json();
+  statusEl.innerHTML = `<span style="color:green;font-weight:600">✓ ${data.image_count} images uploaded</span>`;
+  return data.folder_path;
+}
 
 // ── SSE progress connection (shared by startSearch and auto-reconnect) ────────
 function connectProgressSSE() {
@@ -165,14 +218,20 @@ function connectProgressSSE() {
 
 async function startSearch() {
   const mode = document.querySelector('input[name="search_mode"]:checked').value;
-  const localFolder = document.getElementById('local-folder').value.trim();
+  let localFolder = _uploadedFolderPath;
   const brandUrls = document.getElementById('brand-urls').value.trim()
     .split('\n').filter(u => u.trim());
   const searchNotes = document.getElementById('search-notes').value.trim();
 
-  if ((mode === 'local' || mode === 'both') && !localFolder) {
-    showAlert('Please enter a local folder path.', 'Missing Path');
-    return;
+  // Upload images first if local/both mode
+  if (mode === 'local' || mode === 'both') {
+    if (!_pendingFiles || !_pendingFiles.length) {
+      showAlert('Please select image files to upload first.', 'No Images Selected');
+      return;
+    }
+    localFolder = await _uploadImages();
+    if (!localFolder) return;
+    _uploadedFolderPath = localFolder;
   }
 
   const resp = await fetch(`/search/${sessionId}/start`, {
