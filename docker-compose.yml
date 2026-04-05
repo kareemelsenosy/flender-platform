@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: flender
+      POSTGRES_USER: flender
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flender"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://flender:${POSTGRES_PASSWORD}@db:5432/flender
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      GOOGLE_SEARCH_KEY: ${GOOGLE_SEARCH_KEY:-}
+      GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
+      PORT: "8000"
+    volumes:
+      - app_uploads:/app/uploads
+      - app_output:/app/output
+      - app_data:/app/data
+      - app_credentials:/app/credentials
+
+volumes:
+  postgres_data:
+  app_uploads:
+  app_output:
+  app_data:
+  app_credentials:
