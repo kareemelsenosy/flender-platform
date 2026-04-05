@@ -64,13 +64,17 @@ async def active_tasks(request: Request, db: DBSession = Depends(get_db)):
             done = batch.get("done", 0)
             total = batch.get("total", 0)
             running = batch.get("running", False)
+            status = "running" if running else ("done" if done >= total and total > 0 else "idle")
+            # Skip idle/stalled batches — they haven't started or failed to launch
+            if status == "idle":
+                continue
             tasks.append({
                 "type": "sheets",
                 "batch_id": batch_id,
                 "done": done,
                 "total": total,
                 "running": running,
-                "status": "running" if running else ("done" if done >= total and total > 0 else "idle"),
+                "status": status,
                 "url": "/sheets",
                 "label": "Sheets Import",
             })
