@@ -128,10 +128,6 @@ async def login(request: Request,
         return templates.TemplateResponse(request, "login.html", {
             "error": "Invalid username/email or password",
         })
-    if not user.email_verified:
-        # Resend a fresh code and send them back to verify
-        _issue_verification_code(user, db)
-        return RedirectResponse(f"/verify-email/{user.id}", status_code=302)
     response = RedirectResponse("/", status_code=302)
     return set_session_cookie(response, user.id)
 
@@ -169,13 +165,13 @@ async def register(request: Request,
         })
 
     user = User(username=username.strip(), email=email,
-                password_hash=hash_password(password), email_verified=False)
+                password_hash=hash_password(password), email_verified=True)
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    _issue_verification_code(user, db)
-    return RedirectResponse(f"/verify-email/{user.id}", status_code=302)
+    response = RedirectResponse("/", status_code=302)
+    return set_session_cookie(response, user.id)
 
 
 # ─── Email verification helpers ──────────────────────────────────────────────
