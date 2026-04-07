@@ -269,8 +269,12 @@ class FileParser:
                 }
             item = seen[key]
             size = row.get("size")
-            if size and size not in item["sizes"]:
-                item["sizes"].append(size)
+            if size:
+                # Split concatenated sizes like "S / M / L" or "7 / 8 / 8.5"
+                parts = [s.strip() for s in str(size).split("/") if s.strip()]
+                for part in parts:
+                    if part not in item["sizes"]:
+                        item["sizes"].append(part)
             qty = row.get("qty_available")
             if isinstance(qty, (int, float)) and qty:
                 item["qty_available"] = (item["qty_available"] or 0) + qty
