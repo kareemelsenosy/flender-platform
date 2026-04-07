@@ -83,8 +83,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         reader_inst = reader
 
         total_items = 0
-        # Aggregate all rows by (item_code, color_code) — collect sizes + qty
-        aggregated: dict[tuple, dict] = {}
+        all_rows = []  # flat list of per-row dicts
 
         # Filter to selected tabs only (if user made a selection)
         tabs_to_process = result["tabs"]
@@ -93,101 +92,131 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
             if not tabs_to_process:
                 tabs_to_process = result["tabs"]  # fallback: all tabs
 
+        # Detect currency from first tab's headers and WHS Price values
+        detected_currency = "€"
+        if tabs_to_process:
+            first_tab = tabs_to_process[0]
+            headers = first_tab.get("headers", [])
+            # Check for currency in Total column name (e.g. "TOTAL (AED)")
+            for h in headers:
+                hu = h.upper()
+                if "TOTAL" in hu:
+                    if "AED" in hu:
+                        detected_currency = "AED "
+                    elif "USD" in hu or "$" in hu:
+                        detected_currency = "$"
+                    elif "GBP" in hu or "£" in hu:
+                        detected_currency = "£"
+                    elif "EUR" in hu or "€" in hu:
+                        detected_currency = "€"
+                    break
+            # Also check first few WHS Price values for currency prefix
+            if detected_currency == "€":
+                items_sample = reader_inst.extract_items_from_tab(first_tab)[:5]
+                for it in items_sample:
+                    raw_whs = str(it.get("wholesale_price", "")).strip()
+                    ru = raw_whs.upper()
+                    if "AED" in ru or ru.startswith("DH"):
+                        detected_currency = "AED "
+                        break
+                    elif ru.startswith("$"):
+                        detected_currency = "$"
+                        break
+                    elif ru.startswith("£"):
+                        detected_currency = "£"
+                        break
+
         for tab in tabs_to_process:
             items = reader_inst.extract_items_from_tab(tab)
             for item in items:
                 item_code = item.get("item_code", "").strip()
-                color_code = (item.get("color_code", "") or "").strip()
                 if not item_code:
                     continue
-                key = (item_code, color_code)
-                if key not in aggregated:
-                    aggregated[key] = {
-                        "item_code": item_code,
-                        "color_code": color_code,
-                        "brand": item.get("brand", ""),
-                        "style_name": item.get("style_name", ""),
-                        "color_name": item.get("color_name", ""),
-                        "gender": item.get("gender", ""),
-                        "wholesale_price": _parse_price(item.get("wholesale_price")),
-                        "retail_price": _parse_price(item.get("retail_price")),
-                        "qty_available": 0,
-                        "barcode": item.get("barcode", ""),
-                        "image_url": item.get("image_url") or item.get("dropbox_url") or "",
-                        "sizes": [],
-                    }
-                agg = aggregated[key]
-                size = item.get("size")
-                if size:
-                    # Split concatenated sizes like "S / M / L" or "7 / 8 / 8.5"
-                    parts = [s.strip() for s in str(size).split("/") if s.strip()]
-                    for part in parts:
-                        if part not in agg["sizes"]:
-                            agg["sizes"].append(part)
-                qty = _parse_price(item.get("qty_available"))
-                if qty:
-                    agg["qty_available"] = (agg["qty_available"] or 0) + qty
+                size = item.get("size", "").strip()
+                all_rows.append({
+                    "item_code": item_code,
+                    "color_name": item.get("color_name", ""),
+                    "size": size,
+                    "brand": item.get("brand", ""),
+                    "style_name": item.get("style_name", ""),
+                    "gender": item.get("gender", ""),
+                    "wholesale_price": _parse_price(item.get("wholesale_price")),
+                    "retail_price": _parse_price(item.get("retail_price")),
+                    "qty_available": _parse_price(item.get("qty_available")),
+                    "barcode": item.get("barcode", ""),
+                    "item_group": item.get("item_group", ""),
+                    "sap_code": item.get("sap_code", ""),
+                    "image_url": item.get("image_url") or item.get("dropbox_url") or "",
+                })
 
-        for agg in aggregated.values():
+        # Store currency in session config
+        cfg = sess.config
+        cfg["currency"] = detected_currency
+        sess.config = cfg
+
+        # Store each row as its own UniqueItem (no aggregation).
+        # Use color_name + size as color_code to satisfy unique constraint.
+        for row in all_rows:
+            size = row["size"]
+            color = row["color_name"]
             ui = UniqueItem(
                 session_id=sess.id,
-                item_code=agg["item_code"],
-                color_code=agg["color_code"],
-                brand=agg["brand"],
-                style_name=agg["style_name"],
-                color_name=agg["color_name"],
-                gender=agg["gender"],
-                wholesale_price=agg["wholesale_price"],
-                retail_price=agg["retail_price"],
-                qty_available=agg["qty_available"],
-                barcode=agg["barcode"],
+                item_code=row["item_code"],
+                color_code=f"{color}|{size}" if size else color,
+                brand=row["brand"],
+                style_name=row["style_name"],
+                color_name=color,
+                gender=row["gender"],
+                wholesale_price=row["wholesale_price"],
+                retail_price=row["retail_price"],
+                qty_available=row["qty_available"],
+                barcode=row["barcode"],
+                item_group=row["item_group"],
             )
-            image_url = agg["image_url"]
+            ui.sizes = [size] if size else []
+            image_url = row["image_url"]
             if image_url:
                 ui.approved_url = image_url
                 ui.review_status = "approved"
                 ui.auto_selected = True
                 ui.search_status = "done"
-            ui.sizes = agg["sizes"]
             db.add(ui)
             total_items += 1
 
         sess.total_items = total_items
         sess.searched_items = total_items
-        # C2: commit without destroying the session on duplicate — duplicates were
-        # already filtered out in-memory by seen_keys above; the DB constraint is
-        # a last-resort guard. If it fires, rollback just the item inserts and
-        # re-insert one-by-one so only true duplicates are skipped.
         try:
             db.commit()
         except Exception:
             db.rollback()
-            # Re-attach session and re-insert items individually, skipping conflicts
             db.add(sess)
             db.commit()
             total_items = 0
-            for agg in aggregated.values():
+            for row in all_rows:
                 try:
+                    size = row["size"]
+                    color = row["color_name"]
                     ui2 = UniqueItem(
                         session_id=sess.id,
-                        item_code=agg["item_code"],
-                        color_code=agg["color_code"],
-                        brand=agg["brand"],
-                        style_name=agg["style_name"],
-                        color_name=agg["color_name"],
-                        gender=agg["gender"],
-                        wholesale_price=agg["wholesale_price"],
-                        retail_price=agg["retail_price"],
-                        qty_available=agg["qty_available"],
-                        barcode=agg["barcode"],
+                        item_code=row["item_code"],
+                        color_code=f"{color}|{size}" if size else color,
+                        brand=row["brand"],
+                        style_name=row["style_name"],
+                        color_name=color,
+                        gender=row["gender"],
+                        wholesale_price=row["wholesale_price"],
+                        retail_price=row["retail_price"],
+                        qty_available=row["qty_available"],
+                        barcode=row["barcode"],
+                        item_group=row["item_group"],
                     )
-                    image_url = agg["image_url"]
+                    ui2.sizes = [size] if size else []
+                    image_url = row["image_url"]
                     if image_url:
                         ui2.approved_url = image_url
                         ui2.review_status = "approved"
                         ui2.auto_selected = True
                         ui2.search_status = "done"
-                    ui2.sizes = agg["sizes"]  # already split during aggregation
                     db.add(ui2)
                     db.commit()
                     total_items += 1

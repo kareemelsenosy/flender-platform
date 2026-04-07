@@ -101,7 +101,8 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
 
 def _run_export_background(session_id: int, user_id: int, item_dicts: list,
                            sess_name: str, sess_config: dict,
-                           brand: str, save_images: bool):
+                           brand: str, save_images: bool,
+                           currency: str = ""):
     """Run export in background thread so user can navigate away."""
     from app.database import SessionLocal
     db = SessionLocal()
@@ -123,6 +124,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             output_dir=out_dir,
             input_filename=sess_name,
             brand=brand,
+            currency=currency,
         )
 
         # Create download token for Excel
@@ -256,10 +258,11 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "additional_urls": item.additional_urls,
                 "brand": item.brand,
                 "barcode": item.barcode or "",
-                "item_group": "",
+                "item_group": item.item_group or "",
             })
 
     brand = items[0].brand if items else ""
+    currency = sess.config.get("currency", "")
 
     # Initialize progress and start background thread
     with _progress_lock:
@@ -267,7 +270,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
 
     threading.Thread(
         target=_run_export_background,
-        args=(session_id, uid, item_dicts, sess.name, sess.config, brand, save_images),
+        args=(session_id, uid, item_dicts, sess.name, sess.config, brand, save_images, currency),
         daemon=True,
     ).start()
 

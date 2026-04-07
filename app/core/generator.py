@@ -66,6 +66,25 @@ IMAGE_PX = 150
 IMAGE_PT = IMAGE_PX * 0.75
 TEXT_ROW_H = 22
 
+
+def detect_currency_symbol(items: list[dict], currency_override: str = "") -> str:
+    """Detect currency from an explicit override or from WHS Price sample values."""
+    if currency_override:
+        return currency_override
+    # Check first few items' wholesale_price raw string representation
+    for item in items[:10]:
+        whs = str(item.get("wholesale_price_raw", item.get("wholesale_price", "")))
+        wu = whs.upper()
+        if "AED" in wu or wu.startswith("DH"):
+            return "AED "
+        if wu.startswith("$") or "USD" in wu:
+            return "$"
+        if wu.startswith("£") or "GBP" in wu:
+            return "£"
+        if wu.startswith("€") or "EUR" in wu:
+            return "€"
+    return "€"
+
 # Standard ordersheet columns
 STANDARD_COLUMNS = {
     "Picture":               {"width": 21,  "align": CENTER},
@@ -110,7 +129,8 @@ class OrderSheetGenerator:
             self._progress(downloaded, total, stage)
 
     def generate(self, items: list[dict], output_dir: str,
-                 input_filename: str = "export", brand: str = "") -> str:
+                 input_filename: str = "export", brand: str = "",
+                 currency: str = "") -> str:
         """Generate standard ordersheet Excel from approved items."""
         os.makedirs(output_dir, exist_ok=True)
 
@@ -227,7 +247,8 @@ class OrderSheetGenerator:
         formula_whs_letter = get_column_letter(row_whs_col) if row_whs_col else whs_letter
         total_letter = get_column_letter(total_col) if total_col else None
 
-        currency_fmt = '"€"#,##0.00'
+        currency_symbol = detect_currency_symbol(items, currency)
+        currency_fmt = f'"{currency_symbol}"#,##0.00'
 
         # ── Data rows (row 3+) ──
         tmp_images = []
@@ -353,7 +374,13 @@ class OrderSheetGenerator:
                     cell.alignment = CENTER
 
                 elif header == "ItemCode":
-                    cell.value = item.get("item_code", "")
+                    # Use SAP code from source, or construct from item_group + size
+                    sap = item.get("sap_code", "")
+                    if not sap:
+                        ig = item.get("item_group", "")
+                        sz = item.get("size", "")
+                        sap = f"{ig} {sz}".strip() if ig else item.get("item_code", "")
+                    cell.value = sap
                     cell.fill = gfill
                     cell.font = BODY_FONT
                     cell.alignment = LEFT

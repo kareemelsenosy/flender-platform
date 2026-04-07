@@ -216,6 +216,11 @@ class SheetsReader:
                 if not size or not last_item_code:
                     continue
 
+            # Read per-row values (not carried forward — unique per size row)
+            row_barcode = get_val("Barcode") or last_barcode
+            row_stock = get_val("FreeStock") or get_val("Stock")
+            row_sap_code = get_val("ItemCode")
+
             items.append({
                 "item_code": last_item_code,
                 "brand": last_brand,
@@ -223,13 +228,14 @@ class SheetsReader:
                 "color_name": last_color_name,
                 "size": get_val("Size"),
                 "gender": last_gender,
-                "barcode": last_barcode,
+                "barcode": row_barcode,
                 "item_group": last_item_group,
                 "wholesale_price": last_wholesale_price,
                 "retail_price": last_retail_price,
-                "qty_available": get_val("FreeStock") or get_val("Stock"),
+                "qty_available": row_stock,
                 "image_url": last_image_url,
                 "dropbox_url": last_dropbox_url,
+                "sap_code": row_sap_code,
             })
 
         return items

@@ -100,6 +100,7 @@ class UniqueItem(Base):
     sizes_json = Column(Text, default="[]")
     qty_available = Column(Float)
     barcode = Column(String(255))
+    item_group = Column(String(500))
 
     # Search & review state
     search_status = Column(String(20), default="pending")  # pending, done
@@ -165,6 +166,7 @@ class UniqueItem(Base):
             "sizes": self.sizes,
             "qty_available": self.qty_available,
             "barcode": self.barcode,
+            "item_group": self.item_group,
             "candidates": self.candidates,
             "scores": self.scores,
             "review_status": self.review_status,
