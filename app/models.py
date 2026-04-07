@@ -246,6 +246,17 @@ class BrandSearchConfig(Base):
         self.site_urls_json = json.dumps(val)
 
 
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token = Column(String(64), unique=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=_utcnow)
+
+
 class GeneratedFile(Base):
     __tablename__ = "generated_files"
 

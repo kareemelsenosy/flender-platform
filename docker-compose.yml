@@ -29,6 +29,12 @@ services:
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       GOOGLE_SEARCH_KEY: ${GOOGLE_SEARCH_KEY:-}
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      APP_BASE_URL: ${APP_BASE_URL:-https://ordersheet.flendergroup.com}
       PORT: "8000"
     volumes:
       - app_uploads:/app/uploads
