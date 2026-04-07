@@ -17,7 +17,7 @@ from app.auth import get_current_user_id
 from app.config import OUTPUT_DIR
 from app.core.generator import OrderSheetGenerator
 from app.database import get_db
-from app.main import templates
+from app.templates_config import templates
 from app.models import GeneratedFile, Session, UniqueItem
 
 router = APIRouter()

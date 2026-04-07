@@ -22,7 +22,7 @@ from app.config import (
     APP_BASE_URL, SMTP_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER,
 )
 from app.database import get_db
-from app.main import templates
+from app.templates_config import templates
 from app.models import EmailVerificationCode, PasswordResetToken, User
 
 router = APIRouter()

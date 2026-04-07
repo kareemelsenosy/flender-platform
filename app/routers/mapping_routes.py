@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.core.parser import FileParser, detect_columns, COLUMN_PATTERNS
 from app.database import get_db
-from app.main import templates
+from app.templates_config import templates
 from app.models import Session, UniqueItem, ColumnMappingFormat
 
 router = APIRouter()

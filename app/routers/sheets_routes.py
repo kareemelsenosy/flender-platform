@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.config import BASE_DIR
 from app.database import SessionLocal, get_db
-from app.main import templates
+from app.templates_config import templates
 from app.models import Session, UniqueItem
 
 router = APIRouter()

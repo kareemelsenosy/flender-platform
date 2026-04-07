@@ -19,7 +19,7 @@ from app.auth import get_current_user_id, get_current_user_id_db
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID
 from app.core.searcher import ImageSearcher
 from app.database import get_db
-from app.main import templates
+from app.templates_config import templates
 from app.models import BrandSearchConfig, Session, UniqueItem
 
 router = APIRouter()

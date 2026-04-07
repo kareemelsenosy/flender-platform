@@ -26,7 +26,7 @@ from app.services.ai_service import (
     ai_rank_urls,
 )
 from app.database import SessionLocal, get_db
-from app.main import templates
+from app.templates_config import templates
 from app.models import BrandSearchConfig, SearchCache, Session, UniqueItem
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
