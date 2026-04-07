@@ -65,3 +65,38 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN barcode VARCHAR(255)"
                 ))
+        # Ensure email_verified column exists on users
+        if "users" in insp.get_table_names():
+            user_cols = {c["name"] for c in insp.get_columns("users")}
+            if "email_verified" not in user_cols:
+                conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT true"
+                ))
+            if "email" not in user_cols:
+                conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN email VARCHAR(255)"
+                ))
+        # Ensure password_reset_tokens table exists
+        if "password_reset_tokens" not in insp.get_table_names():
+            conn.execute(text("""
+                CREATE TABLE password_reset_tokens (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token VARCHAR(64) UNIQUE NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    used BOOLEAN NOT NULL DEFAULT false,
+                    created_at TIMESTAMP
+                )
+            """))
+        # Ensure email_verification_codes table exists
+        if "email_verification_codes" not in insp.get_table_names():
+            conn.execute(text("""
+                CREATE TABLE email_verification_codes (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    code VARCHAR(6) NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    used BOOLEAN NOT NULL DEFAULT false,
+                    created_at TIMESTAMP
+                )
+            """))
