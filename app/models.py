@@ -25,6 +25,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=True)
     password_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
+    email_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=_utcnow)
 
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
@@ -244,6 +245,17 @@ class BrandSearchConfig(Base):
     @site_urls.setter
     def site_urls(self, val: list):
         self.site_urls_json = json.dumps(val)
+
+
+class EmailVerificationCode(Base):
+    __tablename__ = "email_verification_codes"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code = Column(String(6), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class PasswordResetToken(Base):
