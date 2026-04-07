@@ -118,8 +118,12 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                     }
                 agg = aggregated[key]
                 size = item.get("size")
-                if size and size not in agg["sizes"]:
-                    agg["sizes"].append(size)
+                if size:
+                    # Split concatenated sizes like "S / M / L" or "7 / 8 / 8.5"
+                    parts = [s.strip() for s in str(size).split("/") if s.strip()]
+                    for part in parts:
+                        if part not in agg["sizes"]:
+                            agg["sizes"].append(part)
                 qty = _parse_price(item.get("qty_available"))
                 if qty:
                     agg["qty_available"] = (agg["qty_available"] or 0) + qty
@@ -183,7 +187,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                         ui2.review_status = "approved"
                         ui2.auto_selected = True
                         ui2.search_status = "done"
-                    ui2.sizes = agg["sizes"]
+                    ui2.sizes = agg["sizes"]  # already split during aggregation
                     db.add(ui2)
                     db.commit()
                     total_items += 1
