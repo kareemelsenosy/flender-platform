@@ -160,6 +160,19 @@ class SheetsReader:
             col_idx[h.strip()] = i
 
         items = []
+        # "last_" vars carry forward values from merged/blank cells
+        last_item_code = ""
+        last_brand = ""
+        last_style_name = ""
+        last_color_name = ""
+        last_gender = ""
+        last_barcode = ""
+        last_item_group = ""
+        last_wholesale_price = ""
+        last_retail_price = ""
+        last_image_url = ""
+        last_dropbox_url = ""
+
         for ri, row in enumerate(display_rows):
             def get_val(col_name):
                 idx = col_idx.get(col_name, -1)
@@ -168,8 +181,6 @@ class SheetsReader:
                 return str(row[idx]).strip()
 
             item_code = get_val("Manufacturer Code")
-            if not item_code:
-                continue
 
             # Extract image URL from formula
             image_url = ""
@@ -185,20 +196,40 @@ class SheetsReader:
                 if dropbox_url and not dropbox_url.startswith("http"):
                     dropbox_url = ""
 
+            if item_code:
+                # First row of a product — update carry-forward values
+                last_item_code = item_code
+                last_brand = get_val("Brand Name")
+                last_style_name = get_val("Web Description 2")
+                last_color_name = get_val("Color")
+                last_gender = get_val("Gender")
+                last_barcode = get_val("Barcode")
+                last_item_group = get_val("Item Group")
+                last_wholesale_price = get_val("WHS Price")
+                last_retail_price = get_val("RRP Price")
+                last_image_url = image_url or last_image_url
+                last_dropbox_url = dropbox_url or last_dropbox_url
+            else:
+                # Merged / blank row — only include if we have a size value
+                # (continuation of previous product's sizes)
+                size = get_val("Size")
+                if not size or not last_item_code:
+                    continue
+
             items.append({
-                "item_code": item_code,
-                "brand": get_val("Brand Name"),
-                "style_name": get_val("Web Description 2"),
-                "color_name": get_val("Color"),
+                "item_code": last_item_code,
+                "brand": last_brand,
+                "style_name": last_style_name,
+                "color_name": last_color_name,
                 "size": get_val("Size"),
-                "gender": get_val("Gender"),
-                "barcode": get_val("Barcode"),
-                "item_group": get_val("Item Group"),
-                "wholesale_price": get_val("WHS Price"),
-                "retail_price": get_val("RRP Price"),
+                "gender": last_gender,
+                "barcode": last_barcode,
+                "item_group": last_item_group,
+                "wholesale_price": last_wholesale_price,
+                "retail_price": last_retail_price,
                 "qty_available": get_val("FreeStock") or get_val("Stock"),
-                "image_url": image_url,
-                "dropbox_url": dropbox_url,
+                "image_url": last_image_url,
+                "dropbox_url": last_dropbox_url,
             })
 
         return items
