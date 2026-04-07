@@ -216,11 +216,15 @@ class OrderSheetGenerator:
         col_idx = {h: i + 1 for i, h in enumerate(out_headers)}
         qty_col = col_idx.get("QTY")
         whs_col = col_idx.get("WHS Price")
+        row_whs_col = col_idx.get("Row WHS Price")
         total_col = col_idx.get("QTY Total")
         pic_col = col_idx.get("Picture", 1)
 
         qty_letter = get_column_letter(qty_col) if qty_col else None
         whs_letter = get_column_letter(whs_col) if whs_col else None
+        # Use hidden Row WHS Price for the formula — it's populated on every size row
+        # even when the visible WHS Price column is blank for non-first rows
+        formula_whs_letter = get_column_letter(row_whs_col) if row_whs_col else whs_letter
         total_letter = get_column_letter(total_col) if total_col else None
 
         currency_fmt = '"€"#,##0.00'
@@ -311,8 +315,8 @@ class OrderSheetGenerator:
                     cell.alignment = CENTER
 
                 elif header == "QTY Total":
-                    if qty_letter and whs_letter:
-                        cell.value = f"={qty_letter}{excel_row}*{whs_letter}{excel_row}"
+                    if qty_letter and formula_whs_letter:
+                        cell.value = f"={qty_letter}{excel_row}*{formula_whs_letter}{excel_row}"
                     else:
                         cell.value = 0
                     cell.number_format = currency_fmt
