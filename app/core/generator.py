@@ -569,8 +569,24 @@ class OrderSheetGenerator:
 
     def _download_image(self, url: str) -> io.BytesIO | None:
         """Download image at full resolution (no thumbnail)."""
-        if not url or not url.startswith("http"):
+        if not url:
             return None
+
+        # Local file uploaded to server — read directly from disk
+        if url.startswith("file://"):
+            path = url[7:]  # strip "file://" → absolute server path
+            try:
+                with open(path, "rb") as f:
+                    buf = io.BytesIO(f.read())
+                PILImage.open(buf).verify()
+                buf.seek(0)
+                return buf
+            except Exception:
+                return None
+
+        if not url.startswith("http"):
+            return None
+
         try:
             resp = requests.get(url, headers=_DL_HEADERS, timeout=8)
             if resp.status_code != 200:
