@@ -361,7 +361,10 @@ async def import_sheets_batch(request: Request):
         _persist_batch(batch_id, uid)
         try:
             sel_tabs = selected_tabs_per_url.get(url) or None
-            result = await asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs),
+                timeout=300,  # 5 min max per sheet
+            )
             job = _batch_progress[batch_id]["jobs"][idx]
             if result.get("ok"):
                 job.update({

@@ -189,13 +189,7 @@ addRow();
     }
   } catch(_) {}
 
-  // No active import — check for recently completed batches from server
-  {% if completed_jobs_json %}
-  const completedJobs = {{ completed_jobs_json | safe }};
-  if (completedJobs.length) {
-    showCompletedJobs(completedJobs);
-  }
-  {% endif %}
+  // No active import — show import form fresh (completed jobs visible in dashboard/sidebar)
 })();
 
 function showCompletedJobs(jobs) {
@@ -246,9 +240,30 @@ function reconnectBatch(batch_id) {
 
   const anims = {}, t0 = {}, prev = {};
 
+  // Always show a "New Import" button so user is never fully stuck
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-outline btn-sm';
+  cancelBtn.style.marginTop = '12px';
+  cancelBtn.textContent = '+ New Import';
+  cancelBtn.onclick = () => {
+    es.close();
+    document.getElementById('batch-section').style.display = 'none';
+    document.getElementById('job-list').innerHTML = '';
+    document.getElementById('import-card').style.display = 'block';
+    cancelBtn.remove();
+  };
+  batchSection.appendChild(cancelBtn);
+
   const es = new EventSource(`/sheets/batch/${batch_id}/progress`);
   es.onmessage = (e) => {
     const batch = JSON.parse(e.data);
+
+    // Batch not found on server — reset to import form
+    if (batch.error) {
+      es.close();
+      cancelBtn.click();
+      return;
+    }
 
     // Build cards if not yet created
     if (jobList.querySelector('.job-card') === null) {
@@ -286,23 +301,12 @@ function reconnectBatch(batch_id) {
     if (batch.complete || (batch.done >= batch.total && batch.total > 0)) {
       es.close();
       document.getElementById('batch-summary').textContent = `All ${batch.total} sheets imported`;
-      // Show "New Import" button so user doesn't need to refresh
-      const newBtn = document.createElement('button');
-      newBtn.className = 'btn btn-outline btn-sm';
-      newBtn.style.marginTop = '12px';
-      newBtn.textContent = '+ New Import';
-      newBtn.onclick = () => {
-        document.getElementById('batch-section').style.display = 'none';
-        document.getElementById('job-list').innerHTML = '';
-        document.getElementById('import-card').style.display = 'block';
-        newBtn.remove();
-      };
-      document.getElementById('batch-section').appendChild(newBtn);
     }
   };
   es.onerror = () => {
     es.close();
-    document.getElementById('batch-summary').textContent = 'Connection lost — refresh to try again';
+    // On connection error, just reset to import form
+    cancelBtn.click();
   };
 }
 
