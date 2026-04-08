@@ -37,6 +37,7 @@ PRICE_FILLS = [
 QTY_FILL = PatternFill("solid", fgColor="FEF9C3")       # yellow = editable
 TOTAL_FILL = PatternFill("solid", fgColor="DCFCE7")     # green = calculated
 FREESTOCK_FILL = PatternFill("solid", fgColor="D1FAE5")  # light green
+PICTURE_FILL = PatternFill("solid", fgColor="D0D0D0")   # neutral gray — visible bg for dark products
 
 THIN_BORDER = Border(
     left=Side(style="thin", color="D1D5DB"),
@@ -270,7 +271,7 @@ class OrderSheetGenerator:
                 cell.border = THIN_BORDER
 
                 if header == "Picture":
-                    cell.fill = gfill
+                    cell.fill = PICTURE_FILL
                     cell.alignment = CENTER
 
                 elif header == "Brand Name":
@@ -430,7 +431,7 @@ class OrderSheetGenerator:
                 )
 
             mc = ws.cell(row=excel_start, column=pic_col)
-            mc.fill = GROUP_FILLS[gi % 2]
+            mc.fill = PICTURE_FILL
             mc.alignment = CENTER
             mc.border = THIN_BORDER
 
@@ -445,10 +446,10 @@ class OrderSheetGenerator:
 
             img_bytes = io.BytesIO(image_data[gi])
             pil_open = PILImage.open(img_bytes)
-            # Flatten transparency to light gray (avoids black bg when converting to JPEG)
+            # Flatten transparency to neutral gray — matches cell bg, visible for dark products
             if pil_open.mode in ('RGBA', 'LA', 'P'):
                 pil_rgba = pil_open.convert('RGBA')
-                bg = PILImage.new('RGB', pil_rgba.size, (240, 240, 240))
+                bg = PILImage.new('RGB', pil_rgba.size, (208, 208, 208))  # #D0D0D0
                 bg.paste(pil_rgba, mask=pil_rgba.split()[3])
                 raw_img = bg
             else:
