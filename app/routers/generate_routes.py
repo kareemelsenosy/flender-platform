@@ -225,11 +225,11 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         if session_id in _progress:
             return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
 
-    # Get approved items
+    # Get approved items — ordered by item_code so same products are grouped together
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.review_status == "approved",
-    ).all()
+    ).order_by(UniqueItem.item_code, UniqueItem.id).all()
 
     if not items:
         return JSONResponse({"error": "No approved items"}, status_code=400)

@@ -77,8 +77,22 @@ async def image_proxy(request: Request, url: str = ""):
         if resp.status_code != 200:
             return Response(status_code=resp.status_code)
 
-        ct = resp.headers.get("content-type", "image/jpeg")
         data = resp.content
+
+        # Detect actual content type from magic bytes (Dropbox often lies)
+        if data[:4] == b"\xff\xd8\xff\xe0" or data[:4] == b"\xff\xd8\xff\xe1":
+            ct = "image/jpeg"
+        elif data[:8] == b"\x89PNG\r\n\x1a\n":
+            ct = "image/png"
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            ct = "image/webp"
+        elif data[:6] in (b"GIF87a", b"GIF89a"):
+            ct = "image/gif"
+        else:
+            ct = resp.headers.get("content-type", "image/jpeg")
+            # If response is HTML (error page), don't serve it as an image
+            if "text/html" in ct or data[:20].strip().startswith(b"<"):
+                return Response(status_code=502)
 
         # Only cache if it looks like an image and is < 5MB
         if len(data) < 5_000_000:
