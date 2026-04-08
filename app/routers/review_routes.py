@@ -404,13 +404,31 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
 
     def _download_one(url_info):
         url, safe_code, color, suffix = url_info
-        if not url or not url.startswith("http"):
+        if not url:
             return None
+
+        base = f"{safe_code}_{color}" if color else safe_code
+
+        # Local file uploaded to server — read directly from disk
+        if url.startswith("file://"):
+            path = url[7:]
+            try:
+                import mimetypes
+                with open(path, "rb") as f:
+                    content = f.read()
+                mime, _ = mimetypes.guess_type(path)
+                ext = _detect_ext(mime or "")
+                return (f"{base}_{suffix}{ext}", content)
+            except Exception:
+                return None
+
+        if not url.startswith("http"):
+            return None
+
         try:
             resp = requests.get(url, headers=_DL_HEADERS, timeout=15)
             if resp.status_code == 200:
                 ext = _detect_ext(resp.headers.get("content-type", ""))
-                base = f"{safe_code}_{color}" if color else safe_code
                 fname = f"{base}_{suffix}{ext}"
                 return (fname, resp.content)
         except Exception:
