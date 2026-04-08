@@ -16,7 +16,8 @@ from typing import Any
 import requests
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image as PILImage
@@ -466,19 +467,19 @@ class OrderSheetGenerator:
             tmp_images.append(tmp.name)
 
             xl_img = XLImage(tmp.name)
-            xl_img.width = display_img.width
-            xl_img.height = display_img.height
 
             # Vertical centering offset in EMU (1px = 9525 EMU)
             v_offset_emu = max(0, (total_cell_h_px - display_img.height) // 2) * 9525
 
+            # OneCellAnchor: fixed size in EMU — never stretches regardless of row height
             try:
-                anchor = TwoCellAnchor()
-                anchor.editAs = "oneCell"  # keep natural size, don't stretch with cell
+                anchor = OneCellAnchor()
                 anchor._from = AnchorMarker(col=pic_col - 1, colOff=0,
                                             row=excel_start - 1, rowOff=v_offset_emu)
-                anchor.to = AnchorMarker(col=pic_col, colOff=0,
-                                         row=excel_end, rowOff=0)
+                anchor.ext = XDRPositiveSize2D(
+                    cx=display_img.width * 9525,
+                    cy=display_img.height * 9525,
+                )
                 xl_img.anchor = anchor
                 ws.add_image(xl_img)
                 embedded += 1
