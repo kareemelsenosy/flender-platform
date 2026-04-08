@@ -468,13 +468,16 @@ class OrderSheetGenerator:
 
             xl_img = XLImage(tmp.name)
 
-            # Vertical centering offset in EMU (1px = 9525 EMU)
+            # Center image in cell — 1px = 9525 EMU
+            # Column width: 21 chars × 7px + 5px padding ≈ 152px
+            col_width_px = int(STANDARD_COLUMNS["Picture"]["width"] * 7 + 5)
+            h_offset_emu = max(0, (col_width_px - display_img.width) // 2) * 9525
             v_offset_emu = max(0, (total_cell_h_px - display_img.height) // 2) * 9525
 
             # OneCellAnchor: fixed size in EMU — never stretches regardless of row height
             try:
                 anchor = OneCellAnchor()
-                anchor._from = AnchorMarker(col=pic_col - 1, colOff=0,
+                anchor._from = AnchorMarker(col=pic_col - 1, colOff=h_offset_emu,
                                             row=excel_start - 1, rowOff=v_offset_emu)
                 anchor.ext = XDRPositiveSize2D(
                     cx=display_img.width * 9525,
