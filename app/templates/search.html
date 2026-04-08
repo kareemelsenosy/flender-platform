@@ -60,6 +60,18 @@
       <input type="file" id="img-file-input" multiple
              accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.zip"
              style="display:none" onchange="handleFileSelect(this.files)">
+      <!-- Upload progress bar (hidden until upload starts) -->
+      <div id="upload-progress-wrap" style="display:none;margin-top:12px">
+        <div class="progress-container" style="margin-bottom:6px">
+          <div class="progress-bar">
+            <div class="progress-fill blue" id="upload-progress-fill" style="width:0%;transition:width .2s"></div>
+          </div>
+          <div class="progress-text">
+            <span id="upload-progress-label">Uploading…</span>
+            <span id="upload-progress-pct">0%</span>
+          </div>
+        </div>
+      </div>
       <div id="upload-status" style="margin-top:8px;font-size:0.85rem;color:var(--gray-600)"></div>
       <small class="text-muted">Images are matched to SKUs by filename. ZIP files are automatically extracted.</small>
     </div>
@@ -149,30 +161,72 @@ function handleFileSelect(files) {
   document.getElementById('upload-drop-zone').style.borderColor = 'var(--black)';
 }
 
-async function _uploadImages() {
-  if (!_pendingFiles || !_pendingFiles.length) return null;
-  const statusEl = document.getElementById('upload-status');
-  statusEl.innerHTML = '⏳ Uploading images to server…';
+function _uploadImages() {
+  return new Promise((resolve) => {
+    if (!_pendingFiles || !_pendingFiles.length) { resolve(null); return; }
 
-  const formData = new FormData();
-  for (const f of _pendingFiles) {
-    formData.append('files', f);
-  }
+    const statusEl   = document.getElementById('upload-status');
+    const wrapEl     = document.getElementById('upload-progress-wrap');
+    const fillEl     = document.getElementById('upload-progress-fill');
+    const labelEl    = document.getElementById('upload-progress-label');
+    const pctEl      = document.getElementById('upload-progress-pct');
 
-  const resp = await fetch(`/search/${sessionId}/upload-images`, {
-    method: 'POST',
-    body: formData,
+    wrapEl.style.display = 'block';
+    statusEl.innerHTML = '';
+
+    const formData = new FormData();
+    for (const f of _pendingFiles) formData.append('files', f);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      fillEl.style.width = pct + '%';
+      pctEl.textContent = pct + '%';
+      if (pct < 100) {
+        const mb = (e.loaded / 1024 / 1024).toFixed(1);
+        const total = (e.total / 1024 / 1024).toFixed(1);
+        labelEl.textContent = `Uploading… ${mb} / ${total} MB`;
+      } else {
+        labelEl.textContent = 'Extracting images…';
+        pctEl.textContent = '';
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      wrapEl.style.display = 'none';
+      if (xhr.status !== 200) {
+        let msg = 'Failed to upload images.';
+        try { msg = JSON.parse(xhr.responseText).error || msg; } catch(_) {}
+        showAlert(msg, 'Upload Error');
+        resolve(null);
+        return;
+      }
+      let data;
+      try { data = JSON.parse(xhr.responseText); } catch(_) {
+        showAlert('Unexpected server response.', 'Upload Error');
+        resolve(null);
+        return;
+      }
+      if (!data.image_count) {
+        showAlert('No images were found in the uploaded files. Make sure your ZIP contains JPG / PNG / WebP images at the top level or in subfolders.', 'No Images Found');
+        resolve(null);
+        return;
+      }
+      statusEl.innerHTML = `<span style="color:green;font-weight:600">✓ ${data.image_count} image${data.image_count !== 1 ? 's' : ''} ready</span>`;
+      resolve(data.folder_path);
+    });
+
+    xhr.addEventListener('error', () => {
+      wrapEl.style.display = 'none';
+      showAlert('Upload failed — check your connection and try again.', 'Upload Error');
+      resolve(null);
+    });
+
+    xhr.open('POST', `/search/${sessionId}/upload-images`);
+    xhr.send(formData);
   });
-
-  if (!resp.ok) {
-    const data = await resp.json().catch(() => ({}));
-    showAlert(data.error || 'Failed to upload images.', 'Upload Error');
-    return null;
-  }
-
-  const data = await resp.json();
-  statusEl.innerHTML = `<span style="color:green;font-weight:600">✓ ${data.image_count} images uploaded</span>`;
-  return data.folder_path;
 }
 
 // ── SSE progress connection (shared by startSearch and auto-reconnect) ────────

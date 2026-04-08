@@ -13,7 +13,7 @@ from typing import Set
 
 import requests
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
@@ -36,6 +36,37 @@ _DL_HEADERS = {
 _image_cache: dict[str, tuple[bytes, str, float]] = {}
 _CACHE_MAX_AGE = 600  # 10 minutes
 _CACHE_MAX_ITEMS = 500
+
+
+@router.get("/api/image/local")
+async def serve_local_image(request: Request, path: str = ""):
+    """Serve an uploaded image from UPLOAD_DIR with auth + traversal protection."""
+    import mimetypes
+    import pathlib
+    from app.config import UPLOAD_DIR
+
+    uid = get_current_user_id(request)
+    if not uid:
+        return Response(status_code=401)
+
+    if not path:
+        return Response(status_code=400)
+
+    try:
+        resolved = pathlib.Path(path).resolve()
+        upload_base = UPLOAD_DIR.resolve()
+        resolved.relative_to(upload_base)  # raises ValueError if outside UPLOAD_DIR
+    except ValueError:
+        return Response(status_code=403)
+    except Exception:
+        return Response(status_code=400)
+
+    if not resolved.is_file():
+        return Response(status_code=404)
+
+    mime_type, _ = mimetypes.guess_type(str(resolved))
+    return FileResponse(str(resolved), media_type=mime_type or "image/jpeg",
+                        headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.get("/api/image/proxy")
