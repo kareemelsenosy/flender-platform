@@ -269,7 +269,7 @@ async def preview_tabs(request: Request):
         spreadsheet_id = extract_spreadsheet_id(url)
         reader = SheetsReader(cred_path)
         spreadsheet = reader.gc.open_by_key(spreadsheet_id)
-        tabs = [{"title": ws.title, "row_count": ws.row_count} for ws in spreadsheet.worksheets()]
+        tabs = [ws.title for ws in spreadsheet.worksheets()]
         return JSONResponse({"ok": True, "title": spreadsheet.title, "tabs": tabs})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
