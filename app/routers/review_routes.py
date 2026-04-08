@@ -1,17 +1,19 @@
 """Review routes — image review SPA + API."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
 import os
+import time
 import urllib.parse
 import zipfile
 from typing import Set
 
 import requests
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
@@ -29,6 +31,69 @@ _DL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
+
+# Simple in-memory image cache: url_hash -> (content_bytes, content_type, timestamp)
+_image_cache: dict[str, tuple[bytes, str, float]] = {}
+_CACHE_MAX_AGE = 600  # 10 minutes
+_CACHE_MAX_ITEMS = 500
+
+
+@router.get("/api/image/proxy")
+async def image_proxy(request: Request, url: str = ""):
+    """Fetch an external image and serve it, bypassing CORS restrictions."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return Response(status_code=401)
+
+    url = url.strip()
+    if not url or not url.startswith("http"):
+        return Response(status_code=400)
+
+    # Convert dropbox sharing URLs to direct download
+    if "dropbox.com" in url or "dropboxusercontent.com" in url:
+        import re
+        if "dropboxusercontent.com/scl/fi/" in url:
+            url = re.sub(r"[?&]dl=\d", "", url)
+            sep = "&" if "?" in url else "?"
+            url = url + sep + "dl=1"
+        elif "www.dropbox.com" in url:
+            url = url.replace("www.dropbox.com", "dl.dropbox.com")
+            url = re.sub(r"[?&]dl=\d", "", url)
+            sep = "&" if "?" in url else "?"
+            url = url + sep + "dl=1"
+
+    # Check cache
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    now = time.time()
+    if url_hash in _image_cache:
+        data, ct, ts = _image_cache[url_hash]
+        if now - ts < _CACHE_MAX_AGE:
+            return Response(content=data, media_type=ct,
+                            headers={"Cache-Control": "public, max-age=300"})
+
+    # Fetch from origin
+    try:
+        resp = requests.get(url, headers=_DL_HEADERS, timeout=15, allow_redirects=True)
+        if resp.status_code != 200:
+            return Response(status_code=resp.status_code)
+
+        ct = resp.headers.get("content-type", "image/jpeg")
+        data = resp.content
+
+        # Only cache if it looks like an image and is < 5MB
+        if len(data) < 5_000_000:
+            # Evict old entries if cache is full
+            if len(_image_cache) >= _CACHE_MAX_ITEMS:
+                oldest = sorted(_image_cache, key=lambda k: _image_cache[k][2])
+                for k in oldest[:100]:
+                    _image_cache.pop(k, None)
+            _image_cache[url_hash] = (data, ct, now)
+
+        return Response(content=data, media_type=ct,
+                        headers={"Cache-Control": "public, max-age=300"})
+    except Exception as e:
+        logger.warning(f"Image proxy failed for {url[:80]}: {e}")
+        return Response(status_code=502)
 
 
 @router.get("/review/{session_id}", response_class=HTMLResponse)
