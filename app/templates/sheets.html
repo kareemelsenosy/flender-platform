@@ -140,23 +140,38 @@ async function previewTabs(rowId, url) {
     const data = await resp.json();
     if (!data.ok) { tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${data.error||'Failed'}</span>`; return; }
     const tabs = data.tabs || [];
+    // Store tab names in JS — never embed arbitrary strings in HTML attributes
+    _tabAllNames[url] = tabs;
+    _tabSelections[url] = [...tabs]; // all selected by default
     tabsEl.innerHTML = `<div style="font-size:0.75rem;font-weight:600;margin-bottom:6px;color:var(--gray-500)">${data.title} — Select tabs to import:</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${tabs.map(t => `
-          <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;background:white;border:1px solid var(--gray-300);padding:3px 8px;border-radius:20px">
-            <input type="checkbox" checked data-url="${url}" data-tab="${t.title}" onchange="updateTabSel('${rowId}','${url}')">
-            ${t.title}
-          </label>`).join('')}
-      </div>`;
-    // init selection — all checked by default
-    _tabSelections[url] = tabs.map(t => t.title);
+      <div id="tabcb-${rowId}" style="display:flex;flex-wrap:wrap;gap:6px"></div>`;
+    // Build checkboxes in JS to safely handle any tab name characters
+    const container = document.getElementById(`tabcb-${rowId}`);
+    tabs.forEach((name, idx) => {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;background:white;border:1px solid var(--gray-300);padding:3px 8px;border-radius:20px';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.idx = idx;
+      cb.addEventListener('change', () => updateTabSel(rowId, url));
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(name));
+      container.appendChild(lbl);
+    });
   } catch(e) {
     tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${e.message}</span>`;
   }
 }
 
+// _tabAllNames: url -> all tab names in order (for index lookup)
+const _tabAllNames = {};
+
 function updateTabSel(rowId, url) {
-  const checked = Array.from(document.querySelectorAll(`#tabs-${rowId} input[type=checkbox]:checked`)).map(c => c.dataset.tab);
+  const allTabs = _tabAllNames[url] || [];
+  const checked = Array.from(document.querySelectorAll(`#tabcb-${rowId} input[type=checkbox]`))
+    .filter(c => c.checked)
+    .map(c => allTabs[parseInt(c.dataset.idx)]);
   _tabSelections[url] = checked;
 }
 addRow();

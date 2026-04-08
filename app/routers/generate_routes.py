@@ -136,7 +136,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             file_path=out_path,
             filename=os.path.basename(out_path),
             image_folder_path=images_folder,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
         )
         db.add(gen_file)
 
@@ -166,7 +166,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
                     token=zip_token,
                     file_path=zip_path,
                     filename="images.zip",
-                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
                 )
                 db.add(zip_gen)
                 db.commit()
@@ -225,11 +225,12 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         if session_id in _progress:
             return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
 
-    # Get approved items — ordered by item_code so same products are grouped together
+    # Get approved items — ordered by item_code then id (preserves original size order within each product)
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.review_status == "approved",
     ).order_by(UniqueItem.item_code, UniqueItem.id).all()
+    # Note: order_by item_code groups same products together; id preserves original sheet row order for sizes
 
     if not items:
         return JSONResponse({"error": "No approved items"}, status_code=400)

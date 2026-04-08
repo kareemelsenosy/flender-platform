@@ -220,7 +220,7 @@ class OrderSheetGenerator:
             url, gis = url_gis
             return url, gis, self._download_image(url)
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=16) as pool:
             for url, gis, img_bytes in pool.map(_dl, unique_urls.items()):
                 downloaded_count += 1
                 self._report(downloaded_count, total_images, "downloading")
@@ -552,7 +552,7 @@ class OrderSheetGenerator:
         if not url or not url.startswith("http"):
             return None
         try:
-            resp = requests.get(url, headers=_DL_HEADERS, timeout=20)
+            resp = requests.get(url, headers=_DL_HEADERS, timeout=8)
             if resp.status_code != 200:
                 return None
             buf = io.BytesIO(resp.content)
