@@ -439,13 +439,24 @@ class OrderSheetGenerator:
 
             # Embed image
             num_rows = g["end"] - g["start"] + 1
-            target_h = min(IMAGE_PX, int(max(IMAGE_PT / num_rows, TEXT_ROW_H) * num_rows / 0.75))
+            row_h_pt = max(IMAGE_PT / num_rows, TEXT_ROW_H)
+            total_cell_h_px = int(row_h_pt * num_rows / 0.75)
+            display_h = min(IMAGE_PX, total_cell_h_px)
 
             img_bytes = io.BytesIO(image_data[gi])
-            raw_img = PILImage.open(img_bytes).convert("RGB")
-            # Resize for Excel embedding only (keep original in url_to_bytes for folder saving)
+            pil_open = PILImage.open(img_bytes)
+            # Flatten transparency to light gray (avoids black bg when converting to JPEG)
+            if pil_open.mode in ('RGBA', 'LA', 'P'):
+                pil_rgba = pil_open.convert('RGBA')
+                bg = PILImage.new('RGB', pil_rgba.size, (240, 240, 240))
+                bg.paste(pil_rgba, mask=pil_rgba.split()[3])
+                raw_img = bg
+            else:
+                raw_img = pil_open.convert('RGB')
+
+            # Resize for Excel embedding — fixed max height, don't stretch
             display_img = raw_img.copy()
-            display_img.thumbnail((self.img_size[0], target_h), PILImage.LANCZOS)
+            display_img.thumbnail((self.img_size[0], display_h), PILImage.LANCZOS)
 
             tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
             display_img.save(tmp.name, format="JPEG", quality=90, optimize=True)
@@ -453,14 +464,17 @@ class OrderSheetGenerator:
             tmp_images.append(tmp.name)
 
             xl_img = XLImage(tmp.name)
-            xl_img.width = self.img_size[0]
-            xl_img.height = target_h
+            xl_img.width = display_img.width
+            xl_img.height = display_img.height
+
+            # Vertical centering offset in EMU (1px = 9525 EMU)
+            v_offset_emu = max(0, (total_cell_h_px - display_img.height) // 2) * 9525
 
             try:
                 anchor = TwoCellAnchor()
-                anchor.editAs = "twoCell"
+                anchor.editAs = "oneCell"  # keep natural size, don't stretch with cell
                 anchor._from = AnchorMarker(col=pic_col - 1, colOff=0,
-                                            row=excel_start - 1, rowOff=0)
+                                            row=excel_start - 1, rowOff=v_offset_emu)
                 anchor.to = AnchorMarker(col=pic_col, colOff=0,
                                          row=excel_end, rowOff=0)
                 xl_img.anchor = anchor

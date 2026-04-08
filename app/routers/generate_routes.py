@@ -225,12 +225,11 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         if session_id in _progress:
             return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
 
-    # Get approved items — ordered by item_code then id (preserves original size order within each product)
+    # Get approved items — ordered by id to preserve original Google Sheet row order
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.review_status == "approved",
-    ).order_by(UniqueItem.item_code, UniqueItem.id).all()
-    # Note: order_by item_code groups same products together; id preserves original sheet row order for sizes
+    ).order_by(UniqueItem.id).all()
 
     if not items:
         return JSONResponse({"error": "No approved items"}, status_code=400)
