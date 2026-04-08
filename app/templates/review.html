@@ -180,11 +180,33 @@ function getConfidenceLabel(score) {
 }
 
 async function loadState() {
-  const resp = await fetch(`/review/${SESSION_ID}/state`);
-  state = await resp.json();
-  keys = Object.keys(state);
-  updateSidebar();
-  if (keys.length > 0) selectItem(keys[0]);
+  const mainEl = document.getElementById('review-main');
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000); // 30s timeout
+    const resp = await fetch(`/review/${SESSION_ID}/state`, { signal: ctrl.signal });
+    clearTimeout(timer);
+
+    if (resp.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    if (!resp.ok) {
+      throw new Error(`Server returned ${resp.status}`);
+    }
+
+    state = await resp.json();
+    keys = Object.keys(state);
+    updateSidebar();
+    if (keys.length > 0) selectItem(keys[0]);
+    else mainEl.innerHTML = '<div class="text-center text-muted" style="padding-top:100px">No items found in this session.</div>';
+  } catch (err) {
+    const msg = err.name === 'AbortError' ? 'Request timed out.' : err.message;
+    mainEl.innerHTML = `<div class="text-center" style="padding-top:100px">
+      <p class="text-muted mb-3">Failed to load items — ${msg}</p>
+      <button class="btn btn-primary" onclick="loadState()">Retry</button>
+    </div>`;
+  }
 }
 
 function updateSidebar() {
