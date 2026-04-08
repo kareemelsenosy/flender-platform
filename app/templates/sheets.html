@@ -122,7 +122,7 @@ function rmRow(id) {
   if (!document.querySelectorAll('.url-row').length) addRow();
 }
 function getUrls() {
-  return Array.from(document.querySelectorAll('.url-row input')).map(i=>i.value.trim()).filter(Boolean);
+  return Array.from(document.querySelectorAll('.url-row input[type=text]')).map(i=>i.value.trim()).filter(Boolean);
 }
 
 async function previewTabs(rowId, url) {
