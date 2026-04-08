@@ -342,7 +342,7 @@ function renderMain(key) {
         const isExtra = extraIdx >= 0;
         return `
         <div class="image-card ${url === selectedUrl ? 'selected' : ''} ${isExtra ? 'extra-selected' : ''}" onclick="approveUrl('${key}', ${entry.id}, '${escapedUrl}')" oncontextmenu="event.preventDefault();toggleExtra('${key}', ${entry.id}, '${escapedUrl}')">
-          <img src="${proxyUrl(url)}" alt="" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22140%22><rect fill=%22%23fce4ec%22 width=%22160%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23991b1b%22 font-size=%2212%22>Error</text></svg>'">`
+          <img src="${proxyUrl(url)}" alt="" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22140%22><rect fill=%22%23fce4ec%22 width=%22160%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23991b1b%22 font-size=%2212%22>Error</text></svg>'">
           <div class="score ${conf.cls}">${conf.label}</div>
           <div class="card-num">${i+1}</div>
           ${isExtra ? `<div class="extra-badge">+${extraIdx+1}</div>` : ''}
