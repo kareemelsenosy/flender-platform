@@ -363,10 +363,11 @@ class OrderSheetGenerator:
                     cell.alignment = RIGHT
 
                 elif header == "Pictures":
-                    url = item.get("approved_url", "")
-                    if url and url.startswith("http"):
+                    # Use the folder URL from the source sheet if available, else fall back to image URL
+                    link_url = item.get("pictures_url", "") or item.get("approved_url", "")
+                    if link_url and link_url.startswith("http"):
                         cell.value = "View"
-                        cell.hyperlink = url
+                        cell.hyperlink = link_url
                         cell.font = LINK_FONT
                     else:
                         cell.value = ""

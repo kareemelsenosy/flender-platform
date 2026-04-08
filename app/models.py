@@ -108,6 +108,7 @@ class UniqueItem(Base):
     scores_json = Column(Text, default="{}")  # JSON dict {url: score}
     review_status = Column(String(20), default="pending")  # pending, approved, skipped
     approved_url = Column(Text)
+    pictures_url = Column(Text)  # original Dropbox folder link from "Pictures" column
     additional_urls_json = Column(Text, default="[]")  # extra images for folder download
     auto_selected = Column(Boolean, default=False)
 

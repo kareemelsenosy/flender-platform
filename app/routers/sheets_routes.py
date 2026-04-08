@@ -146,7 +146,8 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                     "barcode": item.get("barcode", ""),
                     "item_group": item.get("item_group", ""),
                     "sap_code": item.get("sap_code", ""),
-                    "image_url": item.get("image_url") or item.get("dropbox_url") or "",
+                    "image_url": item.get("image_url") or "",
+                    "pictures_url": item.get("dropbox_url") or "",
                 })
 
         # Store currency in session config
@@ -174,6 +175,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                 item_group=row["item_group"],
             )
             ui.sizes = [size] if size else []
+            ui.pictures_url = row.get("pictures_url") or ""
             image_url = row["image_url"]
             if image_url:
                 ui.approved_url = image_url
@@ -211,6 +213,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                         item_group=row["item_group"],
                     )
                     ui2.sizes = [size] if size else []
+                    ui2.pictures_url = row.get("pictures_url") or ""
                     image_url = row["image_url"]
                     if image_url:
                         ui2.approved_url = image_url

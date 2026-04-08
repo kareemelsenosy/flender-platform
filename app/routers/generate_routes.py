@@ -255,6 +255,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "qty_available": item.qty_available,
                 "size": str(size),  # single size per row
                 "approved_url": item.approved_url,
+                "pictures_url": item.pictures_url or "",
                 "additional_urls": item.additional_urls,
                 "brand": item.brand,
                 "barcode": item.barcode or "",
