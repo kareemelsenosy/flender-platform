@@ -31,7 +31,7 @@ def _make_http_session() -> requests.Session:
 
 _HTTP = _make_http_session()
 
-MAX_CANDIDATES = 8
+MAX_CANDIDATES = 10
 REQUEST_TIMEOUT = 15
 
 _HEADERS = {
@@ -205,8 +205,10 @@ class ImageSearcher:
             )
 
         tasks["bing"] = lambda: self._bing_search(brand, item_code, color_name, style_name)
+        tasks["bing_code_only"] = lambda: self._bing_raw(f"{item_code} {brand} product image") if item_code else []
         tasks["google_scrape"] = lambda: self._google_images_scrape(brand, item_code, color_name, style_name)
         tasks["ddg"]  = lambda: self._duckduckgo_search(brand, item_code, color_name, style_name)
+        tasks["yahoo"] = lambda: self._yahoo_images_scrape(brand, item_code, color_name, style_name)
 
         # Fire all sources at the same time
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -422,6 +424,17 @@ class ImageSearcher:
         # Filter out Google/tracking URLs
         filtered = [u for u in urls if "google.com" not in u and "gstatic.com" not in u
                     and "googleapis.com" not in u and len(u) > 20]
+
+        # If few results, try a tighter code-only query as fallback
+        if len(filtered) < 3 and item_code:
+            fallback_query = f"{item_code} {brand}"
+            fallback_url = f"https://www.google.com/search?q={urllib.parse.quote(fallback_query)}&tbm=isch&hl=en"
+            resp2 = self._get(fallback_url, headers=google_headers)
+            if resp2:
+                ou2 = re.findall(r'"ou"\s*:\s*"(https?://[^"]+)"', resp2.text)
+                extra = [u for u in ou2 if "google.com" not in u and "gstatic.com" not in u and len(u) > 20]
+                filtered = self._dedupe(filtered + extra)
+
         return self._dedupe(filtered)[:self.max_candidates]
 
     def _duckduckgo_search(self, brand: str, item_code: str,
@@ -454,6 +467,47 @@ class ImageSearcher:
             return [r["image"] for r in data.get("results", [])[:self.max_candidates] if "image" in r]
         except Exception:
             return []
+
+    def _yahoo_images_scrape(self, brand: str, item_code: str,
+                             color_name: str | None, style_name: str | None) -> list[str]:
+        """Scrape Yahoo Image Search results (no API key needed)."""
+        parts = [brand, item_code]
+        if style_name:
+            parts.append(style_name)
+        if color_name:
+            parts.append(color_name)
+        query = " ".join(p for p in parts if p)
+
+        headers = {
+            "User-Agent": _HEADERS["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        url = f"https://images.search.yahoo.com/search/images?p={urllib.parse.quote(query)}&fr=yfp-t&fr2=sb-top-images.search.yahoo.com&tab=organic&ri=0"
+        resp = self._get(url, headers=headers)
+        if resp is None:
+            return []
+
+        urls: list[str] = []
+        # Yahoo embeds image URLs in data-src and mosrc attributes
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for img in soup.find_all("img"):
+            for attr in ("data-src", "src", "data-original"):
+                src = img.get(attr, "")
+                if src.startswith("http") and "yimg.com" not in src and "yahoo.com" not in src:
+                    urls.append(src)
+                    break
+
+        # Also extract from JSON-like blobs
+        raw_urls = re.findall(r'"imgurl"\s*:\s*"(https?://[^"]+)"', resp.text)
+        urls.extend([urllib.parse.unquote(u) for u in raw_urls])
+
+        raw_urls2 = re.findall(r'src="(https?://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"', resp.text)
+        for u in raw_urls2:
+            if "yimg.com" not in u and "yahoo.com" not in u:
+                urls.append(u)
+
+        return self._dedupe(urls)[:self.max_candidates]
 
     def _get(self, url: str, params: dict | None = None,
              headers: dict | None = None, retries: int = 2) -> requests.Response | None:
