@@ -29,7 +29,11 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
 
     # Parse file to get headers
     parser = FileParser()
-    sheet_names = parser.get_sheet_names(sess.uploaded_file.file_path)
+    try:
+        sheet_names = parser.get_sheet_names(sess.uploaded_file.file_path)
+    except Exception:
+        sheet_names = []
+
     try:
         rows, unique_items, raw_headers = parser.parse(sess.uploaded_file.file_path)
     except Exception as e:
@@ -37,7 +41,8 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
             "session": sess, "error": str(e),
             "headers": [], "auto_mapping": {}, "standard_fields": [],
             "sample_rows": [], "saved_formats": [], "ai_mapping": {},
-            "sheet_names": sheet_names,
+            "sheet_names": sheet_names, "total_rows": 0, "total_unique": 0,
+            "is_remap": False,
         })
 
     # Use existing session mapping if available, otherwise auto-detect
@@ -137,6 +142,7 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             "session": sess, "error": f"Could not read file: {e}",
             "headers": [], "auto_mapping": mapping, "standard_fields": list(COLUMN_PATTERNS.keys()),
             "sample_rows": [], "saved_formats": [], "ai_mapping": {}, "is_remap": True,
+            "sheet_names": [], "total_rows": 0, "total_unique": 0,
         })
     invalid_cols = [v for v in mapping.values() if v and v not in raw_headers]
     if invalid_cols:
@@ -146,6 +152,7 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             "headers": raw_headers, "auto_mapping": mapping,
             "standard_fields": list(COLUMN_PATTERNS.keys()),
             "sample_rows": [], "saved_formats": [], "ai_mapping": {}, "is_remap": True,
+            "sheet_names": [], "total_rows": 0, "total_unique": 0,
         })
 
     rows, unique_items = parser.parse_with_mapping(sess.uploaded_file.file_path, mapping,
