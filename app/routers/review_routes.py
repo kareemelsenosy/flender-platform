@@ -158,7 +158,7 @@ async def image_proxy(request: Request, url: str = ""):
         async with httpx.AsyncClient(
             headers=_DL_HEADERS,
             follow_redirects=True,
-            timeout=httpx.Timeout(8.0),
+            timeout=httpx.Timeout(5.0),
         ) as client:
             resp = await client.get(url)
 

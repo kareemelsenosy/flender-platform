@@ -351,13 +351,15 @@ function renderMain(key) {
       <div class="selected-preview mb-6">
         ${isLocalFile(selectedUrl)
           ? localFilePlaceholder(selectedUrl, 'selected-local')
-          : `<img src="${escapeAttr(proxyUrl(selectedUrl))}" alt="Selected image" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22><rect fill=%22%23f4f4f4%22 width=%22200%22 height=%22200%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23a3a3a3%22 font-size=%2214%22>Failed to load</text></svg>'">`}
+          : `<img src="${escapeAttr(proxyUrl(selectedUrl))}" alt="Selected image" id="selected-img"
+               data-key="${escapeAttr(key)}" data-id="${entry.id}"
+               onerror="autoAdvanceSelected(this)">`}
         ${(entry.additional_urls && entry.additional_urls.length) ? `
           <div style="display:flex;gap:8px;margin-top:8px;justify-content:center">
             ${entry.additional_urls.map((u, i) => `<div style="position:relative">
               ${isLocalFile(u)
                 ? localFilePlaceholder(u)
-                : `<img src="${escapeAttr(proxyUrl(u))}" style="height:60px;border-radius:4px;border:2px solid var(--primary)" onerror="this.style.display='none'">`}
+                : `<img src="${escapeAttr(proxyUrl(u))}" style="height:60px;border-radius:4px;border:2px solid var(--primary)" onerror="this.parentElement.style.display='none'">`}
               <span style="position:absolute;top:-4px;right:-4px;background:var(--primary);color:white;font-size:0.55rem;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center">+${i+1}</span>
             </div>`).join('')}
           </div>
@@ -388,16 +390,20 @@ function renderMain(key) {
     <h4 class="mb-3">Candidates (${candidates.length})
       <span style="font-size:0.7rem;font-weight:400;color:var(--gray-400);margin-left:8px">Click = primary &middot; Right-click = add extra image</span>
     </h4>
-    <div class="image-grid mb-4">
+    <div class="image-grid mb-4" id="candidates-grid">
       ${candidates.map((url, i) => {
         const sc = scores[url] || 0;
         const conf = getConfidenceLabel(sc);
         const extras = entry.additional_urls || [];
         const extraIdx = extras.indexOf(url);
         const isExtra = extraIdx >= 0;
+        // First 6 load immediately; rest are lazy (data-src) to avoid flooding the proxy
+        const eager = i < 6;
         const cardImage = isLocalFile(url)
           ? localFilePlaceholder(url, 'candidate-local')
-          : `<img src="${escapeAttr(proxyUrl(url))}" alt="" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22140%22><rect fill=%22%23fce4ec%22 width=%22160%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23991b1b%22 font-size=%2212%22>Error</text></svg>'">`;
+          : eager
+            ? `<img src="${escapeAttr(proxyUrl(url))}" alt="" onerror="this.closest('.image-card').style.display='none'">`
+            : `<img data-src="${escapeAttr(proxyUrl(url))}" alt="" class="lazy-candidate" style="opacity:0;transition:opacity .2s" onerror="this.closest('.image-card').style.display='none'">`;
         const lensHref = !isLocalFile(url) ? `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(url)}` : '';
         return `
         <div class="image-card ${url === selectedUrl ? 'selected' : ''} ${isExtra ? 'extra-selected' : ''}" data-key="${escapeAttr(key)}" data-id="${entry.id}" data-url="${escapeAttr(url)}" data-extra="true">
@@ -429,6 +435,9 @@ function renderMain(key) {
 
   const noImageBtn = document.getElementById('mark-no-image-btn');
   if (noImageBtn) noImageBtn.addEventListener('click', () => approveUrl(key, entry.id, ''));
+
+  // Lazy-load candidates that are off-screen
+  _observeCandidates(document.getElementById('candidates-grid'));
 }
 
 function showCustomUrlInput(key, itemId) {
@@ -642,6 +651,58 @@ document.addEventListener('keydown', e => {
     if (entry) approveUrl(currentKey, entry.id, '');
   }
 });
+
+// ── Auto-advance selected image when it fails to load ────────────────────────
+// Called by onerror on the main selected image. Tries next candidates in order,
+// skips ones that also fail, and saves the first working URL to the DB.
+// If nothing works, clears the approved_url (marks as no image).
+function autoAdvanceSelected(imgEl) {
+  const key = imgEl.dataset.key;
+  const itemId = parseInt(imgEl.dataset.id);
+  const entry = state[key];
+  if (!entry) return;
+
+  const candidates = entry.candidates || [];
+  const currentUrl = entry.approved_url;
+  const startIdx = candidates.indexOf(currentUrl);
+
+  // Find next candidate that isn't the broken one
+  const remaining = candidates.slice(startIdx + 1);
+
+  function tryNext(urls) {
+    if (!urls.length) {
+      // All candidates exhausted — mark as no image silently
+      approveUrl(key, itemId, '');
+      return;
+    }
+    const url = urls[0];
+    const testImg = new Image();
+    testImg.onload = () => {
+      // Found a working image — save it
+      approveUrl(key, itemId, url);
+    };
+    testImg.onerror = () => tryNext(urls.slice(1));
+    testImg.src = proxyUrl(url);
+  }
+
+  tryNext(remaining);
+}
+
+// ── Candidate grid lazy loader (images 7+) ───────────────────────────────────
+function _observeCandidates(grid) {
+  if (!grid) return;
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      const img = e.target;
+      img.src = img.dataset.src;
+      img.onload = () => { img.style.opacity = '1'; };
+      // onerror already set inline — hides the card
+      obs.unobserve(img);
+    });
+  }, { rootMargin: '200px', threshold: 0.01 });
+  grid.querySelectorAll('img.lazy-candidate[data-src]').forEach(img => obs.observe(img));
+}
 
 // ── Sidebar lazy thumbnail loader ───────────────────────────────────────────
 // Uses IntersectionObserver so only visible thumbnails hit the proxy.
