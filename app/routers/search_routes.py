@@ -42,6 +42,33 @@ _search_progress: dict[int, dict] = {}
 _DEFAULT_WORKERS = 10
 
 
+def _reset_items_for_search(db: DBSession, session_id: int) -> int:
+    """Reset retryable items so a new session-level search can process them again.
+
+    We preserve manually-approved items, but anything that was auto-selected,
+    skipped, pending, or left without a real approved URL should be searched again.
+    """
+    from sqlalchemy import or_
+
+    return db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+        or_(
+            UniqueItem.review_status != "approved",
+            UniqueItem.auto_selected == True,
+            UniqueItem.approved_url == None,
+            UniqueItem.approved_url == "",
+        ),
+    ).update({
+        "search_status": "pending",
+        "review_status": "pending",
+        "approved_url": None,
+        "auto_selected": False,
+        "candidates_json": "[]",
+        "scores_json": "{}",
+        "additional_urls_json": "[]",
+    }, synchronize_session=False)
+
+
 def _run_search_background(session_id: int, config: dict, user_id: int = None):
     """Run image search in background thread."""
     db = SessionLocal()
@@ -299,7 +326,13 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             )
     except Exception as e:
         logger.error(f"Background search failed: {e}")
-        _search_progress[session_id]["running"] = False
+        prog = _search_progress.get(session_id)
+        if prog:
+            prog["running"] = False
+        else:
+            _search_progress[session_id] = {
+                "done": 0, "total": 0, "running": False, "current": "",
+            }
     finally:
         db.close()
 
@@ -333,15 +366,20 @@ async def start_batch_search(request: Request, db: DBSession = Depends(get_db)):
             started.append(sid)
             continue
 
-        config = sess.config
+        config = dict(sess.config or {})
         config["search_mode"] = search_mode
         config["local_folder"] = local_folder
         config["search_notes"] = search_notes
-        if brand_urls:
-            config["extra_brand_urls"] = brand_urls
+        config["extra_brand_urls"] = brand_urls
+        config["search_gen"] = config.get("search_gen", 0) + 1
+        reset_count = _reset_items_for_search(db, sid)
         sess.config = config
-        sess.status = "searching"
+        sess.searched_items = 0
+        sess.status = "searching" if reset_count > 0 else "reviewing"
         db.commit()
+
+        if reset_count == 0:
+            continue
 
         thread = threading.Thread(
             target=_run_search_background,
@@ -513,21 +551,31 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     search_mode = data.get("search_mode", "web")  # web, local, both
     local_folder = data.get("local_folder", "")
     brand_urls = data.get("brand_urls", [])  # Additional brand URLs for this search
+    search_notes = data.get("search_notes", "")
 
     # Update session config with search settings
-    config = sess.config
+    config = dict(sess.config or {})
     config["search_mode"] = search_mode
     config["local_folder"] = local_folder
-    if brand_urls:
-        config["extra_brand_urls"] = brand_urls
+    config["extra_brand_urls"] = brand_urls
+    config["search_notes"] = search_notes
     # Bump search generation so any stale background threads won't overwrite status
     config["search_gen"] = config.get("search_gen", 0) + 1
+    reset_count = _reset_items_for_search(db, session_id)
     sess.config = config
-    sess.status = "searching"
+    sess.searched_items = 0
+    sess.status = "searching" if reset_count > 0 else "reviewing"
     db.commit()
 
     # Clear any stale progress so old threads don't block a new search from starting
     _search_progress.pop(session_id, None)
+
+    if reset_count == 0:
+        return JSONResponse({
+            "ok": True,
+            "redirect": f"/review/{session_id}",
+            "message": "Nothing left to search",
+        })
 
     # Start search if not already running
     if session_id not in _search_progress or not _search_progress.get(session_id, {}).get("running"):

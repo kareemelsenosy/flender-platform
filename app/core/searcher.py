@@ -229,7 +229,9 @@ class ImageSearcher:
             for url in all_urls
         }
         raw_scores = {
-            url: self._score_url(url, item_code, color_code, brand, i, url_sources[url])
+            url: self._score_url(
+                url, item_code, color_code, color_name, brand, i, url_sources[url]
+            )
             for i, url in enumerate(all_urls)
         }
         candidates = sorted(all_urls, key=lambda u: raw_scores[u], reverse=True)[:self.max_candidates]
@@ -237,6 +239,7 @@ class ImageSearcher:
         return candidates, scores
 
     def _score_url(self, url: str, item_code: str, color_code: str | None,
+                   color_name: str | None,
                    brand: str, position: int = 0, source_count: int = 1) -> float:
         score = 0.0
         lower = url.lower()

@@ -327,9 +327,15 @@ async function startSearch() {
     body: JSON.stringify({ search_mode: mode, local_folder: localFolder, brand_urls: brandUrls, search_notes: searchNotes }),
   });
 
+  const data = await resp.json();
+
   if (!resp.ok) {
-    const data = await resp.json();
     showAlert(data.error || 'Failed to start search.', 'Error');
+    return;
+  }
+
+  if (data.redirect) {
+    navigate(data.redirect);
     return;
   }
 
