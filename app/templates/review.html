@@ -653,39 +653,43 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Auto-advance selected image when it fails to load ────────────────────────
-// Called by onerror on the main selected image. Tries next candidates in order,
-// skips ones that also fail, and saves the first working URL to the DB.
-// If nothing works, clears the approved_url (marks as no image).
+// Tests ALL remaining candidates in parallel — the first that loads wins.
+// Sequential testing was too slow (5s timeout × N broken URLs).
 function autoAdvanceSelected(imgEl) {
   const key = imgEl.dataset.key;
   const itemId = parseInt(imgEl.dataset.id);
   const entry = state[key];
   if (!entry) return;
 
+  // Show a subtle loading indicator instead of leaving "Failed to load"
+  imgEl.style.opacity = '0.3';
+
   const candidates = entry.candidates || [];
   const currentUrl = entry.approved_url;
-  const startIdx = candidates.indexOf(currentUrl);
+  const remaining = candidates.filter(u => u !== currentUrl && !isLocalFile(u));
 
-  // Find next candidate that isn't the broken one
-  const remaining = candidates.slice(startIdx + 1);
-
-  function tryNext(urls) {
-    if (!urls.length) {
-      // All candidates exhausted — mark as no image silently
-      approveUrl(key, itemId, '');
-      return;
-    }
-    const url = urls[0];
-    const testImg = new Image();
-    testImg.onload = () => {
-      // Found a working image — save it
-      approveUrl(key, itemId, url);
-    };
-    testImg.onerror = () => tryNext(urls.slice(1));
-    testImg.src = proxyUrl(url);
+  if (!remaining.length) {
+    approveUrl(key, itemId, '');
+    return;
   }
 
-  tryNext(remaining);
+  let resolved = false;
+
+  // Race all remaining candidates — first successful load wins
+  remaining.forEach(url => {
+    const testImg = new Image();
+    testImg.onload = () => {
+      if (resolved) return;
+      resolved = true;
+      approveUrl(key, itemId, url);
+    };
+    testImg.src = proxyUrl(url);
+  });
+
+  // Fallback: if nothing loads within 12s, mark as no image
+  setTimeout(() => {
+    if (!resolved) { resolved = true; approveUrl(key, itemId, ''); }
+  }, 12000);
 }
 
 // ── Candidate grid lazy loader (images 7+) ───────────────────────────────────

@@ -33,10 +33,13 @@ _DL_HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
-# Simple in-memory image cache: url_hash -> (content_bytes, content_type, timestamp)
+# Success cache: url_hash -> (content_bytes, content_type, timestamp)
 _image_cache: dict[str, tuple[bytes, str, float]] = {}
 _CACHE_MAX_AGE = 1800  # 30 minutes
 _CACHE_MAX_ITEMS = 1000
+# Failure cache: url_hash -> timestamp — skip re-fetching known-broken URLs for 10 min
+_fail_cache: dict[str, float] = {}
+_FAIL_CACHE_MAX_AGE = 600  # 10 minutes
 _LOCAL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 
 
@@ -144,7 +147,7 @@ async def image_proxy(request: Request, url: str = ""):
             sep = "&" if "?" in url else "?"
             url = url + sep + "dl=1"
 
-    # Check cache
+    # Check caches
     url_hash = hashlib.md5(url.encode()).hexdigest()
     now = time.time()
     if url_hash in _image_cache:
@@ -152,6 +155,9 @@ async def image_proxy(request: Request, url: str = ""):
         if now - ts < _CACHE_MAX_AGE:
             return Response(content=data, media_type=ct,
                             headers={"Cache-Control": "public, max-age=600"})
+    # Fast-fail for known-broken URLs (avoids repeated 5s timeouts)
+    if url_hash in _fail_cache and now - _fail_cache[url_hash] < _FAIL_CACHE_MAX_AGE:
+        return Response(status_code=502)
 
     # Fetch from origin — async so we don't block the event loop
     try:
@@ -163,6 +169,7 @@ async def image_proxy(request: Request, url: str = ""):
             resp = await client.get(url)
 
         if resp.status_code != 200:
+            _fail_cache[url_hash] = now
             return Response(status_code=resp.status_code)
 
         data = resp.content
@@ -180,6 +187,7 @@ async def image_proxy(request: Request, url: str = ""):
             ct = resp.headers.get("content-type", "image/jpeg")
             # If response is HTML (error page), don't serve it as an image
             if "text/html" in ct or data[:20].strip().startswith(b"<"):
+                _fail_cache[url_hash] = now
                 return Response(status_code=502)
 
         # Only cache if it looks like an image and is < 5MB
@@ -195,6 +203,7 @@ async def image_proxy(request: Request, url: str = ""):
                         headers={"Cache-Control": "public, max-age=600"})
     except Exception as e:
         logger.warning(f"Image proxy failed for {url[:80]}: {e}")
+        _fail_cache[url_hash] = now
         return Response(status_code=502)
 
 

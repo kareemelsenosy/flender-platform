@@ -341,7 +341,15 @@ class ImageSearcher:
         decoded = _html.unescape(raw)
 
         soup = BeautifulSoup(raw, "html.parser")
-        # Method 1: iusc anchor tags with JSON metadata
+
+        # Collect murl (source URL) and turl (Bing thumbnail) as pairs.
+        # murl = original retailer CDN — high quality but often blocked by CDN
+        # turl = th.bing.com thumbnail — lower res but ALWAYS loads reliably
+        # Strategy: store murl first (for quality), turl right after (as fallback).
+        murl_list: list[str] = []
+        turl_list: list[str] = []
+
+        # Method 1: iusc anchor tags with JSON metadata — best source for paired murl+turl
         for tag in soup.find_all("a", class_="iusc"):
             m = tag.get("m", "")
             if not m:
@@ -349,34 +357,45 @@ class ImageSearcher:
             try:
                 obj = json.loads(m)
                 if "murl" in obj:
-                    urls.append(obj["murl"])
+                    murl_list.append(obj["murl"])
+                if "turl" in obj:
+                    turl_list.append(obj["turl"])
             except Exception:
                 pass
 
-        # Method 2: murl from decoded JSON blobs (handles &quot; encoding)
+        # Method 2: murl/turl from decoded JSON blobs (handles &quot; encoding)
         for text in (raw, decoded):
-            murl_matches = re.findall(r'"murl"\s*:\s*"(https?://[^"\\]+)"', text)
-            urls.extend(murl_matches)
+            murl_list.extend(re.findall(r'"murl"\s*:\s*"(https?://[^"\\]+)"', text))
+            turl_list.extend(re.findall(r'"turl"\s*:\s*"(https?://[^"\\]+)"', text))
 
         # Method 3: imgurl= in raw HTML
         imgurl_matches = re.findall(r'imgurl=(https?://[^&"\'\\s]+)', decoded)
-        urls.extend([urllib.parse.unquote(u) for u in imgurl_matches])
+        murl_list.extend([urllib.parse.unquote(u) for u in imgurl_matches])
 
         # Method 4: contentUrl / mediaUrl patterns
         for pat in [r'"contentUrl"\s*:\s*"(https?://[^"\\]+)"',
                     r'"mediaUrl"\s*:\s*"(https?://[^"\\]+)"']:
-            urls.extend(re.findall(pat, decoded))
+            murl_list.extend(re.findall(pat, decoded))
 
         # Method 5: any https URL ending in image extension
-        if len(urls) < 3:
+        if len(murl_list) < 3:
             img_urls = re.findall(r'https?://[^\s"\'<>&]{15,}\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>&]*)?', decoded)
-            urls.extend([u for u in img_urls if "bing.com" not in u and "microsoft.com" not in u])
+            murl_list.extend([u for u in img_urls if "bing.com" not in u and "microsoft.com" not in u])
 
-        # Method 6: turl (thumbnail) as last resort
-        if len(urls) < 3:
-            turl_matches = re.findall(r'"turl"\s*:\s*"(https?://[^"\\]+)"', decoded)
-            urls.extend(turl_matches)
+        # Interleave: murl then its turl fallback, so auto-advance finds turl right away
+        # when murl fails (no waiting through all murls before hitting reliable turls).
+        seen: set[str] = set()
+        interleaved: list[str] = []
+        murl_deduped = [u for u in murl_list if u not in seen and not seen.add(u)]  # type: ignore[func-returns-value]
+        turl_deduped = [u for u in turl_list if u not in seen and not seen.add(u)]  # type: ignore[func-returns-value]
+        for i, mu in enumerate(murl_deduped):
+            interleaved.append(mu)
+            if i < len(turl_deduped):
+                interleaved.append(turl_deduped[i])
+        # Append any remaining turls not yet added
+        interleaved.extend(turl_deduped[len(murl_deduped):])
 
+        urls.extend(interleaved)
         return self._dedupe(urls)
 
     def _google_search(self, brand: str, item_code: str,
