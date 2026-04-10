@@ -102,7 +102,6 @@ async def lifespan(app: FastAPI):
         try:
             from sqlalchemy import or_
             fixed = _fdb.query(UniqueItem).filter(
-                UniqueItem.search_status == "done",
                 UniqueItem.review_status == "pending",
                 or_(UniqueItem.approved_url == None, UniqueItem.approved_url == ""),
             ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)

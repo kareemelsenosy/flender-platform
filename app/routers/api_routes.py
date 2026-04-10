@@ -169,7 +169,6 @@ async def fix_pending_items(request: Request, db: DBSession = Depends(get_db)):
         return JSONResponse({"fixed": 0})
     fixed = db.query(UniqueItem).filter(
         UniqueItem.session_id.in_(user_session_ids),
-        UniqueItem.search_status == "done",
         UniqueItem.review_status == "pending",
         or_(UniqueItem.approved_url == None, UniqueItem.approved_url == ""),
     ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)
