@@ -352,7 +352,7 @@
         const newMain = doc.querySelector('.main-content');
         const curMain = document.querySelector('.main-content');
         // If either side lacks .main-content (layout change) — replace whole document
-        if (!newMain || !curMain) { writeDoc(html, finalUrl); return; }
+        if (!newMain || !curMain) { writeDoc(html, url.href); return; }
 
         // Swap content
         curMain.innerHTML = newMain.innerHTML;

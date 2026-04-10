@@ -67,6 +67,9 @@ const SESSION_ID = {{ session.id }};
 let pollTimer = null;
 let exportStartTime = null;
 
+// Clean up polling when navigating away (SPA)
+window.addEventListener('beforeunload', () => { if (pollTimer) clearInterval(pollTimer); });
+
 function fmtTime(sec) {
   if (sec <= 0) return '';
   if (sec > 60) {
@@ -80,7 +83,7 @@ function pollProgress() {
   pollTimer = setInterval(async () => {
     try {
       const resp = await fetch(`/generate/${SESSION_ID}/progress`);
-      const p = await resp.json();
+      let p; try { p = await resp.json(); } catch(_) { return; }
       const fill = document.getElementById('export-fill');
       const statusEl = document.getElementById('export-status');
       const etaEl = document.getElementById('export-eta');

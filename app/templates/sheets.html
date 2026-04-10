@@ -109,7 +109,7 @@ function addRow(val) {
   d.innerHTML = `
     <div style="flex:1">
       <div style="display:flex;gap:8px;align-items:center">
-        <input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${val||''}" onblur="previewTabs('${id}',this.value)">
+        <input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${(val||'').replace(/"/g,'&quot;')}" onblur="previewTabs('${id}',this.value)">
         <button class="rm" onclick="rmRow('${id}')">✕</button>
       </div>
       <div id="tabs-${id}" style="display:none;margin-top:8px;padding:10px;background:var(--gray-50);border-radius:var(--radius-sm);border:1px solid var(--gray-200)"></div>

@@ -80,6 +80,20 @@ async def image_proxy(request: Request, url: str = ""):
     if not url or not url.startswith("http"):
         return Response(status_code=400)
 
+    # SSRF protection: block requests to private/internal IPs
+    try:
+        import socket
+        from ipaddress import ip_address
+        hostname = urllib.parse.urlparse(url).hostname
+        if hostname:
+            for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+                addr = info[4][0]
+                ip = ip_address(addr)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return Response(status_code=403)
+    except Exception:
+        pass  # DNS resolution failed — let requests handle it
+
     # Convert dropbox sharing URLs to direct download
     if "dropbox.com" in url or "dropboxusercontent.com" in url:
         import re

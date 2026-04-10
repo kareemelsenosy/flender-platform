@@ -230,6 +230,16 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 futures[executor.submit(_search_one, item.id, item_dict)] = item
 
             for future in as_completed(futures):
+                # Check if search was cancelled (remap bumped search_gen)
+                try:
+                    current_sess = db.query(Session).get(session_id)
+                    current_gen = (current_sess.config or {}).get("search_gen", 0) if current_sess else -1
+                    if current_gen != search_gen:
+                        logger.info(f"Search cancelled for session {session_id} (gen {search_gen} != {current_gen})")
+                        break
+                except Exception:
+                    pass
+
                 try:
                     item_id, candidates, scores, from_cache = future.result()
                     db_item = db.query(UniqueItem).get(item_id)

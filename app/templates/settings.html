@@ -137,7 +137,8 @@ credsZone.addEventListener('drop', e => {
   e.preventDefault();
   credsZone.classList.remove('dragover');
   if (e.dataTransfer.files[0]) {
-    credsFile.files = e.dataTransfer.files;
+    try { const dt = new DataTransfer(); dt.items.add(e.dataTransfer.files[0]); credsFile.files = dt.files; }
+    catch(_) { credsFile.files = e.dataTransfer.files; }
     document.getElementById('creds-filename').textContent = e.dataTransfer.files[0].name;
     credsZone.style.borderColor = 'var(--success)';
   }

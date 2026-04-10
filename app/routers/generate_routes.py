@@ -29,6 +29,7 @@ _progress_lock = threading.Lock()
 # Recently completed exports — {user_id: [{session_id, name, download_url, ...}, ...]}
 # Kept for 5 minutes so the sidebar can show download buttons
 _completed_exports: dict[int, list] = {}
+_completed_lock = threading.Lock()
 
 
 @router.get("/generate/{session_id}/progress")
@@ -66,10 +67,11 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
 
     # Check if export recently completed
     completed_entry = None
-    for entry in _completed_exports.get(uid, []):
-        if entry.get("session_id") == session_id:
-            completed_entry = entry
-            break
+    with _completed_lock:
+        for entry in _completed_exports.get(uid, []):
+            if entry.get("session_id") == session_id:
+                completed_entry = entry
+                break
 
     # Also check DB for generated files (covers case where server restarted)
     if not completed_entry and not is_exporting:
@@ -185,11 +187,12 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             "images_zip_url": result["images_zip_url"],
             "completed_at": datetime.now(timezone.utc).timestamp(),
         }
-        _completed_exports.setdefault(user_id, []).append(entry)
+        with _completed_lock:
+            _completed_exports.setdefault(user_id, []).append(entry)
 
-        # Clean up old entries (> 5 min)
-        now = datetime.now(timezone.utc).timestamp()
-        _completed_exports[user_id] = [e for e in _completed_exports[user_id] if now - e["completed_at"] < 300]
+            # Clean up old entries (> 5 min)
+            now = datetime.now(timezone.utc).timestamp()
+            _completed_exports[user_id] = [e for e in _completed_exports[user_id] if now - e["completed_at"] < 300]
 
         # Notify user
         from app.services.notifications import add_notification
@@ -281,7 +284,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
 def cleanup_expired_files(db_session) -> int:
     """Delete expired GeneratedFile records and their files from disk. Returns count deleted. (L4)"""
     now = datetime.now(timezone.utc)
-    expired = db_session.query(GeneratedFile).all()
+    expired = db_session.query(GeneratedFile).filter(GeneratedFile.expires_at < now).all()
     deleted = 0
     for rec in expired:
         rec_expires = rec.expires_at
@@ -302,10 +305,19 @@ def cleanup_expired_files(db_session) -> int:
 
 
 @router.get("/download/{token}")
-async def download_file(token: str, db: DBSession = Depends(get_db)):
+async def download_file(token: str, request: Request, db: DBSession = Depends(get_db)):
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
     gen = db.query(GeneratedFile).filter(GeneratedFile.token == token).first()
     if not gen or not os.path.exists(gen.file_path):
         return JSONResponse({"error": "File not found or expired"}, status_code=404)
+
+    # Verify ownership
+    sess = db.query(Session).filter(Session.id == gen.session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         return JSONResponse({"error": "Download link expired"}, status_code=410)
@@ -318,10 +330,19 @@ async def download_file(token: str, db: DBSession = Depends(get_db)):
 
 
 @router.get("/download-zip/{token}")
-async def download_zip(token: str, db: DBSession = Depends(get_db)):
+async def download_zip(token: str, request: Request, db: DBSession = Depends(get_db)):
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
     gen = db.query(GeneratedFile).filter(GeneratedFile.token == token).first()
     if not gen or not os.path.exists(gen.file_path):
         return JSONResponse({"error": "File not found or expired"}, status_code=404)
+
+    # Verify ownership
+    sess = db.query(Session).filter(Session.id == gen.session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         return JSONResponse({"error": "Download link expired"}, status_code=410)
