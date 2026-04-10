@@ -238,11 +238,14 @@ function updateSidebar() {
     else if (item.auto_selected) { badge = 'AUTO'; badgeCls = 'badge-gray'; }
     else { badge = 'EDITED'; badgeCls = 'badge-green'; }
 
+    // Sidebar thumbnails: use data-src for lazy loading via IntersectionObserver.
+    // Loading 100+ images through the proxy at once floods the server.
+    // Only items visible in the sidebar viewport will actually fetch.
     const thumbHtml = !thumbUrl
       ? '<div class="thumb-placeholder">N/A</div>'
       : isLocalFile(thumbUrl)
         ? localFilePlaceholder(thumbUrl)
-        : `<img src="${escapeAttr(proxyUrl(thumbUrl))}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" loading="lazy" alt="${safeCode}"><div class="thumb-placeholder" style="display:none">ERR</div>`;
+        : `<img data-src="${escapeAttr(proxyUrl(thumbUrl))}" class="lazy-thumb" alt="${safeCode}" style="opacity:0;transition:opacity .2s"><div class="thumb-placeholder" style="display:none">ERR</div>`;
 
     return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}">
       ${thumbHtml}
@@ -256,6 +259,9 @@ function updateSidebar() {
   container.querySelectorAll('.review-item[data-select-key]').forEach(el => {
     el.addEventListener('click', () => selectItem(el.dataset.selectKey));
   });
+
+  // Lazy-load sidebar thumbnails as they scroll into view
+  _observeLazyThumbs(container);
 
   document.querySelectorAll('.sidebar-filters button').forEach(btn => {
     const f = btn.textContent.toLowerCase().replace(' ', '');
@@ -606,6 +612,31 @@ document.addEventListener('keydown', e => {
     if (entry) approveUrl(currentKey, entry.id, '');
   }
 });
+
+// ── Sidebar lazy thumbnail loader ───────────────────────────────────────────
+// Uses IntersectionObserver so only visible thumbnails hit the proxy.
+let _thumbObserver = null;
+function _observeLazyThumbs(container) {
+  if (_thumbObserver) _thumbObserver.disconnect();
+  _thumbObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const img = entry.target;
+      img.src = img.dataset.src;
+      img.onload = () => { img.style.opacity = '1'; };
+      img.onerror = () => {
+        img.style.display = 'none';
+        const placeholder = img.nextElementSibling;
+        if (placeholder) placeholder.style.display = 'flex';
+      };
+      _thumbObserver.unobserve(img);
+    });
+  }, { root: container, rootMargin: '100px', threshold: 0.01 });
+
+  container.querySelectorAll('img.lazy-thumb[data-src]').forEach(img => {
+    _thumbObserver.observe(img);
+  });
+}
 
 loadState();
 </script>

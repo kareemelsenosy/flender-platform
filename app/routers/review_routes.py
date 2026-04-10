@@ -11,6 +11,7 @@ import urllib.parse
 import zipfile
 from typing import Set
 
+import httpx
 import requests
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -34,8 +35,8 @@ _DL_HEADERS = {
 
 # Simple in-memory image cache: url_hash -> (content_bytes, content_type, timestamp)
 _image_cache: dict[str, tuple[bytes, str, float]] = {}
-_CACHE_MAX_AGE = 600  # 10 minutes
-_CACHE_MAX_ITEMS = 500
+_CACHE_MAX_AGE = 1800  # 30 minutes
+_CACHE_MAX_ITEMS = 1000
 _LOCAL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 
 
@@ -102,7 +103,7 @@ async def serve_local_image(request: Request, path: str = ""):
 
     mime_type, _ = mimetypes.guess_type(str(resolved))
     return FileResponse(str(resolved), media_type=mime_type or "image/jpeg",
-                        headers={"Cache-Control": "public, max-age=300"})
+                        headers={"Cache-Control": "public, max-age=600"})
 
 
 @router.get("/api/image/proxy")
@@ -128,7 +129,7 @@ async def image_proxy(request: Request, url: str = ""):
                 if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                     return Response(status_code=403)
     except Exception:
-        pass  # DNS resolution failed — let requests handle it
+        pass  # DNS resolution failed — let httpx handle it
 
     # Convert dropbox sharing URLs to direct download
     if "dropbox.com" in url or "dropboxusercontent.com" in url:
@@ -150,17 +151,23 @@ async def image_proxy(request: Request, url: str = ""):
         data, ct, ts = _image_cache[url_hash]
         if now - ts < _CACHE_MAX_AGE:
             return Response(content=data, media_type=ct,
-                            headers={"Cache-Control": "public, max-age=300"})
+                            headers={"Cache-Control": "public, max-age=600"})
 
-    # Fetch from origin
+    # Fetch from origin — async so we don't block the event loop
     try:
-        resp = requests.get(url, headers=_DL_HEADERS, timeout=15, allow_redirects=True)
+        async with httpx.AsyncClient(
+            headers=_DL_HEADERS,
+            follow_redirects=True,
+            timeout=httpx.Timeout(8.0),
+        ) as client:
+            resp = await client.get(url)
+
         if resp.status_code != 200:
             return Response(status_code=resp.status_code)
 
         data = resp.content
 
-        # Detect actual content type from magic bytes (Dropbox often lies)
+        # Detect actual content type from magic bytes (some CDNs lie about content-type)
         if data[:4] == b"\xff\xd8\xff\xe0" or data[:4] == b"\xff\xd8\xff\xe1":
             ct = "image/jpeg"
         elif data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -185,7 +192,7 @@ async def image_proxy(request: Request, url: str = ""):
             _image_cache[url_hash] = (data, ct, now)
 
         return Response(content=data, media_type=ct,
-                        headers={"Cache-Control": "public, max-age=300"})
+                        headers={"Cache-Control": "public, max-age=600"})
     except Exception as e:
         logger.warning(f"Image proxy failed for {url[:80]}: {e}")
         return Response(status_code=502)
