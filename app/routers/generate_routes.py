@@ -112,7 +112,9 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
     try:
         def on_progress(downloaded: int, total: int, stage: str):
             with _progress_lock:
-                _progress[session_id] = {"stage": stage, "downloaded": downloaded, "total": total}
+                existing = _progress.get(session_id, {})
+                existing.update({"stage": stage, "downloaded": downloaded, "total": total})
+                _progress[session_id] = existing
 
         config = {
             "save_images_to_folder": save_images,
@@ -282,7 +284,8 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
 
     # Initialize progress and start background thread
     with _progress_lock:
-        _progress[session_id] = {"stage": "starting", "downloaded": 0, "total": len(item_dicts)}
+        import time as _time_mod
+        _progress[session_id] = {"stage": "starting", "downloaded": 0, "total": len(item_dicts), "started_at": _time_mod.time()}
 
     threading.Thread(
         target=_run_export_background,

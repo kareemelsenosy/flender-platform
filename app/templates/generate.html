@@ -16,7 +16,15 @@
   <p class="text-muted text-center mb-2">{{ session.name }}</p>
   <p class="text-center mb-6"><span class="badge badge-green" style="font-size:0.8rem;padding:5px 14px">{{ approved_count }} approved items</span></p>
 
+  <!-- Config area -->
   <div id="config-area">
+    {% if approved_count == 0 %}
+    <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-xs);padding:20px;text-align:center;margin-bottom:16px">
+      <p style="font-size:1.2rem;margin:0 0 8px">No approved items to export</p>
+      <p class="text-muted" style="margin:0 0 16px;font-size:0.85rem">Go back to the Review step and approve items first, or re-run the search.</p>
+      <a href="/review/{{ session.id }}" class="btn btn-primary">Go to Review</a>
+    </div>
+    {% else %}
     <div class="form-group">
       <label class="flex items-center gap-2" style="cursor:pointer">
         <input type="checkbox" id="save-images" checked>
@@ -41,8 +49,19 @@
     <button id="export-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="doExport()">
       Generate & Download Excel
     </button>
+    {% endif %}
   </div>
 
+  <!-- Error display -->
+  <div id="error-area" style="display:none" class="mt-4">
+    <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:var(--radius-xs);padding:20px;text-align:center">
+      <p style="color:#991B1B;font-weight:600;margin:0 0 8px" id="error-title">Export Error</p>
+      <p style="color:#DC2626;margin:0 0 16px;font-size:0.85rem" id="error-message"></p>
+      <button class="btn btn-outline" onclick="resetExport()">Try Again</button>
+    </div>
+  </div>
+
+  <!-- Progress area -->
   <div id="export-progress" style="display:none" class="mt-4">
     <div class="progress-container">
       <div class="progress-bar">
@@ -53,12 +72,13 @@
         <span id="export-eta"></span>
       </div>
     </div>
-    <p class="text-sm text-muted text-center mt-3" style="line-height:1.6">
+    <p class="text-sm text-muted text-center mt-3" id="export-hint" style="line-height:1.6">
       You can navigate away — progress will appear in the sidebar.<br>
       Download links will show when the export finishes.
     </p>
   </div>
 
+  <!-- Download area -->
   <div id="download-area" class="mt-4 text-center" style="display:none"></div>
 </div>
 
@@ -66,140 +86,260 @@
 const SESSION_ID = {{ session.id }};
 let pollTimer = null;
 let exportStartTime = null;
+let lastServerDone = 0;
+let lastServerTotal = 0;
+let completedCheckCount = 0;
 
-// Clean up polling when navigating away (SPA)
-window.addEventListener('beforeunload', () => { if (pollTimer) clearInterval(pollTimer); });
+// Clean up polling when navigating away (SPA or full nav)
+window.addEventListener('beforeunload', cleanupTimers);
+function cleanupTimers() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
 
 function fmtTime(sec) {
-  if (sec <= 0) return '';
-  if (sec > 60) {
+  if (!sec || sec <= 0) return '';
+  sec = Math.round(sec);
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return `~${h}h ${m}m remaining`;
+  }
+  if (sec >= 60) {
     const m = Math.floor(sec / 60), s = sec % 60;
     return `~${m}m ${s}s remaining`;
   }
   return `~${sec}s remaining`;
 }
 
+function fmtElapsed(sec) {
+  if (!sec || sec <= 0) return '';
+  sec = Math.round(sec);
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return `${h}h ${m}m elapsed`;
+  }
+  if (sec >= 60) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `${m}m ${s}s elapsed`;
+  }
+  return `${sec}s elapsed`;
+}
+
+function showError(title, message) {
+  document.getElementById('config-area').style.display = 'none';
+  document.getElementById('export-progress').style.display = 'none';
+  document.getElementById('error-area').style.display = 'block';
+  document.getElementById('error-title').textContent = title;
+  document.getElementById('error-message').textContent = message;
+}
+
 function pollProgress() {
+  cleanupTimers();
   pollTimer = setInterval(async () => {
     try {
       const resp = await fetch(`/generate/${SESSION_ID}/progress`);
-      let p; try { p = await resp.json(); } catch(_) { return; }
+      if (!resp.ok) return;
+      let p;
+      try { p = await resp.json(); } catch(_) { return; }
+
       const fill = document.getElementById('export-fill');
       const statusEl = document.getElementById('export-status');
       const etaEl = document.getElementById('export-eta');
+
+      // Use server-side started_at for accurate ETA (survives page navigation)
+      if (p.started_at && !exportStartTime) {
+        exportStartTime = p.started_at * 1000;
+      }
       const elapsed = exportStartTime ? (Date.now() - exportStartTime) / 1000 : 0;
 
+      // Track server-reported progress for ETA
+      if (p.downloaded !== undefined) lastServerDone = p.downloaded;
+      if (p.total !== undefined) lastServerTotal = p.total;
+
+      if (p.stage === 'done') {
+        // Generator reported done — now wait for completed entry
+        cleanupTimers();
+        fill.style.width = '95%';
+        statusEl.textContent = 'Finalizing...';
+        etaEl.textContent = fmtElapsed(elapsed);
+        setTimeout(checkCompleted, 500);
+        return;
+      }
+
       if (p.stage === 'waiting') {
-        // Export finished (progress cleared) — check completed exports
-        clearInterval(pollTimer);
+        // Progress cleared — export either completed or not started
+        cleanupTimers();
         checkCompleted();
         return;
       }
 
-      if (p.stage === 'downloading' && p.total > 0) {
-        const pct = Math.round((p.downloaded / p.total) * 80);
-        fill.style.width = Math.min(pct, 80) + '%';
+      if (p.stage === 'starting') {
+        fill.style.width = '2%';
+        statusEl.textContent = 'Preparing export...';
+        etaEl.textContent = fmtElapsed(elapsed);
+      } else if (p.stage === 'downloading' && p.total > 0) {
+        const pct = Math.round((p.downloaded / p.total) * 80) + 5;
+        fill.style.width = Math.min(pct, 85) + '%';
         statusEl.textContent = `Downloading images: ${p.downloaded} / ${p.total}`;
-        if (p.downloaded > 2) {
-          const perImage = elapsed / p.downloaded;
-          const remaining = Math.round(perImage * (p.total - p.downloaded));
+        if (p.downloaded >= 3 && exportStartTime) {
+          const perItem = elapsed / p.downloaded;
+          const remaining = perItem * (p.total - p.downloaded);
           etaEl.textContent = fmtTime(remaining);
         } else {
-          etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+          etaEl.textContent = fmtElapsed(elapsed);
         }
+      } else if (p.stage === 'downloading' && p.total === 0) {
+        fill.style.width = '50%';
+        statusEl.textContent = 'No images to download — generating Excel...';
+        etaEl.textContent = fmtElapsed(elapsed);
       } else if (p.stage === 'saving') {
         fill.style.width = '90%';
         statusEl.textContent = 'Saving Excel file...';
-        etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+        etaEl.textContent = fmtElapsed(elapsed);
       } else if (p.stage && p.stage.startsWith('Error')) {
-        clearInterval(pollTimer);
-        fill.style.width = '100%';
-        fill.style.background = 'var(--danger)';
-        statusEl.textContent = p.stage;
-        etaEl.textContent = '';
-        document.getElementById('export-btn').disabled = false;
-        document.getElementById('export-btn').innerHTML = 'Retry Export';
-        document.getElementById('export-btn').style.display = '';
-        document.getElementById('config-area').style.display = '';
+        cleanupTimers();
+        const errorMsg = p.stage.replace(/^Error:\s*/, '');
+        showError('Export Failed', errorMsg);
       } else {
         statusEl.textContent = p.stage || 'Processing...';
-        etaEl.textContent = `${Math.round(elapsed)}s elapsed`;
+        etaEl.textContent = fmtElapsed(elapsed);
       }
-    } catch (e) {}
+    } catch (e) {
+      // Network error — don't stop polling, just skip this tick
+    }
   }, 800);
 }
 
 async function checkCompleted() {
-  // Poll active-tasks to find the completed export
+  completedCheckCount++;
   try {
-    const resp = await fetch('/api/active-tasks');
-    const data = await resp.json();
+    // First check DB-backed generate page for completed entry
+    const resp = await fetch(`/generate/${SESSION_ID}/progress`);
+    let p;
+    try { p = await resp.json(); } catch(_) {}
+
+    // Check active-tasks for export_done
+    const tasksResp = await fetch('/api/active-tasks');
+    const data = await tasksResp.json();
     const done = (data.tasks || []).find(t => t.type === 'export_done' && t.session_id === SESSION_ID);
     if (done) {
-      showDownload(done.download_url, done.images_zip_url, false);
-    } else {
-      // Not found yet, retry in 2s
-      setTimeout(checkCompleted, 2000);
+      showDownload(done.download_url, done.images_zip_url);
+      return;
     }
+
+    // Check if export is still running
+    const running = (data.tasks || []).find(t => t.type === 'export' && t.session_id === SESSION_ID && t.running);
+    if (running) {
+      // Still running — resume polling
+      pollProgress();
+      return;
+    }
+
+    // Maybe the page already has completed info (server-rendered)
+    // Or we need to reload the page to get fresh completed data
+    if (completedCheckCount > 15) {
+      // After ~30s of checking, reload the page
+      window.location.reload();
+      return;
+    }
+
+    // Not found yet — retry
+    setTimeout(checkCompleted, 2000);
   } catch(e) {
+    if (completedCheckCount > 15) {
+      window.location.reload();
+      return;
+    }
     setTimeout(checkCompleted, 2000);
   }
 }
 
-function showDownload(downloadUrl, imagesUrl, autoDownload) {
+function showDownload(downloadUrl, imagesUrl) {
   const fill = document.getElementById('export-fill');
   const statusEl = document.getElementById('export-status');
   const etaEl = document.getElementById('export-eta');
   const downloadArea = document.getElementById('download-area');
   const progress = document.getElementById('export-progress');
   const elapsed = exportStartTime ? Math.round((Date.now() - exportStartTime) / 1000) : 0;
+  const hint = document.getElementById('export-hint');
 
   document.getElementById('config-area').style.display = 'none';
+  document.getElementById('error-area').style.display = 'none';
   progress.style.display = 'block';
   fill.style.width = '100%';
-  fill.style.background = '';
+  fill.classList.add('success');
   statusEl.textContent = 'Export complete!';
-  etaEl.textContent = elapsed > 0 ? `Completed in ${elapsed}s` : '';
-  document.getElementById('export-btn').style.display = 'none';
+  etaEl.textContent = elapsed > 0 ? `Completed in ${fmtElapsed(elapsed).replace(' elapsed', '')}` : '';
+  hint.style.display = 'none';
   downloadArea.style.display = 'block';
 
   let html = `
-    <a href="${downloadUrl}" class="btn btn-primary btn-lg" style="width:100%;margin-bottom:8px" download>
+    <a href="${downloadUrl}" class="btn btn-primary btn-lg" style="width:100%;margin-bottom:8px"
+       download onclick="trackDownload(this, event)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px;margin-right:6px">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
       Download Excel
     </a>
-    <p class="text-sm text-muted mb-3">Link expires in 30 minutes</p>
+    <p class="text-sm text-muted mb-3">Link expires in 2 hours</p>
   `;
   if (imagesUrl) {
-    html += `<a href="${imagesUrl}" class="btn btn-outline" style="width:100%" download>Download Images ZIP</a>`;
+    html += `
+    <a href="${imagesUrl}" class="btn btn-outline" style="width:100%;margin-bottom:8px"
+       download onclick="trackDownload(this, event)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Download Images ZIP
+    </a>`;
   }
   html += `
-    <button class="btn btn-outline" style="width:100%;margin-top:8px" onclick="resetExport()">
+    <button class="btn btn-outline" style="width:100%;margin-top:4px" onclick="resetExport()">
       Re-export with New Settings
     </button>
   `;
   downloadArea.innerHTML = html;
 
-  // Auto-download only when user just triggered the export (not on page revisit)
-  if (autoDownload !== false) {
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
+  // Auto-trigger download for Excel
+  triggerFileDownload(downloadUrl);
+}
+
+function triggerFileDownload(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.setAttribute('download', '');
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 1000);
+}
+
+function trackDownload(btn, event) {
+  // Let the browser handle the download natively
+  // Show a brief "downloading..." state on the button
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner" style="width:16px;height:16px"></span> Downloading...';
+  btn.style.pointerEvents = 'none';
+  setTimeout(() => {
+    btn.innerHTML = orig;
+    btn.style.pointerEvents = '';
+  }, 3000);
 }
 
 function resetExport() {
   document.getElementById('config-area').style.display = '';
   document.getElementById('export-progress').style.display = 'none';
   document.getElementById('download-area').style.display = 'none';
-  document.getElementById('export-btn').style.display = '';
-  document.getElementById('export-btn').disabled = false;
-  document.getElementById('export-btn').innerHTML = 'Generate & Download Excel';
+  document.getElementById('error-area').style.display = 'none';
+  const btn = document.getElementById('export-btn');
+  if (btn) {
+    btn.style.display = '';
+    btn.disabled = false;
+    btn.innerHTML = 'Generate & Download Excel';
+  }
   const fill = document.getElementById('export-fill');
   fill.style.width = '0%';
-  fill.style.background = '';
+  fill.classList.remove('success');
+  completedCheckCount = 0;
 }
 
 async function doExport() {
@@ -208,15 +348,19 @@ async function doExport() {
   const saveImages = document.getElementById('save-images').checked;
   const fill = document.getElementById('export-fill');
   const statusEl = document.getElementById('export-status');
+  const etaEl = document.getElementById('export-eta');
 
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Starting...';
+  document.getElementById('error-area').style.display = 'none';
   progress.style.display = 'block';
   fill.style.width = '2%';
-  fill.style.background = '';
+  fill.classList.remove('success');
   statusEl.textContent = 'Starting export...';
+  etaEl.textContent = '';
 
   exportStartTime = Date.now();
+  completedCheckCount = 0;
 
   try {
     const resp = await fetch(`/generate/${SESSION_ID}`, {
@@ -229,19 +373,15 @@ async function doExport() {
     if (data.ok || data.started) {
       btn.style.display = 'none';
       document.getElementById('config-area').style.display = 'none';
-      statusEl.textContent = 'Export running in background...';
+      statusEl.textContent = 'Export running...';
       pollProgress();
     } else {
-      fill.style.width = '100%';
-      fill.style.background = 'var(--danger)';
-      statusEl.textContent = 'Error: ' + (data.error || 'Unknown error');
+      showError('Export Error', data.error || 'Unknown error');
       btn.disabled = false;
       btn.innerHTML = 'Generate & Download Excel';
     }
   } catch (e) {
-    fill.style.width = '100%';
-    fill.style.background = 'var(--danger)';
-    statusEl.textContent = 'Error: ' + e.message;
+    showError('Connection Error', e.message || 'Failed to connect to server');
     btn.disabled = false;
     btn.innerHTML = 'Generate & Download Excel';
   }
@@ -249,16 +389,14 @@ async function doExport() {
 
 // ── Auto-reconnect: restore state when returning to this page ─────────────
 {% if is_exporting %}
-// Export is currently running — show progress and start polling
 document.getElementById('config-area').style.display = 'none';
 document.getElementById('export-progress').style.display = 'block';
 document.getElementById('export-status').textContent = 'Export running in background...';
-document.getElementById('export-btn').style.display = 'none';
+(document.getElementById('export-btn') || {}).style = 'display:none';
 exportStartTime = Date.now();
 pollProgress();
 {% elif completed %}
-// Export already completed — show download buttons
-showDownload('{{ completed.download_url }}', '{{ completed.images_zip_url or "" }}', false);
+showDownload('{{ completed.download_url }}', '{{ completed.images_zip_url or "" }}');
 {% endif %}
 </script>
 {% endblock %}

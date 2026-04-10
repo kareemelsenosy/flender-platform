@@ -133,12 +133,31 @@ let _pendingFiles = null;
 let _uploadedFolderPath = '';
 
 function fmtTime(sec) {
-  if (sec <= 0) return '';
-  if (sec > 60) {
+  if (!sec || sec <= 0) return '';
+  sec = Math.round(sec);
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return `~${h}h ${m}m remaining`;
+  }
+  if (sec >= 60) {
     const m = Math.floor(sec / 60), s = sec % 60;
     return `~${m}m ${s}s remaining`;
   }
   return `~${sec}s remaining`;
+}
+
+function fmtElapsed(sec) {
+  if (!sec || sec <= 0) return '';
+  sec = Math.round(sec);
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return `${h}h ${m}m elapsed`;
+  }
+  if (sec >= 60) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `${m}m ${s}s elapsed`;
+  }
+  return `${sec}s elapsed`;
 }
 
 document.querySelectorAll('input[name="search_mode"]').forEach(radio => {
@@ -248,20 +267,32 @@ function connectProgressSSE() {
     totalEl.textContent = data.total;
     if (data.current) currentEl.textContent = `Searching: ${data.current}`;
 
-    if (data.done > 0 && data.total > 0 && searchStartTime) {
-      const elapsed = (Date.now() - searchStartTime) / 1000;
-      const perItem = elapsed / data.done;
-      const remaining = Math.round(perItem * (data.total - data.done));
-      etaEl.textContent = fmtTime(remaining);
+    // Use server-side started_at for accurate ETA (survives page navigation)
+    if (data.started_at && !searchStartTime) {
+      searchStartTime = data.started_at * 1000; // convert to ms
+    }
+
+    if (data.done > 0 && data.total > 0) {
+      // Compute elapsed from server start time for accuracy
+      const elapsed = searchStartTime ? (Date.now() - searchStartTime) / 1000 : 0;
+      if (elapsed > 0 && data.done >= 2) {
+        const perItem = elapsed / data.done;
+        const remaining = perItem * (data.total - data.done);
+        etaEl.textContent = fmtTime(remaining);
+      } else {
+        etaEl.textContent = elapsed > 0 ? fmtElapsed(elapsed) : 'Estimating...';
+      }
       stepLabel.textContent = 'AI is building queries, searching web, and ranking results...';
     }
 
     if (data.complete || (data.done >= data.total && data.total > 0)) {
       evtSource.close();
       fill.style.width = '100%';
-      etaEl.textContent = 'Done!';
+      const totalElapsed = searchStartTime ? Math.round((Date.now() - searchStartTime) / 1000) : 0;
+      etaEl.textContent = totalElapsed > 0 ? `Done in ${fmtElapsed(totalElapsed).replace(' elapsed', '')}` : 'Done!';
       currentEl.textContent = 'Search complete! Redirecting to review...';
       stepLabel.textContent = 'All items searched successfully.';
+      fill.classList.add('success');
       setTimeout(() => { navigate(`/review/${sessionId}`); }, 1200);
     }
   };
@@ -313,7 +344,7 @@ async function startSearch() {
 document.getElementById('search-config').style.display = 'none';
 document.getElementById('search-progress').style.display = 'block';
 document.getElementById('ai-step-label').textContent = 'Reconnecting to running search...';
-searchStartTime = Date.now();
+// Don't set searchStartTime here — SSE handler will pick up server's started_at for accurate ETA
 connectProgressSSE();
 {% endif %}
 </script>

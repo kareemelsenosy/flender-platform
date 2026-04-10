@@ -54,7 +54,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         ).all()
 
         total = len(items)
-        _search_progress[session_id] = {"done": 0, "total": total, "running": True, "current": ""}
+        import time as _time_mod
+        _search_progress[session_id] = {"done": 0, "total": total, "running": True, "current": "", "started_at": _time_mod.time()}
 
         search_mode = config.get("search_mode", "web")  # web, local, both
         local_folder = config.get("local_folder", "")
@@ -254,8 +255,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                             db_item.auto_selected = True
                         else:
                             db_item.approved_url = ""
-                            db_item.review_status = "pending"
-                            db_item.auto_selected = False
+                            db_item.review_status = "approved"
+                            db_item.auto_selected = True
                         db.commit()
                 except Exception as e:
                     logger.error(f"Search error: {e}")

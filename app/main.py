@@ -93,6 +93,26 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # One-time fix: items with search_status="done" but review_status="pending"
+    # should be "approved" (no-candidate items that were incorrectly set to pending)
+    try:
+        from app.database import SessionLocal as _SL
+        from app.models import UniqueItem
+        _fdb = _SL()
+        try:
+            fixed = _fdb.query(UniqueItem).filter(
+                UniqueItem.search_status == "done",
+                UniqueItem.review_status == "pending",
+                UniqueItem.approved_url == "",
+            ).update({"review_status": "approved", "auto_selected": True})
+            if fixed:
+                _fdb.commit()
+                logger.info(f"Fixed {fixed} pending items back to approved")
+        finally:
+            _fdb.close()
+    except Exception:
+        pass
+
     logger.info("FLENDER Platform ready")
     yield
     logger.info("FLENDER Platform shutting down")

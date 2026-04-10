@@ -128,10 +128,19 @@ def _find_header_row(df_raw: pd.DataFrame) -> int:
 def _coerce_numeric(value: Any) -> Any:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "-", "n/a", ""):
+        return None
+    # Strip currency symbols, codes, spaces — keep digits, dot, comma, minus
+    cleaned = re.sub(r"[^\d.,''\-]", "", s.replace(",", "."))
+    # Remove duplicate dots (e.g. "1.234.56" → take last chunk)
+    parts = cleaned.split(".")
+    if len(parts) > 2:
+        cleaned = "".join(parts[:-1]).replace(".", "") + "." + parts[-1]
     try:
-        return float(str(value).replace(",", ".").strip())
+        return float(cleaned) if cleaned and cleaned not in (".", "-") else None
     except (ValueError, TypeError):
-        return value
+        return None
 
 
 class FileParser:

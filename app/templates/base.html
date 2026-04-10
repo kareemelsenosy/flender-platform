@@ -284,7 +284,7 @@
     const bar = document.getElementById('nav-progress');
     let barTimer = null;
     // Skip only non-GET endpoints or external URLs
-    const SKIP = ['/upload', '/upload/file'];
+    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip'];
 
     function canInstantNav(href) {
       try {
@@ -304,7 +304,7 @@
     // Prefetch on hover (any internal link)
     document.addEventListener('mouseover', function(e) {
       const a = e.target.closest('a[href]');
-      if (!a || a.download || !canInstantNav(a.href)) return;
+      if (!a || a.hasAttribute('download') || !canInstantNav(a.href)) return;
       const url = new URL(a.href, location.origin);
       const key = url.pathname + url.search;
       if (!cache[key]) {
@@ -396,7 +396,7 @@
     // Intercept ALL internal link clicks
     document.addEventListener('click', function(e) {
       const a = e.target.closest('a[href]');
-      if (!a || a.download) return;
+      if (!a || a.hasAttribute('download')) return;
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       if (a.target && a.target !== '_self') return;
       if (!canInstantNav(a.href)) return;
