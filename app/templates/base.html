@@ -374,14 +374,20 @@
       const key = url.pathname + url.search;
       showBar();
       try {
-        let html = cache[key] ? await cache[key] : null;
+        // Use cached prefetch only if it resolves within 1.5s — a hanging prefetch
+        // (e.g. server busy finishing a search) would otherwise freeze navigation forever.
+        let html = null;
+        if (cache[key]) {
+          const timeout = new Promise(resolve => setTimeout(() => resolve(null), 1500));
+          html = await Promise.race([cache[key], timeout]);
+          delete cache[key];
+        }
         if (!html) {
           const r = await fetch(url.href, { credentials: 'same-origin' });
           // Server redirected us (e.g. session expired → /login) — follow it
           if (!r.ok || r.redirected) { location.href = r.url || href; return; }
           html = await r.text();
         }
-        delete cache[key];
 
         if (!html) { location.href = href; return; }
 
