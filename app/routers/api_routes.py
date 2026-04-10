@@ -155,6 +155,32 @@ async def active_tasks(request: Request, db: DBSession = Depends(get_db)):
     return JSONResponse({"tasks": tasks})
 
 
+@router.get("/api/search-test")
+async def search_test(request: Request):
+    """Test if web search sources are reachable from the server."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import requests as _req
+    results = {}
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    test_query = "Carhartt WIP I027773 Jaden Keyholder"
+    for name, url in [
+        ("bing_images", f"https://www.bing.com/images/search?q={_req.utils.quote(test_query)}&form=HDRSC2"),
+        ("google_images", f"https://www.google.com/search?q={_req.utils.quote(test_query)}&tbm=isch"),
+        ("duckduckgo", f"https://duckduckgo.com/?q={_req.utils.quote(test_query)}&iax=images&ia=images"),
+    ]:
+        try:
+            r = _req.get(url, headers={"User-Agent": ua}, timeout=10, allow_redirects=True)
+            import re
+            murl_count = len(re.findall(r'"murl"', r.text))
+            ou_count = len(re.findall(r'"ou"', r.text))
+            results[name] = {"status": r.status_code, "len": len(r.text), "murl": murl_count, "ou": ou_count}
+        except Exception as e:
+            results[name] = {"error": str(e)[:100]}
+    return JSONResponse(results)
+
+
 @router.post("/api/fix-pending-items")
 async def fix_pending_items(request: Request, db: DBSession = Depends(get_db)):
     """Fix items incorrectly left as pending after search — restores them to approved."""
