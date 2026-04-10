@@ -83,6 +83,9 @@
 </div>
 
 <script>
+(() => {
+if (window.__flenderGenerateCleanup) window.__flenderGenerateCleanup();
+
 const SESSION_ID = {{ session.id }};
 let pollTimer = null;
 let exportStartTime = null;
@@ -91,7 +94,8 @@ let lastServerTotal = 0;
 let completedCheckCount = 0;
 
 // Clean up polling when navigating away (SPA or full nav)
-window.addEventListener('beforeunload', cleanupTimers);
+const beforeUnloadHandler = () => cleanupTimers();
+window.addEventListener('beforeunload', beforeUnloadHandler);
 function cleanupTimers() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
@@ -387,6 +391,18 @@ async function doExport() {
   }
 }
 
+window.doExport = doExport;
+window.resetExport = resetExport;
+window.trackDownload = trackDownload;
+window.__flenderGenerateCleanup = () => {
+  cleanupTimers();
+  window.removeEventListener('beforeunload', beforeUnloadHandler);
+  delete window.doExport;
+  delete window.resetExport;
+  delete window.trackDownload;
+  delete window.__flenderGenerateCleanup;
+};
+
 // ── Auto-reconnect: restore state when returning to this page ─────────────
 {% if is_exporting %}
 document.getElementById('config-area').style.display = 'none';
@@ -398,5 +414,6 @@ pollProgress();
 {% elif completed %}
 showDownload('{{ completed.download_url }}', '{{ completed.images_zip_url or "" }}');
 {% endif %}
+})();
 </script>
 {% endblock %}
