@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.config import UPLOAD_DIR
 from app.core.parser import FileParser
-import shutil
 from app.database import get_db
 from app.templates_config import templates
 from app.models import Session, UniqueItem, UploadedFile, User

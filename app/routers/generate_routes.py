@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import threading
 import uuid
 import zipfile
@@ -130,7 +131,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
         )
 
         # Create download token for Excel
-        token = uuid.uuid4().hex
+        token = secrets.token_urlsafe(32)
         images_folder = os.path.join(out_dir, "images") if save_images else None
         gen_file = GeneratedFile(
             session_id=session_id,
@@ -162,7 +163,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
                             full = os.path.join(root, f)
                             arc = os.path.relpath(full, images_folder)
                             zf.write(full, arc)
-                zip_token = uuid.uuid4().hex
+                zip_token = secrets.token_urlsafe(32)
                 zip_gen = GeneratedFile(
                     session_id=session_id,
                     token=zip_token,

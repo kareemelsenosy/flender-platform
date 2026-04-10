@@ -11,7 +11,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import (
@@ -247,6 +247,9 @@ async def verify_email(user_id: int, request: Request,
 
 @router.post("/verify-email/{user_id}/resend")
 async def resend_verification(user_id: int, request: Request, db: DBSession = Depends(get_db)):
+    ip = request.client.host if request.client else "unknown"
+    if _is_rate_limited(ip):
+        return JSONResponse({"error": "Too many requests. Please wait."}, status_code=429)
     user = db.query(User).get(user_id)
     if not user or user.email_verified:
         return RedirectResponse("/login", status_code=302)
