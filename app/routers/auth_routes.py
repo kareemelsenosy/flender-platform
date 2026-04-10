@@ -19,7 +19,13 @@ from app.auth import (
     hash_password, set_session_cookie,
 )
 from app.config import (
-    APP_BASE_URL, SMTP_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER,
+    APP_BASE_URL,
+    EMAIL_VERIFICATION_REQUIRED,
+    SMTP_FROM,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USER,
 )
 from app.database import get_db
 from app.templates_config import templates
@@ -97,6 +103,23 @@ def _send_reset_email(to_email: str, reset_url: str) -> bool:
     return _send_email(to_email, "FLENDER — Reset Your Password", text, html)
 
 
+def _latest_verification_record(user_id: int, db):
+    record = db.query(EmailVerificationCode).filter(
+        EmailVerificationCode.user_id == user_id,
+        EmailVerificationCode.used == False,
+    ).order_by(EmailVerificationCode.id.desc()).first()
+    expires = record.expires_at if record else None
+    if expires and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return record, expires
+
+
+def _ensure_verification_code(user: User, db) -> None:
+    record, expires = _latest_verification_record(user.id, db)
+    if not record or not expires or expires <= datetime.now(timezone.utc):
+        _issue_verification_code(user, db)
+
+
 # ─── Login ────────────────────────────────────────────────────────────────────
 
 @router.get("/login", response_class=HTMLResponse)
@@ -128,8 +151,11 @@ async def login(request: Request,
         return templates.TemplateResponse(request, "login.html", {
             "error": "Invalid username/email or password",
         })
+    if EMAIL_VERIFICATION_REQUIRED and not user.email_verified:
+        _ensure_verification_code(user, db)
+        return RedirectResponse(f"/verify-email/{user.id}", status_code=302)
     response = RedirectResponse("/", status_code=302)
-    return set_session_cookie(response, user.id)
+    return set_session_cookie(response, user.id, request)
 
 
 # ─── Register ─────────────────────────────────────────────────────────────────
@@ -164,14 +190,22 @@ async def register(request: Request,
             "error": "This email is already registered.", "show_register": True,
         })
 
-    user = User(username=username.strip(), email=email,
-                password_hash=hash_password(password), email_verified=True)
+    user = User(
+        username=username.strip(),
+        email=email,
+        password_hash=hash_password(password),
+        email_verified=not EMAIL_VERIFICATION_REQUIRED,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
 
+    if EMAIL_VERIFICATION_REQUIRED:
+        _issue_verification_code(user, db)
+        return RedirectResponse(f"/verify-email/{user.id}", status_code=302)
+
     response = RedirectResponse("/", status_code=302)
-    return set_session_cookie(response, user.id)
+    return set_session_cookie(response, user.id, request)
 
 
 # ─── Email verification helpers ──────────────────────────────────────────────
@@ -216,14 +250,7 @@ async def verify_email(user_id: int, request: Request,
     masked = f"{user.email[:2]}***@flendergroup.com" if user.email else ""
     code = code.strip()
 
-    record = db.query(EmailVerificationCode).filter(
-        EmailVerificationCode.user_id == user_id,
-        EmailVerificationCode.used == False,
-    ).order_by(EmailVerificationCode.id.desc()).first()
-
-    expires = record.expires_at if record else None
-    if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+    record, expires = _latest_verification_record(user_id, db)
 
     if not record or not expires or expires <= datetime.now(timezone.utc):
         return templates.TemplateResponse(request, "verify_email.html", {
@@ -242,7 +269,7 @@ async def verify_email(user_id: int, request: Request,
     db.commit()
 
     response = RedirectResponse("/", status_code=302)
-    return set_session_cookie(response, user.id)
+    return set_session_cookie(response, user.id, request)
 
 
 @router.post("/verify-email/{user_id}/resend")
@@ -350,6 +377,6 @@ async def reset_password(token: str, request: Request,
 # ─── Logout ───────────────────────────────────────────────────────────────────
 
 @router.get("/logout")
-async def logout():
+async def logout(request: Request):
     response = RedirectResponse("/login", status_code=302)
-    return clear_session_cookie(response)
+    return clear_session_cookie(response, request)

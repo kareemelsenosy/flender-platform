@@ -18,7 +18,7 @@ from starlette.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id, get_current_user_id_db
-from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID
+from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
 from app.core.searcher import ImageSearcher
 from app.database import get_db
 from app.templates_config import templates
@@ -36,6 +36,40 @@ _DL_HEADERS = {
 _image_cache: dict[str, tuple[bytes, str, float]] = {}
 _CACHE_MAX_AGE = 600  # 10 minutes
 _CACHE_MAX_ITEMS = 500
+_LOCAL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+
+
+def _normalize_image_url(url: str | None, uid: int | None = None, allow_empty: bool = False) -> str | None:
+    text = str(url or "").strip()
+    if not text:
+        return "" if allow_empty else None
+    if text.startswith("file://"):
+        if uid is None:
+            return None
+        try:
+            import pathlib
+            resolved = pathlib.Path(text[7:]).resolve()
+            allowed_base = (UPLOAD_DIR / f"user_{uid}").resolve()
+            resolved.relative_to(allowed_base)
+            if resolved.suffix.lower() not in _LOCAL_IMAGE_EXTENSIONS:
+                return None
+            return f"file://{resolved}"
+        except Exception:
+            return None
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return text
+    return None
+
+
+def _get_owned_item(db: DBSession, uid: int, session_id: int, item_id: int | None) -> UniqueItem | None:
+    if not item_id:
+        return None
+    return db.query(UniqueItem).join(Session, UniqueItem.session_id == Session.id).filter(
+        UniqueItem.id == item_id,
+        UniqueItem.session_id == session_id,
+        Session.user_id == uid,
+    ).first()
 
 
 @router.get("/api/image/local")
@@ -54,8 +88,8 @@ async def serve_local_image(request: Request, path: str = ""):
 
     try:
         resolved = pathlib.Path(path).resolve()
-        upload_base = UPLOAD_DIR.resolve()
-        resolved.relative_to(upload_base)  # raises ValueError if outside UPLOAD_DIR
+        upload_base = (UPLOAD_DIR / f"user_{uid}").resolve()
+        resolved.relative_to(upload_base)  # raises ValueError if outside this user's uploads
     except ValueError:
         return Response(status_code=403)
     except Exception:
@@ -63,6 +97,8 @@ async def serve_local_image(request: Request, path: str = ""):
 
     if not resolved.is_file():
         return Response(status_code=404)
+    if resolved.suffix.lower() not in _LOCAL_IMAGE_EXTENSIONS:
+        return Response(status_code=403)
 
     mime_type, _ = mimetypes.guess_type(str(resolved))
     return FileResponse(str(resolved), media_type=mime_type or "image/jpeg",
@@ -217,11 +253,11 @@ async def approve_item(session_id: int, request: Request, db: DBSession = Depend
 
     data = await request.json()
     item_id = data.get("id")
-    url = data.get("url", "")
+    url = _normalize_image_url(data.get("url"), uid=uid, allow_empty=True)
+    if url is None:
+        return JSONResponse({"error": "invalid url"}, status_code=400)
 
-    item = db.query(UniqueItem).filter(
-        UniqueItem.id == item_id, UniqueItem.session_id == session_id
-    ).first()
+    item = _get_owned_item(db, uid, session_id, item_id)
     if not item:
         return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -242,9 +278,7 @@ async def skip_item(session_id: int, request: Request, db: DBSession = Depends(g
     data = await request.json()
     item_id = data.get("id")
 
-    item = db.query(UniqueItem).filter(
-        UniqueItem.id == item_id, UniqueItem.session_id == session_id
-    ).first()
+    item = _get_owned_item(db, uid, session_id, item_id)
     if not item:
         return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -262,11 +296,11 @@ async def set_custom_url(session_id: int, request: Request, db: DBSession = Depe
 
     data = await request.json()
     item_id = data.get("id")
-    custom_url = data.get("url", "").strip()
+    custom_url = _normalize_image_url(data.get("url"), uid=uid)
+    if not custom_url:
+        return JSONResponse({"error": "invalid url"}, status_code=400)
 
-    item = db.query(UniqueItem).filter(
-        UniqueItem.id == item_id, UniqueItem.session_id == session_id
-    ).first()
+    item = _get_owned_item(db, uid, session_id, item_id)
     if not item:
         return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -295,13 +329,16 @@ async def set_additional_urls(session_id: int, request: Request, db: DBSession =
     item_id = data.get("id")
     urls = data.get("urls", [])
 
-    item = db.query(UniqueItem).filter(
-        UniqueItem.id == item_id, UniqueItem.session_id == session_id
-    ).first()
+    item = _get_owned_item(db, uid, session_id, item_id)
     if not item:
         return JSONResponse({"error": "not found"}, status_code=404)
 
-    item.additional_urls = urls[:3]
+    clean_urls: list[str] = []
+    for raw in urls[:3]:
+        normalized = _normalize_image_url(raw, uid=uid)
+        if normalized:
+            clean_urls.append(normalized)
+    item.additional_urls = clean_urls
     db.commit()
 
     return JSONResponse({"ok": True})
@@ -318,9 +355,7 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     item_id = data.get("id")
     instructions = data.get("instructions", "").strip()
 
-    item = db.query(UniqueItem).filter(
-        UniqueItem.id == item_id, UniqueItem.session_id == session_id
-    ).first()
+    item = _get_owned_item(db, uid, session_id, item_id)
     if not item:
         return JSONResponse({"error": "not found"}, status_code=404)
 

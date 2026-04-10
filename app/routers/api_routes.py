@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
+from app.config import INTERNAL_API_ENABLED
 from app.database import get_db
 from app.services.notifications import poll_notifications
 
@@ -158,6 +159,8 @@ async def active_tasks(request: Request, db: DBSession = Depends(get_db)):
 @router.get("/api/search-test")
 async def search_test(request: Request):
     """Test if web search sources are reachable from the server."""
+    if not INTERNAL_API_ENABLED:
+        return JSONResponse({"error": "not found"}, status_code=404)
     uid = get_current_user_id(request)
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -184,6 +187,8 @@ async def search_test(request: Request):
 @router.post("/api/fix-pending-items")
 async def fix_pending_items(request: Request, db: DBSession = Depends(get_db)):
     """Fix items incorrectly left as pending after search — restores them to approved."""
+    if not INTERNAL_API_ENABLED:
+        return JSONResponse({"error": "not found"}, status_code=404)
     uid = get_current_user_id(request)
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)

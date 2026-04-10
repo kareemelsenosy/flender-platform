@@ -170,6 +170,41 @@
   </script>
 
   <script>
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/`/g, '&#96;');
+  }
+
+  function safeAppHref(value) {
+    if (!value) return '#';
+    try {
+      const url = new URL(String(value || ''), location.origin);
+      if (url.origin !== location.origin) return '#';
+      return escapeAttr(url.pathname + url.search + url.hash);
+    } catch (_) {
+      return '#';
+    }
+  }
+
+  function safeExternalHref(value) {
+    if (!value) return '#';
+    try {
+      const url = new URL(String(value || ''), location.origin);
+      if (!['http:', 'https:'].includes(url.protocol)) return '#';
+      return escapeAttr(url.href);
+    } catch (_) {
+      return '#';
+    }
+  }
+
   // ── Toast system ───────────────────────────────────────────────────────────
   function showToast(title, message, actions, type) {
     const container = document.getElementById('toast-container');
@@ -179,16 +214,18 @@
     const t = document.createElement('div');
     t.className = `toast ${cls}`;
 
+    const safeTitle = escapeHtml(title || '');
+    const safeMessage = escapeHtml(message || '');
     const actionsHtml = (actions || []).map((a, i) =>
-      `<a href="${a.url}" class="${i > 0 ? 'outline' : ''}">${a.label}</a>`
+      `<a href="${safeAppHref(a.url)}" class="${i > 0 ? 'outline' : ''}">${escapeHtml(a.label || 'Open')}</a>`
     ).join('');
 
     t.innerHTML = `
       <div class="toast-header">
-        <span class="toast-title">${title}</span>
+        <span class="toast-title">${safeTitle}</span>
         <button class="toast-close" onclick="dismissToast(this.closest('.toast'))">✕</button>
       </div>
-      ${message ? `<div class="toast-msg">${message}</div>` : ''}
+      ${safeMessage ? `<div class="toast-msg">${safeMessage}</div>` : ''}
       ${actionsHtml ? `<div class="toast-actions">${actionsHtml}</div>` : ''}
       <div class="toast-progress"><div class="toast-progress-bar"></div></div>`;
 
@@ -221,6 +258,8 @@
       const isDone = t.status === 'done';
       const barColor = isDone ? 'var(--success, #22c55e)' : '#2563eb';
       const label = t.label || t.type;
+      const safeLabel = escapeHtml(label);
+      const safeStatus = escapeHtml(isDone ? '✓ Complete' : (t.stage || `${t.done} / ${t.total}`));
 
       const d = document.createElement('div');
       d.style.cssText = 'background:var(--gray-50);border-radius:8px;padding:10px 12px;';
@@ -229,24 +268,22 @@
       let actionsHtml = '';
       if (isDone && t.type === 'export_done') {
         actionsHtml = `<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">`;
-        if (t.download_url) actionsHtml += `<a href="${t.download_url}" style="font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:6px;background:var(--black);color:var(--white);text-decoration:none">Download Excel</a>`;
-        if (t.images_zip_url) actionsHtml += `<a href="${t.images_zip_url}" style="font-size:0.7rem;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--gray-300);color:var(--black);text-decoration:none">Images ZIP</a>`;
+        if (t.download_url) actionsHtml += `<a href="${safeAppHref(t.download_url)}" style="font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:6px;background:var(--black);color:var(--white);text-decoration:none">Download Excel</a>`;
+        if (t.images_zip_url) actionsHtml += `<a href="${safeAppHref(t.images_zip_url)}" style="font-size:0.7rem;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--gray-300);color:var(--black);text-decoration:none">Images ZIP</a>`;
         actionsHtml += `</div>`;
       } else if (isDone && t.url) {
-        const actionLabel = t.action_label || (t.type === 'search' ? 'Review Images' : 'View');
-        actionsHtml = `<a href="${t.url}" style="display:inline-block;margin-top:6px;font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:6px;background:var(--black);color:var(--white);text-decoration:none">${actionLabel}</a>`;
+        const actionLabel = escapeHtml(t.action_label || (t.type === 'search' ? 'Review Images' : 'View'));
+        actionsHtml = `<a href="${safeAppHref(t.url)}" style="display:inline-block;margin-top:6px;font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:6px;background:var(--black);color:var(--white);text-decoration:none">${actionLabel}</a>`;
       } else if (t.running && t.url) {
-        actionsHtml = `<a href="${t.url}" style="display:inline-block;margin-top:4px;font-size:0.68rem;color:#2563eb;text-decoration:none;font-weight:600">View →</a>`;
+        actionsHtml = `<a href="${safeAppHref(t.url)}" style="display:inline-block;margin-top:4px;font-size:0.68rem;color:#2563eb;text-decoration:none;font-weight:600">View →</a>`;
       }
 
-      const statusText = isDone ? '✓ Complete' : (t.stage || `${t.done} / ${t.total}`);
-
       d.innerHTML = `
-        <div style="font-size:0.76rem;font-weight:600;color:var(--black);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${label}">${label}</div>
+        <div style="font-size:0.76rem;font-weight:600;color:var(--black);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(label)}">${safeLabel}</div>
         <div style="background:var(--gray-200);height:4px;border-radius:99px;overflow:hidden">
           <div style="height:100%;border-radius:99px;background:${barColor};width:${isDone ? 100 : pct}%;transition:width 0.5s"></div>
         </div>
-        <div style="font-size:0.68rem;color:var(--gray-400);margin-top:3px">${statusText}</div>
+        <div style="font-size:0.68rem;color:var(--gray-400);margin-top:3px">${safeStatus}</div>
         ${actionsHtml}`;
       list.appendChild(d);
     });

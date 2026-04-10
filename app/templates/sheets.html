@@ -111,10 +111,11 @@ function addRow(val) {
   const d = document.createElement('div');
   d.className = 'url-row';
   d.id = id;
+  const safeValue = escapeAttr(val || '');
   d.innerHTML = `
     <div style="flex:1">
       <div style="display:flex;gap:8px;align-items:center">
-        <input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${(val||'').replace(/"/g,'&quot;')}" onblur="previewTabs('${id}',this.value)">
+        <input type="text" placeholder="https://docs.google.com/spreadsheets/d/..." value="${safeValue}" onblur="previewTabs('${id}',this.value)">
         <button class="rm" onclick="rmRow('${id}')">✕</button>
       </div>
       <div id="tabs-${id}" style="display:none;margin-top:8px;padding:10px;background:var(--gray-50);border-radius:var(--radius-sm);border:1px solid var(--gray-200)"></div>
@@ -143,12 +144,12 @@ async function previewTabs(rowId, url) {
       body: JSON.stringify({url}),
     });
     const data = await resp.json();
-    if (!data.ok) { tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${data.error||'Failed'}</span>`; return; }
+    if (!data.ok) { tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${escapeHtml(data.error || 'Failed')}</span>`; return; }
     const tabs = data.tabs || [];
     // Store tab names in JS — never embed arbitrary strings in HTML attributes
     _tabAllNames[url] = tabs;
     _tabSelections[url] = [...tabs]; // all selected by default
-    tabsEl.innerHTML = `<div style="font-size:0.75rem;font-weight:600;margin-bottom:6px;color:var(--gray-500)">${data.title} — Select tabs to import:</div>
+    tabsEl.innerHTML = `<div style="font-size:0.75rem;font-weight:600;margin-bottom:6px;color:var(--gray-500)">${escapeHtml(data.title || 'Spreadsheet')} — Select tabs to import:</div>
       <div id="tabcb-${rowId}" style="display:flex;flex-wrap:wrap;gap:6px"></div>`;
     // Build checkboxes in JS to safely handle any tab name characters
     const container = document.getElementById(`tabcb-${rowId}`);
@@ -165,7 +166,7 @@ async function previewTabs(rowId, url) {
       container.appendChild(lbl);
     });
   } catch(e) {
-    tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${e.message}</span>`;
+    tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${escapeHtml(e.message || 'Failed')}</span>`;
   }
 }
 
@@ -321,9 +322,11 @@ function mkCard(idx, url) {
   const d = document.createElement('div');
   d.className = 'job-card pending';
   d.id = `jc${idx}`;
+  const safeUrl = escapeHtml(short);
+  const safeTitle = escapeAttr(url);
   d.innerHTML = `
     <div class="job-header">
-      <span class="job-title" id="jtitle${idx}" title="${url}">${short}</span>
+      <span class="job-title" id="jtitle${idx}" title="${safeTitle}">${safeUrl}</span>
       <span class="job-badge badge-pending" id="jbadge${idx}">Pending</span>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="jfill${idx}" style="width:0%"></div></div>

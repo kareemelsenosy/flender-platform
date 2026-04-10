@@ -56,17 +56,23 @@ def get_current_user_id_db(request: Request, db) -> int | None:
     return uid if user else None
 
 
-def set_session_cookie(response, user_id: int):
+def set_session_cookie(response, user_id: int, request: Request | None = None):
     token = create_session_token(user_id)
+    secure = True if request is None else request.url.scheme == "https"
     response.set_cookie(
         SESSION_COOKIE, token,
-        max_age=SESSION_MAX_AGE, httponly=True, samesite="lax",
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        path="/",
     )
     return response
 
 
-def clear_session_cookie(response):
-    response.delete_cookie(SESSION_COOKIE)
+def clear_session_cookie(response, request: Request | None = None):
+    secure = True if request is None else request.url.scheme == "https"
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=secure, httponly=True, samesite="lax")
     return response
 
 

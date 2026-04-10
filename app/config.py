@@ -10,6 +10,13 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'flender.db'}")
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
 
@@ -28,6 +35,11 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://ordersheet.flendergroup.com")
+EMAIL_VERIFICATION_REQUIRED = _env_bool(
+    "EMAIL_VERIFICATION_REQUIRED",
+    bool(SMTP_USER and SMTP_PASSWORD),
+)
+INTERNAL_API_ENABLED = _env_bool("INTERNAL_API_ENABLED", False)
 
 # Ensure dirs exist
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

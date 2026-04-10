@@ -167,7 +167,7 @@ function proxyUrl(url) {
 
 function localFilePlaceholder(url, cls) {
   const fname = url ? url.replace(/^file:\/\//, '').split(/[\\/]/).pop() : '';
-  return `<div class="thumb-placeholder local-file ${cls || ''}" title="${fname}">
+  return `<div class="thumb-placeholder local-file ${escapeAttr(cls || '')}" title="${escapeAttr(fname)}">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
     <span>Local file</span>
   </div>`;
@@ -203,7 +203,7 @@ async function loadState() {
   } catch (err) {
     const msg = err.name === 'AbortError' ? 'Request timed out.' : err.message;
     mainEl.innerHTML = `<div class="text-center" style="padding-top:100px">
-      <p class="text-muted mb-3">Failed to load items — ${msg}</p>
+      <p class="text-muted mb-3">Failed to load items — ${escapeHtml(msg)}</p>
       <button class="btn btn-primary" onclick="loadState()">Retry</button>
     </div>`;
   }
@@ -229,22 +229,33 @@ function updateSidebar() {
     const info = item.item || {};
     const thumbUrl = item.approved_url;
     const isActive = k === currentKey;
+    const safeKey = escapeAttr(k);
+    const safeCode = escapeHtml(info.item_code || k);
+    const safeBrand = escapeHtml(info.brand || '');
 
     let badge, badgeCls;
     if (!item.approved_url) { badge = 'NO IMG'; badgeCls = 'badge-red'; }
     else if (item.auto_selected) { badge = 'AUTO'; badgeCls = 'badge-gray'; }
     else { badge = 'EDITED'; badgeCls = 'badge-green'; }
 
-    return `<div class="review-item ${isActive ? 'active' : ''}" onclick="selectItem('${k}')">
-      ${thumbUrl
-        ? `<img src="${proxyUrl(thumbUrl)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" loading="lazy"><div class="thumb-placeholder" style="display:none">ERR</div>`
-        : '<div class="thumb-placeholder">N/A</div>'}
+    const thumbHtml = !thumbUrl
+      ? '<div class="thumb-placeholder">N/A</div>'
+      : isLocalFile(thumbUrl)
+        ? localFilePlaceholder(thumbUrl)
+        : `<img src="${escapeAttr(proxyUrl(thumbUrl))}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" loading="lazy" alt="${safeCode}"><div class="thumb-placeholder" style="display:none">ERR</div>`;
+
+    return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}">
+      ${thumbHtml}
       <div class="review-item-info">
-        <div class="code">${info.item_code || k}</div>
-        <div class="brand">${info.brand || ''} <span class="badge ${badgeCls}">${badge}</span></div>
+        <div class="code">${safeCode}</div>
+        <div class="brand">${safeBrand} <span class="badge ${badgeCls}">${badge}</span></div>
       </div>
     </div>`;
   }).join('');
+
+  container.querySelectorAll('.review-item[data-select-key]').forEach(el => {
+    el.addEventListener('click', () => selectItem(el.dataset.selectKey));
+  });
 
   document.querySelectorAll('.sidebar-filters button').forEach(btn => {
     const f = btn.textContent.toLowerCase().replace(' ', '');
@@ -273,35 +284,46 @@ function renderMain(key) {
   const scores = entry.scores || {};
   const main = document.getElementById('review-main');
   const selectedUrl = entry.approved_url || '';
+  const itemCode = item.item_code || key;
+  const brandLine = item.brand ? `${item.brand} · ` : '';
+  const colorLine = item.color_name ? ` · ${item.color_name}` : '';
+  const priceLine = item.wholesale_price ? ` · €${Number(item.wholesale_price).toFixed(2)}` : '';
+  const searchQuery = `${item.brand || ''} ${item.item_code || ''} ${item.style_name || ''}`.trim();
+  const safeGoogleHref = safeExternalHref(`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(searchQuery)}`);
+  const safeBingHref = safeExternalHref(`https://www.bing.com/images/search?q=${encodeURIComponent(searchQuery)}`);
 
   main.scrollTop = 0;
 
   main.innerHTML = `
     <div class="main-header">
       <div class="item-detail">
-        <h3>${item.item_code || key}</h3>
+        <h3>${escapeHtml(itemCode)}</h3>
         <div class="item-meta">
-          ${item.brand ? item.brand + ' &middot; ' : ''}
-          ${item.style_name || ''}
-          ${item.color_name ? ' &middot; ' + item.color_name : ''}
-          ${item.wholesale_price ? ' &middot; \u20ac' + Number(item.wholesale_price).toFixed(2) : ''}
+          ${escapeHtml(brandLine)}
+          ${escapeHtml(item.style_name || '')}
+          ${escapeHtml(colorLine)}
+          ${escapeHtml(priceLine)}
         </div>
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
-        <button class="btn btn-outline btn-sm" onclick="showCustomUrlInput('${key}', ${entry.id})">Paste URL</button>
-        <button class="btn btn-outline btn-sm" onclick="showResearchPanel('${key}', ${entry.id})" style="border-color:var(--primary);color:var(--primary)">Re-Search</button>
-        <a href="https://www.google.com/search?tbm=isch&q=${encodeURIComponent((item.brand||'')+' '+(item.item_code||'')+' '+(item.style_name||''))}" target="_blank" class="btn btn-outline btn-sm" style="font-size:0.65rem">Google</a>
-        <a href="https://www.bing.com/images/search?q=${encodeURIComponent((item.brand||'')+' '+(item.item_code||'')+' '+(item.style_name||''))}" target="_blank" class="btn btn-outline btn-sm" style="font-size:0.65rem">Bing</a>
+        <button class="btn btn-outline btn-sm" id="custom-url-toggle">Paste URL</button>
+        <button class="btn btn-outline btn-sm" id="research-toggle" style="border-color:var(--primary);color:var(--primary)">Re-Search</button>
+        <a href="${safeGoogleHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem">Google</a>
+        <a href="${safeBingHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem">Bing</a>
       </div>
     </div>
 
     ${selectedUrl ? `
       <div class="selected-preview mb-6">
-        <img src="${proxyUrl(selectedUrl)}" alt="Selected image" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22><rect fill=%22%23f4f4f4%22 width=%22200%22 height=%22200%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23a3a3a3%22 font-size=%2214%22>Failed to load</text></svg>'">
+        ${isLocalFile(selectedUrl)
+          ? localFilePlaceholder(selectedUrl, 'selected-local')
+          : `<img src="${escapeAttr(proxyUrl(selectedUrl))}" alt="Selected image" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22><rect fill=%22%23f4f4f4%22 width=%22200%22 height=%22200%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23a3a3a3%22 font-size=%2214%22>Failed to load</text></svg>'">`}
         ${(entry.additional_urls && entry.additional_urls.length) ? `
           <div style="display:flex;gap:8px;margin-top:8px;justify-content:center">
             ${entry.additional_urls.map((u, i) => `<div style="position:relative">
-              <img src="${proxyUrl(u)}" style="height:60px;border-radius:4px;border:2px solid var(--primary)" onerror="this.style.display='none'">
+              ${isLocalFile(u)
+                ? localFilePlaceholder(u)
+                : `<img src="${escapeAttr(proxyUrl(u))}" style="height:60px;border-radius:4px;border:2px solid var(--primary)" onerror="this.style.display='none'">`}
               <span style="position:absolute;top:-4px;right:-4px;background:var(--primary);color:white;font-size:0.55rem;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center">+${i+1}</span>
             </div>`).join('')}
           </div>
@@ -312,7 +334,7 @@ function renderMain(key) {
     <div id="custom-url-input" style="display:none" class="mb-4">
       <div class="flex gap-2">
         <input type="text" id="custom-url-field" placeholder="Paste image URL here..." style="flex:1">
-        <button class="btn btn-primary btn-sm" onclick="submitCustomUrl('${key}', ${entry.id})">Set</button>
+        <button class="btn btn-primary btn-sm" id="custom-url-submit">Set</button>
         <button class="btn btn-outline btn-sm" onclick="document.getElementById('custom-url-input').style.display='none'">Cancel</button>
       </div>
     </div>
@@ -322,7 +344,7 @@ function renderMain(key) {
         <label style="font-size:0.8rem;font-weight:600;margin-bottom:6px;display:block">Re-search with instructions:</label>
         <textarea id="research-instructions" placeholder="e.g. search on hoka.com, look for the Clifton 9 in white..." style="width:100%;height:60px;resize:vertical;font-size:0.85rem;margin-bottom:8px"></textarea>
         <div class="flex gap-2">
-          <button class="btn btn-primary btn-sm" id="research-btn" onclick="doResearch('${key}', ${entry.id})">Search</button>
+          <button class="btn btn-primary btn-sm" id="research-btn">Search</button>
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('research-panel').style.display='none'">Cancel</button>
           <span id="research-status" style="font-size:0.75rem;color:var(--gray-400);align-self:center"></span>
         </div>
@@ -339,9 +361,12 @@ function renderMain(key) {
         const extras = entry.additional_urls || [];
         const extraIdx = extras.indexOf(url);
         const isExtra = extraIdx >= 0;
+        const cardImage = isLocalFile(url)
+          ? localFilePlaceholder(url, 'candidate-local')
+          : `<img src="${escapeAttr(proxyUrl(url))}" alt="" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22140%22><rect fill=%22%23fce4ec%22 width=%22160%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23991b1b%22 font-size=%2212%22>Error</text></svg>'">`;
         return `
-        <div class="image-card ${url === selectedUrl ? 'selected' : ''} ${isExtra ? 'extra-selected' : ''}" data-key="${key.replace(/"/g, '&quot;')}" data-id="${entry.id}" data-url="${url.replace(/"/g, '&quot;')}" data-extra="true">
-          <img src="${proxyUrl(url)}" alt="" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22140%22><rect fill=%22%23fce4ec%22 width=%22160%22 height=%22140%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23991b1b%22 font-size=%2212%22>Error</text></svg>'">
+        <div class="image-card ${url === selectedUrl ? 'selected' : ''} ${isExtra ? 'extra-selected' : ''}" data-key="${escapeAttr(key)}" data-id="${entry.id}" data-url="${escapeAttr(url)}" data-extra="true">
+          ${cardImage}
           <div class="score ${conf.cls}">${conf.label}</div>
           <div class="card-num">${i+1}</div>
           ${isExtra ? `<div class="extra-badge">+${extraIdx+1}</div>` : ''}
@@ -349,10 +374,25 @@ function renderMain(key) {
       }).join('')}
     </div>
 
-    <button class="no-image-btn" onclick="approveUrl('${key}', ${entry.id}, '')">
+    <button class="no-image-btn" id="mark-no-image-btn">
       Mark as No Image
     </button>
   `;
+
+  const customUrlToggle = document.getElementById('custom-url-toggle');
+  if (customUrlToggle) customUrlToggle.addEventListener('click', () => showCustomUrlInput(key, entry.id));
+
+  const customUrlSubmit = document.getElementById('custom-url-submit');
+  if (customUrlSubmit) customUrlSubmit.addEventListener('click', () => submitCustomUrl(key, entry.id));
+
+  const researchToggle = document.getElementById('research-toggle');
+  if (researchToggle) researchToggle.addEventListener('click', () => showResearchPanel(key, entry.id));
+
+  const researchBtn = document.getElementById('research-btn');
+  if (researchBtn) researchBtn.addEventListener('click', () => doResearch(key, entry.id));
+
+  const noImageBtn = document.getElementById('mark-no-image-btn');
+  if (noImageBtn) noImageBtn.addEventListener('click', () => approveUrl(key, entry.id, ''));
 }
 
 function showCustomUrlInput(key, itemId) {
@@ -363,11 +403,16 @@ function showCustomUrlInput(key, itemId) {
 async function submitCustomUrl(key, itemId) {
   const url = document.getElementById('custom-url-field').value.trim();
   if (!url) return;
-  await fetch(`/review/${SESSION_ID}/set-url`, {
+  const resp = await fetch(`/review/${SESSION_ID}/set-url`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({id: itemId, url: url}),
   });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) {
+    showAlert(data.error || 'Could not save that image URL.', 'Save Failed');
+    return;
+  }
   state[key].approved_url = url;
   state[key].status = 'approved';
   state[key].auto_selected = false;
@@ -377,11 +422,16 @@ async function submitCustomUrl(key, itemId) {
 }
 
 async function approveUrl(key, itemId, url) {
-  await fetch(`/review/${SESSION_ID}/approve`, {
+  const resp = await fetch(`/review/${SESSION_ID}/approve`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({id: itemId, url: url}),
   });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) {
+    showAlert(data.error || 'Could not update this item.', 'Update Failed');
+    return;
+  }
   state[key].approved_url = url;
   state[key].status = 'approved';
   state[key].auto_selected = false;
@@ -392,7 +442,7 @@ async function approveUrl(key, itemId, url) {
 async function toggleExtra(key, itemId, url) {
   const entry = state[key];
   if (!entry) return;
-  let extras = entry.additional_urls || [];
+  let extras = [...(entry.additional_urls || [])];
   const idx = extras.indexOf(url);
   if (idx >= 0) {
     extras.splice(idx, 1);
@@ -400,12 +450,17 @@ async function toggleExtra(key, itemId, url) {
     if (extras.length >= 3) extras.shift();
     extras.push(url);
   }
-  entry.additional_urls = extras;
-  await fetch(`/review/${SESSION_ID}/set-additional`, {
+  const resp = await fetch(`/review/${SESSION_ID}/set-additional`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({id: itemId, urls: extras}),
   });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) {
+    showAlert(data.error || 'Could not update extra images.', 'Update Failed');
+    return;
+  }
+  entry.additional_urls = extras;
   renderMain(key);
 }
 
@@ -464,7 +519,7 @@ async function startDownloadImages() {
   detailEl.textContent = 'Fetching approved images and building ZIP file...';
 
   const startTime = Date.now();
-  const approvedCount = keys.filter(k => state[k].approved_url && state[k].approved_url.startsWith('http')).length;
+  const approvedCount = keys.filter(k => state[k].approved_url).length;
 
   let progress = 10;
   const interval = setInterval(() => {

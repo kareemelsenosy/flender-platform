@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 
 from fastapi import APIRouter, Depends, Request
@@ -9,12 +10,27 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
+from app.config import UPLOAD_DIR
 from app.core.parser import FileParser, detect_columns, COLUMN_PATTERNS
 from app.database import get_db
 from app.templates_config import templates
 from app.models import Session, UniqueItem, ColumnMappingFormat
 
 router = APIRouter()
+
+
+def _owned_uploaded_path(uid: int, stored_path: str | None) -> str | None:
+    if not stored_path:
+        return None
+    try:
+        resolved = pathlib.Path(stored_path).resolve()
+        allowed_base = (UPLOAD_DIR / f"user_{uid}").resolve()
+        resolved.relative_to(allowed_base)
+        if not resolved.is_file():
+            return None
+        return str(resolved)
+    except Exception:
+        return None
 
 
 @router.get("/mapping/{session_id}", response_class=HTMLResponse)
@@ -26,16 +42,19 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess or not sess.uploaded_file:
         return RedirectResponse("/", status_code=302)
+    file_path = _owned_uploaded_path(uid, sess.uploaded_file.file_path)
+    if not file_path:
+        return RedirectResponse("/", status_code=302)
 
     # Parse file to get headers
     parser = FileParser()
     try:
-        sheet_names = parser.get_sheet_names(sess.uploaded_file.file_path)
+        sheet_names = parser.get_sheet_names(file_path)
     except Exception:
         sheet_names = []
 
     try:
-        rows, unique_items, raw_headers = parser.parse(sess.uploaded_file.file_path)
+        rows, unique_items, raw_headers = parser.parse(file_path)
     except Exception as e:
         return templates.TemplateResponse(request, "mapping.html", {
             "session": sess, "error": str(e),
@@ -83,10 +102,13 @@ async def ai_suggest_mapping(session_id: int, request: Request, db: DBSession = 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess or not sess.uploaded_file:
         return JSONResponse({"error": "not found"}, status_code=404)
+    file_path = _owned_uploaded_path(uid, sess.uploaded_file.file_path)
+    if not file_path:
+        return JSONResponse({"error": "not found"}, status_code=404)
 
     parser = FileParser()
     try:
-        rows, _, raw_headers = parser.parse(sess.uploaded_file.file_path)
+        rows, _, raw_headers = parser.parse(file_path)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -115,6 +137,9 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess or not sess.uploaded_file:
+        return RedirectResponse("/", status_code=302)
+    file_path = _owned_uploaded_path(uid, sess.uploaded_file.file_path)
+    if not file_path:
         return RedirectResponse("/", status_code=302)
 
     form = await request.form()
@@ -145,7 +170,7 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
     # M8: Validate mapped column values actually exist in the file's headers
     parser = FileParser()
     try:
-        _, _, raw_headers = parser.parse(sess.uploaded_file.file_path, selected_sheets=selected_sheets)
+        _, _, raw_headers = parser.parse(file_path, selected_sheets=selected_sheets)
     except Exception as e:
         return templates.TemplateResponse(request, "mapping.html", {
             "session": sess, "error": f"Could not read file: {e}",
@@ -165,8 +190,8 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
         })
 
     try:
-        rows, unique_items = parser.parse_with_mapping(sess.uploaded_file.file_path, mapping,
-                                                        selected_sheets=selected_sheets)
+        rows, unique_items = parser.parse_with_mapping(file_path, mapping,
+                                                       selected_sheets=selected_sheets)
     except Exception as e:
         return templates.TemplateResponse(request, "mapping.html", {
             "session": sess, "error": f"Could not parse file with this mapping: {e}",

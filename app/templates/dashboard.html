@@ -76,9 +76,11 @@ function mkUploadCard(idx, file) {
   const d = document.createElement('div');
   d.className = 'ujob uploading';
   d.id = `uj${idx}`;
+  const safeName = escapeHtml(file.name);
+  const safeTitle = escapeAttr(file.name);
   d.innerHTML = `
     <div class="ujob-header">
-      <span class="ujob-name" title="${file.name}">${file.name}</span>
+      <span class="ujob-name" title="${safeTitle}">${safeName}</span>
       <span class="text-muted" style="font-size:0.75rem;flex-shrink:0">${fmtSize(file.size)}</span>
       <span class="ujob-badge badge-uploading" id="ujbadge${idx}">Uploading</span>
     </div>
@@ -126,7 +128,12 @@ async function uploadOne(idx, file) {
           badge.className = 'ujob-badge badge-done'; badge.textContent = 'Ready';
           stat.textContent = 'Upload complete — map your columns to continue';
           act.style.display = 'flex';
-          act.innerHTML = `<a href="${data.mapping_url}" class="btn btn-primary btn-sm">Map Columns → ${data.name}</a>`;
+          act.innerHTML = '';
+          const link = document.createElement('a');
+          link.href = data.mapping_url || '#';
+          link.className = 'btn btn-primary btn-sm';
+          link.textContent = `Map Columns → ${data.name || 'Session'}`;
+          act.appendChild(link);
         } else {
           _uploadError(idx, data.error || 'Upload failed');
         }

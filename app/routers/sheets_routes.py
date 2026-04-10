@@ -451,6 +451,14 @@ async def import_sheets_batch(request: Request):
 async def batch_progress_sse(batch_id: str, request: Request):
     """SSE stream for batch import progress."""
     import json as _json
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    owns_batch = batch_id in _user_batches.get(uid, []) or any(
+        b.get("batch_id") == batch_id for b in _completed_batches.get(uid, [])
+    )
+    if not owns_batch:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     async def event_stream():
         while True:
@@ -480,6 +488,15 @@ async def upload_credentials(request: Request, db: DBSession = Depends(get_db)):
         return JSONResponse({"error": "No file provided"}, status_code=400)
 
     content = await cred_file.read()
+
+    try:
+        creds_data = json.loads(content)
+        required = {"type", "project_id", "private_key_id", "private_key", "client_email"}
+        if not required.issubset(creds_data.keys()):
+            return JSONResponse({"error": "Invalid Google credentials — missing required fields"}, status_code=400)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON file"}, status_code=400)
+
     cred_path = _get_credentials_path(uid)
     with open(cred_path, "wb") as f:
         f.write(content)

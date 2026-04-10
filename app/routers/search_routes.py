@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
 from app.core.searcher import ImageSearcher
+from app.services.file_safety import normalize_uploaded_name, unique_path
 from app.services.ai_service import (
     ai_available,
     ai_build_search_queries,
@@ -40,6 +41,19 @@ _search_progress: dict[int, dict] = {}
 
 # I/O-bound search — 10 workers to avoid HTTP pool exhaustion on large batches
 _DEFAULT_WORKERS = 10
+
+
+def _validate_local_folder(local_folder: str, user_id: int | None) -> str:
+    if not local_folder or not user_id:
+        return ""
+    try:
+        import pathlib
+        resolved = pathlib.Path(local_folder).resolve()
+        allowed_base = (UPLOAD_DIR / f"user_{user_id}").resolve()
+        resolved.relative_to(allowed_base)
+        return str(resolved) if resolved.is_dir() else ""
+    except Exception:
+        return ""
 
 
 def _reset_items_for_search(db: DBSession, session_id: int) -> int:
@@ -119,9 +133,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         local_search_fn = None
         if search_mode in ("local", "both") and local_folder:
             from app.services.local_search import search_local_folder
-            import pathlib
-            _lf = pathlib.Path(local_folder).resolve()
-            if _lf.is_dir():
+            local_folder = _validate_local_folder(local_folder, user_id)
+            if local_folder:
                 local_search_fn = search_local_folder
             else:
                 logger.warning(f"Local folder not found or not a directory: {local_folder}")
@@ -350,12 +363,14 @@ async def start_batch_search(request: Request, db: DBSession = Depends(get_db)):
     data = await request.json()
     session_ids: list[int] = data.get("session_ids", [])
     search_mode = data.get("search_mode", "web")
-    local_folder = data.get("local_folder", "")
+    local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
     brand_urls = data.get("brand_urls", [])
     search_notes = data.get("search_notes", "")
 
     if not session_ids:
         return JSONResponse({"error": "No session IDs provided"}, status_code=400)
+    if search_mode == "local" and not local_folder:
+        return JSONResponse({"error": "Upload an image folder before starting local search"}, status_code=400)
 
     started = []
     for sid in session_ids:
@@ -393,9 +408,20 @@ async def start_batch_search(request: Request, db: DBSession = Depends(get_db)):
 
 
 @router.get("/search/batch/progress")
-async def batch_search_progress_sse(session_ids: str, request: Request):
+async def batch_search_progress_sse(session_ids: str, request: Request, db: DBSession = Depends(get_db)):
     """SSE for multiple sessions' search progress. Pass session_ids as comma-separated."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     ids = [int(x) for x in session_ids.split(",") if x.strip().isdigit()]
+    if not ids:
+        return JSONResponse({"error": "No session IDs provided"}, status_code=400)
+    owned_count = db.query(Session.id).filter(
+        Session.user_id == uid,
+        Session.id.in_(ids),
+    ).count()
+    if owned_count != len(set(ids)):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     async def event_stream():
         # Give threads up to 3 s to register themselves in _search_progress
@@ -453,6 +479,7 @@ async def upload_images_for_search(
 
     image_count = 0
     total_bytes = 0
+    extracted_bytes = 0
 
     for upload in files:
         content = await upload.read()
@@ -460,37 +487,29 @@ async def upload_images_for_search(
         if total_bytes > _MAX_IMAGE_UPLOAD:
             return JSONResponse({"error": "Total upload size exceeds 500 MB limit"}, status_code=413)
 
-        filename = upload.filename or "image"
-        ext = os.path.splitext(filename)[1].lower()
+        _display_name, safe_name = normalize_uploaded_name(upload.filename or "image", default="image")
+        ext = os.path.splitext(safe_name)[1].lower()
 
         if ext == ".zip":
             try:
                 with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    for zname in zf.namelist():
-                        zext = os.path.splitext(zname)[1].lower()
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        _zip_display, zip_safe_name = normalize_uploaded_name(info.filename, default="image")
+                        zext = os.path.splitext(zip_safe_name)[1].lower()
                         if zext not in _IMAGE_EXTENSIONS:
                             continue
-                        basename = os.path.basename(zname)
-                        if not basename:
-                            continue
-                        dest = img_dir / basename
-                        # Avoid overwriting with a counter suffix
-                        counter = 1
-                        stem, sfx = os.path.splitext(basename)
-                        while dest.exists():
-                            dest = img_dir / f"{stem}_{counter}{sfx}"
-                            counter += 1
-                        dest.write_bytes(zf.read(zname))
+                        extracted_bytes += info.file_size
+                        if extracted_bytes > _MAX_IMAGE_UPLOAD:
+                            return JSONResponse({"error": "Extracted image size exceeds 500 MB limit"}, status_code=413)
+                        dest = unique_path(img_dir, zip_safe_name)
+                        dest.write_bytes(zf.read(info))
                         image_count += 1
             except zipfile.BadZipFile:
-                logger.warning(f"Skipping bad ZIP: {filename}")
+                logger.warning(f"Skipping bad ZIP: {safe_name}")
         elif ext in _IMAGE_EXTENSIONS:
-            dest = img_dir / filename
-            counter = 1
-            stem, sfx = os.path.splitext(filename)
-            while dest.exists():
-                dest = img_dir / f"{stem}_{counter}{sfx}"
-                counter += 1
+            dest = unique_path(img_dir, safe_name)
             dest.write_bytes(content)
             image_count += 1
 
@@ -549,9 +568,11 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
 
     data = await request.json()
     search_mode = data.get("search_mode", "web")  # web, local, both
-    local_folder = data.get("local_folder", "")
+    local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
     brand_urls = data.get("brand_urls", [])  # Additional brand URLs for this search
     search_notes = data.get("search_notes", "")
+    if search_mode == "local" and not local_folder:
+        return JSONResponse({"error": "Upload an image folder before starting local search"}, status_code=400)
 
     # Update session config with search settings
     config = dict(sess.config or {})
@@ -590,8 +611,15 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
 
 
 @router.get("/search/{session_id}/progress")
-async def search_progress_sse(session_id: int, request: Request):
+async def search_progress_sse(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     """SSE endpoint for real-time search progress."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
     async def event_stream():
         while True:
             progress = _search_progress.get(session_id, {"done": 0, "total": 0, "running": False, "current": ""})

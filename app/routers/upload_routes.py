@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import shutil
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
@@ -12,12 +13,23 @@ from app.auth import get_current_user_id
 from app.config import UPLOAD_DIR
 from app.core.parser import FileParser
 from app.database import get_db
+from app.services.file_safety import normalize_uploaded_name, unique_path
 from app.templates_config import templates
 from app.models import Session, UniqueItem, UploadedFile, User
 
 router = APIRouter()
 
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+def _owned_upload_path(uid: int, file_path: str) -> pathlib.Path | None:
+    try:
+        resolved = pathlib.Path(file_path).resolve()
+        allowed_base = (UPLOAD_DIR / f"user_{uid}").resolve()
+        resolved.relative_to(allowed_base)
+        return resolved
+    except Exception:
+        return None
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -47,8 +59,8 @@ async def upload_file(request: Request, file: UploadFile = File(...),
         return RedirectResponse("/login", status_code=302)
 
     # Validate file extension
-    filename = file.filename or "upload"
-    ext = os.path.splitext(filename)[1].lower()
+    display_name, safe_name = normalize_uploaded_name(file.filename or "upload")
+    ext = os.path.splitext(safe_name)[1].lower()
     if ext not in (".xlsx", ".xls", ".csv"):
         return RedirectResponse("/", status_code=302)
 
@@ -60,19 +72,19 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     # Save file to disk
     session_dir = UPLOAD_DIR / f"user_{uid}"
     session_dir.mkdir(parents=True, exist_ok=True)
-    file_path = session_dir / filename
+    file_path = unique_path(session_dir, safe_name)
     with open(file_path, "wb") as f:
         f.write(content)
 
     # Create session
-    ext = os.path.splitext(file.filename)[1].lower()
+    ext = os.path.splitext(safe_name)[1].lower()
     source_type = "csv_upload" if ext == ".csv" else "excel_upload"
 
     sess = Session(
         user_id=uid,
-        name=file.filename,
+        name=display_name,
         source_type=source_type,
-        source_ref=file.filename,
+        source_ref=display_name,
         status="mapping",
     )
     db.add(sess)
@@ -82,7 +94,7 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     # Save file record
     uf = UploadedFile(
         session_id=sess.id,
-        filename=file.filename,
+        filename=display_name,
         file_path=str(file_path),
         file_size=os.path.getsize(file_path),
     )
@@ -100,8 +112,8 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    filename = file.filename or "upload"
-    ext = os.path.splitext(filename)[1].lower()
+    display_name, safe_name = normalize_uploaded_name(file.filename or "upload")
+    ext = os.path.splitext(safe_name)[1].lower()
     if ext not in (".xlsx", ".xls", ".csv"):
         return JSONResponse({"error": f"Unsupported file type: {ext}"}, status_code=400)
 
@@ -109,12 +121,7 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     session_dir.mkdir(parents=True, exist_ok=True)
 
     # Avoid name collisions when uploading multiple files
-    base, sfx = os.path.splitext(filename)
-    file_path = session_dir / filename
-    counter = 1
-    while file_path.exists():
-        file_path = session_dir / f"{base}_{counter}{sfx}"
-        counter += 1
+    file_path = unique_path(session_dir, safe_name)
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_SIZE:
@@ -126,9 +133,9 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     source_type = "csv_upload" if ext == ".csv" else "excel_upload"
     sess = Session(
         user_id=uid,
-        name=file_path.name,
+        name=display_name,
         source_type=source_type,
-        source_ref=file_path.name,
+        source_ref=display_name,
         status="mapping",
     )
     db.add(sess)
@@ -137,7 +144,7 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
 
     uf = UploadedFile(
         session_id=sess.id,
-        filename=file_path.name,
+        filename=display_name,
         file_path=str(file_path),
         file_size=os.path.getsize(file_path),
     )
@@ -147,7 +154,7 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     return JSONResponse({
         "ok": True,
         "session_id": sess.id,
-        "name": file_path.name,
+        "name": display_name,
         "mapping_url": f"/mapping/{sess.id}",
     })
 
@@ -163,7 +170,9 @@ async def delete_session(session_id: int, request: Request, db: DBSession = Depe
         # Clean up uploaded Excel/CSV file
         if sess.uploaded_file:
             try:
-                os.remove(sess.uploaded_file.file_path)
+                owned_path = _owned_upload_path(uid, sess.uploaded_file.file_path)
+                if owned_path and owned_path.exists():
+                    os.remove(owned_path)
             except OSError:
                 pass
         # Clean up uploaded images folder (from local search)
