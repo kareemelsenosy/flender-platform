@@ -100,11 +100,12 @@ async def lifespan(app: FastAPI):
         from app.models import UniqueItem
         _fdb = _SL()
         try:
+            from sqlalchemy import or_
             fixed = _fdb.query(UniqueItem).filter(
                 UniqueItem.search_status == "done",
                 UniqueItem.review_status == "pending",
-                UniqueItem.approved_url == "",
-            ).update({"review_status": "approved", "auto_selected": True})
+                or_(UniqueItem.approved_url == None, UniqueItem.approved_url == ""),
+            ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)
             if fixed:
                 _fdb.commit()
                 logger.info(f"Fixed {fixed} pending items back to approved")
