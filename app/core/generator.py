@@ -605,9 +605,9 @@ class OrderSheetGenerator:
         Naming: {item_code}_{color_code}_1.jpg
         Folder name = Item Group if available, else item_code.
         """
-        item_code = item.get("item_code", "unknown")
-        color_code = item.get("color_code", "").strip()
-        item_group = item.get("item_group", "").strip()
+        item_code = str(item.get("item_code") or "unknown").strip() or "unknown"
+        color_code = str(item.get("color_code") or "").strip()
+        item_group = str(item.get("item_group") or "").strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
         safe_color = re.sub(r"[^\w\-]", "_", color_code) if color_code else ""
 
