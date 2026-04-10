@@ -58,6 +58,10 @@ async def save_brand_config(request: Request, db: DBSession = Depends(get_db)):
 
     if not brand_name:
         return JSONResponse({"error": "Brand name required"}, status_code=400)
+    if len(brand_name) > 100:
+        return JSONResponse({"error": "Brand name too long (max 100 chars)"}, status_code=400)
+    if len(search_notes) > 5000:
+        return JSONResponse({"error": "Search notes too long (max 5000 chars)"}, status_code=400)
 
     # Clean URLs
     clean_urls = [u.strip() for u in site_urls if u.strip()]
@@ -133,9 +137,12 @@ async def upload_google_credentials(request: Request, db: DBSession = Depends(ge
 
     content = await cred_file.read()
 
-    # Validate JSON
+    # Validate JSON and check it's a Google service account
     try:
-        json.loads(content)
+        creds_data = json.loads(content)
+        required = {"type", "project_id", "private_key_id", "private_key", "client_email"}
+        if not required.issubset(creds_data.keys()):
+            return JSONResponse({"error": "Invalid Google credentials — missing required fields"}, status_code=400)
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON file"}, status_code=400)
 

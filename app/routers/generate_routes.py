@@ -210,6 +210,17 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
         logging.getLogger(__name__).error(f"Export failed for session {session_id}: {exc}")
         with _progress_lock:
             _progress[session_id] = {"stage": f"Error: {exc}", "downloaded": 0, "total": 0}
+        # Notify user of failure
+        try:
+            from app.services.notifications import add_notification
+            add_notification(
+                user_id, "export_error",
+                "Export Failed",
+                f"Export error: {str(exc)[:100]}",
+                session_id,
+            )
+        except Exception:
+            pass
     finally:
         db.close()
 

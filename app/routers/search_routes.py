@@ -254,8 +254,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                             db_item.auto_selected = True
                         else:
                             db_item.approved_url = ""
-                            db_item.review_status = "approved"
-                            db_item.auto_selected = True
+                            db_item.review_status = "pending"
+                            db_item.auto_selected = False
                         db.commit()
                 except Exception as e:
                     logger.error(f"Search error: {e}")
