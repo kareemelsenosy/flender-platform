@@ -262,24 +262,24 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
             sizes = [""]  # one row even with no size data
         for size in sizes:
             item_dicts.append({
-                "item_code": item.item_code,
-                "style_name": item.style_name,
-                "color_name": item.color_name,
-                "color_code": item.color_code,
-                "gender": item.gender,
+                "item_code": item.item_code or "",
+                "style_name": item.style_name or "",
+                "color_name": item.color_name or "",
+                "color_code": item.color_code or "",
+                "gender": item.gender or "",
                 "wholesale_price": item.wholesale_price,
                 "retail_price": item.retail_price,
                 "qty_available": item.qty_available,
-                "size": str(size),  # single size per row
-                "approved_url": item.approved_url,
+                "size": str(size or ""),  # single size per row
+                "approved_url": item.approved_url or "",
                 "pictures_url": item.pictures_url or "",
                 "additional_urls": item.additional_urls,
-                "brand": item.brand,
+                "brand": item.brand or "",
                 "barcode": item.barcode or "",
                 "item_group": item.item_group or "",
             })
 
-    brand = items[0].brand if items else ""
+    brand = (items[0].brand or "") if items else ""
     currency = sess.config.get("currency", "")
 
     # Initialize progress and start background thread
