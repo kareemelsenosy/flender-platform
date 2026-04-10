@@ -164,10 +164,19 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             "sheet_names": [], "total_rows": 0, "total_unique": 0,
         })
 
-    rows, unique_items = parser.parse_with_mapping(sess.uploaded_file.file_path, mapping,
-                                                    selected_sheets=selected_sheets)
+    try:
+        rows, unique_items = parser.parse_with_mapping(sess.uploaded_file.file_path, mapping,
+                                                        selected_sheets=selected_sheets)
+    except Exception as e:
+        return templates.TemplateResponse(request, "mapping.html", {
+            "session": sess, "error": f"Could not parse file with this mapping: {e}",
+            "headers": raw_headers, "auto_mapping": mapping,
+            "standard_fields": list(COLUMN_PATTERNS.keys()),
+            "sample_rows": [], "saved_formats": [], "ai_mapping": {}, "is_remap": True,
+            "sheet_names": [], "total_rows": 0, "total_unique": 0,
+        })
 
-    # Clear old items and search progress
+    # Clear old items and search progress — only after successful parse
     db.query(UniqueItem).filter(UniqueItem.session_id == sess.id).delete()
 
     # Save unique items to DB with size normalization

@@ -373,7 +373,7 @@
         });
 
         // Re-execute scripts inside the new content
-        main.querySelectorAll('script').forEach(old => {
+        curMain.querySelectorAll('script').forEach(old => {
           const s = document.createElement('script');
           if (old.src) s.src = old.src;
           else s.textContent = old.textContent;
