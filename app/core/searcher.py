@@ -331,8 +331,13 @@ class ImageSearcher:
         if resp is None:
             return []
 
+        import html as _html
         urls: list[str] = []
-        soup = BeautifulSoup(resp.text, "html.parser")
+        raw = resp.text
+        # Decode HTML entities — Bing encodes JSON as &quot;murl&quot;:&quot;https://...&quot;
+        decoded = _html.unescape(raw)
+
+        soup = BeautifulSoup(raw, "html.parser")
         # Method 1: iusc anchor tags with JSON metadata
         for tag in soup.find_all("a", class_="iusc"):
             m = tag.get("m", "")
@@ -345,17 +350,28 @@ class ImageSearcher:
             except Exception:
                 pass
 
-        # Method 2: imgurl= in raw HTML
-        imgurl_matches = re.findall(r'imgurl=(https?://[^&"\']+)', resp.text)
+        # Method 2: murl from decoded JSON blobs (handles &quot; encoding)
+        for text in (raw, decoded):
+            murl_matches = re.findall(r'"murl"\s*:\s*"(https?://[^"\\]+)"', text)
+            urls.extend(murl_matches)
+
+        # Method 3: imgurl= in raw HTML
+        imgurl_matches = re.findall(r'imgurl=(https?://[^&"\'\\s]+)', decoded)
         urls.extend([urllib.parse.unquote(u) for u in imgurl_matches])
 
-        # Method 3: murl from any JSON-like blobs in the page
-        murl_matches = re.findall(r'"murl"\s*:\s*"(https?://[^"]+)"', resp.text)
-        urls.extend(murl_matches)
+        # Method 4: contentUrl / mediaUrl patterns
+        for pat in [r'"contentUrl"\s*:\s*"(https?://[^"\\]+)"',
+                    r'"mediaUrl"\s*:\s*"(https?://[^"\\]+)"']:
+            urls.extend(re.findall(pat, decoded))
 
-        # Method 4: turl (thumbnail) as last resort — still useful for finding the source
+        # Method 5: any https URL ending in image extension
         if len(urls) < 3:
-            turl_matches = re.findall(r'"turl"\s*:\s*"(https?://[^"]+)"', resp.text)
+            img_urls = re.findall(r'https?://[^\s"\'<>&]{15,}\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>&]*)?', decoded)
+            urls.extend([u for u in img_urls if "bing.com" not in u and "microsoft.com" not in u])
+
+        # Method 6: turl (thumbnail) as last resort
+        if len(urls) < 3:
+            turl_matches = re.findall(r'"turl"\s*:\s*"(https?://[^"\\]+)"', decoded)
             urls.extend(turl_matches)
 
         return self._dedupe(urls)
