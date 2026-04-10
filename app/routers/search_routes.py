@@ -273,7 +273,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             for future in as_completed(futures):
                 # Check if search was cancelled (remap bumped search_gen)
                 try:
-                    current_sess = db.query(Session).get(session_id)
+                    current_sess = db.get(Session, session_id)
                     current_gen = (current_sess.config or {}).get("search_gen", 0) if current_sess else -1
                     if current_gen != search_gen:
                         logger.info(f"Search cancelled for session {session_id} (gen {search_gen} != {current_gen})")
@@ -283,7 +283,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
                 try:
                     item_id, candidates, scores, from_cache = future.result()
-                    db_item = db.query(UniqueItem).get(item_id)
+                    db_item = db.get(UniqueItem, item_id)
                     if db_item:
                         db_item.candidates = candidates
                         db_item.scores = scores
@@ -307,7 +307,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
         # Update session status — only if this search generation is still current
         # (guards against a remap happening mid-search that bumped search_gen)
-        sess = db.query(Session).get(session_id)
+        sess = db.get(Session, session_id)
         current_gen = (sess.config or {}).get("search_gen", 0) if sess else -1
         if sess and current_gen == search_gen:
             sess.status = "reviewing"

@@ -38,7 +38,7 @@ async def dashboard(request: Request, db: DBSession = Depends(get_db)):
     if not uid:
         return RedirectResponse("/login", status_code=302)
 
-    user = db.query(User).get(uid)
+    user = db.get(User, uid)
     sessions = (
         db.query(Session)
         .filter(Session.user_id == uid)

@@ -23,7 +23,7 @@ async def settings_page(request: Request, db: DBSession = Depends(get_db)):
     if not uid:
         return RedirectResponse("/login", status_code=302)
 
-    user = db.query(User).get(uid)
+    user = db.get(User, uid)
     brand_configs = db.query(BrandSearchConfig).filter(
         BrandSearchConfig.user_id == uid
     ).order_by(BrandSearchConfig.brand_name).all()

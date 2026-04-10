@@ -228,7 +228,7 @@ def _issue_verification_code(user: User, db) -> str:
 
 @router.get("/verify-email/{user_id}", response_class=HTMLResponse)
 async def verify_email_page(user_id: int, request: Request, db: DBSession = Depends(get_db)):
-    user = db.query(User).get(user_id)
+    user = db.get(User, user_id)
     if not user:
         return RedirectResponse("/login", status_code=302)
     if user.email_verified:
@@ -243,7 +243,7 @@ async def verify_email_page(user_id: int, request: Request, db: DBSession = Depe
 async def verify_email(user_id: int, request: Request,
                        code: str = Form(default=""),
                        db: DBSession = Depends(get_db)):
-    user = db.query(User).get(user_id)
+    user = db.get(User, user_id)
     if not user:
         return RedirectResponse("/login", status_code=302)
 
@@ -277,7 +277,7 @@ async def resend_verification(user_id: int, request: Request, db: DBSession = De
     ip = request.client.host if request.client else "unknown"
     if _is_rate_limited(ip):
         return JSONResponse({"error": "Too many requests. Please wait."}, status_code=429)
-    user = db.query(User).get(user_id)
+    user = db.get(User, user_id)
     if not user or user.email_verified:
         return RedirectResponse("/login", status_code=302)
     _issue_verification_code(user, db)
@@ -363,7 +363,7 @@ async def reset_password(token: str, request: Request,
             "error": "Password must be at least 8 characters.", "success": False,
         })
 
-    user = db.query(User).get(record.user_id)
+    user = db.get(User, record.user_id)
     if user:
         user.password_hash = hash_password(password)
     record.used = True

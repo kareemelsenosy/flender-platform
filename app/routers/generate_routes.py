@@ -145,7 +145,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
         )
         db.add(gen_file)
 
-        sess = db.query(Session).get(session_id)
+        sess = db.get(Session, session_id)
         if sess:
             sess.status = "completed"
         db.commit()

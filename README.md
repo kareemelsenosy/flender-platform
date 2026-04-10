@@ -45,6 +45,13 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+For the automated smoke tests:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
 ### 2. Configure environment
 
 ```bash
@@ -68,6 +75,25 @@ uvicorn app.main:app --reload
 ```
 
 Open [http://localhost:8000](http://localhost:8000)
+
+### 4. Smoke tests
+
+The repo includes a delivery smoke suite in `tests/` that exercises the core workflow with isolated temp storage:
+
+- login
+- Excel/CSV upload
+- column mapping
+- search completion
+- review state
+- Excel export
+- download endpoints
+- ownership / access guardrails
+
+Run it with:
+
+```bash
+pytest -q
+```
 
 ---
 
