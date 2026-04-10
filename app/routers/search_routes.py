@@ -45,6 +45,8 @@ _DEFAULT_WORKERS = 10
 def _run_search_background(session_id: int, config: dict, user_id: int = None):
     """Run image search in background thread."""
     db = SessionLocal()
+    # Snapshot the search generation at start — if it changes (remap), we abort DB updates
+    search_gen = config.get("search_gen", 0)
     try:
         items = db.query(UniqueItem).filter(
             UniqueItem.session_id == session_id,
@@ -252,9 +254,11 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 item_obj = futures[future]
                 _search_progress[session_id]["current"] = item_obj.item_code
 
-        # Update session status
+        # Update session status — only if this search generation is still current
+        # (guards against a remap happening mid-search that bumped search_gen)
         sess = db.query(Session).get(session_id)
-        if sess:
+        current_gen = (sess.config or {}).get("search_gen", 0) if sess else -1
+        if sess and current_gen == search_gen:
             sess.status = "reviewing"
             sess.searched_items = total
             db.commit()
@@ -505,9 +509,14 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     config["local_folder"] = local_folder
     if brand_urls:
         config["extra_brand_urls"] = brand_urls
+    # Bump search generation so any stale background threads won't overwrite status
+    config["search_gen"] = config.get("search_gen", 0) + 1
     sess.config = config
     sess.status = "searching"
     db.commit()
+
+    # Clear any stale progress so old threads don't block a new search from starting
+    _search_progress.pop(session_id, None)
 
     # Start search if not already running
     if session_id not in _search_progress or not _search_progress.get(session_id, {}).get("running"):

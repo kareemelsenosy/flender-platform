@@ -129,6 +129,15 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
     sess.status = "searching"
     sess.searched_items = 0
 
+    # Invalidate any in-progress search so old background threads don't overwrite status
+    cfg = sess.config or {}
+    cfg["search_gen"] = cfg.get("search_gen", 0) + 1
+    sess.config = cfg
+
+    # Clear stale progress entry so new search isn't blocked by old running thread
+    from app.routers.search_routes import _search_progress
+    _search_progress.pop(session_id, None)
+
     # Read selected sheets from form (multi-select)
     selected_sheets_raw = form.getlist("selected_sheets")
     selected_sheets = selected_sheets_raw if selected_sheets_raw else None
