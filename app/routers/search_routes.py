@@ -520,7 +520,7 @@ async def upload_images_for_search(
 # ── Per-session routes ────────────────────────────────────────────────────────
 
 @router.get("/search/{session_id}", response_class=HTMLResponse)
-async def search_page(session_id: int, request: Request, db: DBSession = Depends(get_db)):
+def search_page(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
     if not uid:
         return RedirectResponse("/login", status_code=302)

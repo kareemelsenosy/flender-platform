@@ -199,7 +199,7 @@ async def image_proxy(request: Request, url: str = ""):
 
 
 @router.get("/review/{session_id}", response_class=HTMLResponse)
-async def review_page(session_id: int, request: Request, db: DBSession = Depends(get_db)):
+def review_page(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
     if not uid:
         return RedirectResponse("/login", status_code=302)
@@ -214,7 +214,7 @@ async def review_page(session_id: int, request: Request, db: DBSession = Depends
 
 
 @router.get("/review/{session_id}/state")
-async def review_state(session_id: int, request: Request, db: DBSession = Depends(get_db)):
+def review_state(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id_db(request, db)
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
