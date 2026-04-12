@@ -1,6 +1,7 @@
 """Review routes — image review SPA + API."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -11,7 +12,6 @@ import urllib.parse
 import zipfile
 from typing import Set
 
-import httpx
 import requests
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -33,6 +33,19 @@ _DL_HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
+
+def _make_upstream_http() -> requests.Session:
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=100,
+        pool_maxsize=100,
+        max_retries=0,
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 # Success cache: url_hash -> (content_bytes, content_type, timestamp)
 _image_cache: dict[str, tuple[bytes, str, float]] = {}
 _CACHE_MAX_AGE = 1800  # 30 minutes
@@ -41,6 +54,7 @@ _CACHE_MAX_ITEMS = 1000
 _fail_cache: dict[str, float] = {}
 _FAIL_CACHE_MAX_AGE = 600  # 10 minutes
 _LOCAL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+_UPSTREAM_HTTP = _make_upstream_http()
 
 
 def _normalize_image_url(url: str | None, uid: int | None = None, allow_empty: bool = False) -> str | None:
@@ -74,6 +88,11 @@ def _get_owned_item(db: DBSession, uid: int, session_id: int, item_id: int | Non
         UniqueItem.session_id == session_id,
         Session.user_id == uid,
     ).first()
+
+
+def _fetch_remote_image(url: str) -> tuple[int, dict[str, str], bytes]:
+    resp = _UPSTREAM_HTTP.get(url, headers=_DL_HEADERS, timeout=5, allow_redirects=True)
+    return resp.status_code, dict(resp.headers), resp.content
 
 
 @router.get("/api/image/local")
@@ -159,20 +178,14 @@ async def image_proxy(request: Request, url: str = ""):
     if url_hash in _fail_cache and now - _fail_cache[url_hash] < _FAIL_CACHE_MAX_AGE:
         return Response(status_code=502)
 
-    # Fetch from origin — async so we don't block the event loop
+    # Fetch from origin using a shared session so repeated thumbnail loads
+    # reuse upstream connections instead of creating a fresh client each time.
     try:
-        async with httpx.AsyncClient(
-            headers=_DL_HEADERS,
-            follow_redirects=True,
-            timeout=httpx.Timeout(5.0),
-        ) as client:
-            resp = await client.get(url)
+        status_code, resp_headers, data = await asyncio.to_thread(_fetch_remote_image, url)
 
-        if resp.status_code != 200:
+        if status_code != 200:
             _fail_cache[url_hash] = now
-            return Response(status_code=resp.status_code)
-
-        data = resp.content
+            return Response(status_code=status_code)
 
         # Detect actual content type from magic bytes (some CDNs lie about content-type)
         if data[:4] == b"\xff\xd8\xff\xe0" or data[:4] == b"\xff\xd8\xff\xe1":
@@ -184,7 +197,7 @@ async def image_proxy(request: Request, url: str = ""):
         elif data[:6] in (b"GIF87a", b"GIF89a"):
             ct = "image/gif"
         else:
-            ct = resp.headers.get("content-type", "image/jpeg")
+            ct = resp_headers.get("content-type", "image/jpeg")
             # If response is HTML (error page), don't serve it as an image
             if "text/html" in ct or data[:20].strip().startswith(b"<"):
                 _fail_cache[url_hash] = now
@@ -232,7 +245,17 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
     if not sess:
         return JSONResponse({"error": "not found"}, status_code=404)
 
-    items = db.query(UniqueItem).filter(UniqueItem.session_id == session_id).all()
+    items = db.query(
+        UniqueItem.id,
+        UniqueItem.item_code,
+        UniqueItem.color_code,
+        UniqueItem.brand,
+        UniqueItem.approved_url,
+        UniqueItem.review_status,
+        UniqueItem.auto_selected,
+    ).filter(
+        UniqueItem.session_id == session_id
+    ).order_by(UniqueItem.id.asc()).all()
     state = {}
     for item in items:
         key = f"{item.item_code}__{item.color_code or ''}"
@@ -242,23 +265,48 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
                 "item_code": item.item_code,
                 "color_code": item.color_code,
                 "brand": item.brand,
-                "style_name": item.style_name,
-                "color_name": item.color_name,
-                "wholesale_price": item.wholesale_price,
-                "retail_price": item.retail_price,
-                "gender": item.gender,
-                "sizes": item.sizes,
-                "qty_available": item.qty_available,
             },
-            "candidates": item.candidates,
-            "scores": item.scores,
             "approved_url": item.approved_url,
-            "additional_urls": item.additional_urls,
             "status": item.review_status,
             "auto_selected": item.auto_selected,
+            "details_loaded": False,
         }
 
     return JSONResponse(state)
+
+
+@router.get("/review/{session_id}/items/{item_id}")
+def review_item_detail(session_id: int, item_id: int, request: Request, db: DBSession = Depends(get_db)):
+    uid = get_current_user_id_db(request, db)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    item = _get_owned_item(db, uid, session_id, item_id)
+    if not item:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    return JSONResponse({
+        "id": item.id,
+        "item": {
+            "item_code": item.item_code,
+            "color_code": item.color_code,
+            "brand": item.brand,
+            "style_name": item.style_name,
+            "color_name": item.color_name,
+            "wholesale_price": item.wholesale_price,
+            "retail_price": item.retail_price,
+            "gender": item.gender,
+            "sizes": item.sizes,
+            "qty_available": item.qty_available,
+        },
+        "candidates": item.candidates,
+        "scores": item.scores,
+        "approved_url": item.approved_url,
+        "additional_urls": item.additional_urls,
+        "status": item.review_status,
+        "auto_selected": item.auto_selected,
+        "details_loaded": True,
+    })
 
 
 @router.post("/review/{session_id}/approve")

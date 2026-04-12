@@ -138,6 +138,15 @@ def test_core_smoke_flow_upload_mapping_search_review_export_and_downloads(
     for entry in state.values():
         assert entry["status"] == "approved"
         assert entry["approved_url"] == image_url
+        assert entry["details_loaded"] is False
+
+    first_entry = next(iter(state.values()))
+    review_item = client.get(f"/review/{session_id}/items/{first_entry['id']}")
+    assert review_item.status_code == 200
+    detail = review_item.json()
+    assert detail["details_loaded"] is True
+    assert detail["candidates"] == [image_url]
+    assert detail["approved_url"] == image_url
 
     monkeypatch.setattr(test_app["search_routes"].threading, "Thread", real_thread_class)
 

@@ -169,6 +169,7 @@ let state = {};
 let keys = [];
 let currentKey = null;
 let filter = 'all';
+let currentRenderToken = 0;
 
 function isLocalFile(url) {
   return url && url.startsWith('file://');
@@ -213,7 +214,18 @@ async function loadState() {
       throw new Error(`Server returned ${resp.status}`);
     }
 
-    state = await resp.json();
+    const summary = await resp.json();
+    state = {};
+    for (const [key, entry] of Object.entries(summary)) {
+      state[key] = {
+        ...entry,
+        item: entry.item || {},
+        candidates: entry.candidates || [],
+        scores: entry.scores || {},
+        additional_urls: entry.additional_urls || [],
+        details_loaded: !!entry.details_loaded,
+      };
+    }
     keys = Object.keys(state);
     updateSidebar();
     if (keys.length > 0) selectItem(keys[0]);
@@ -225,6 +237,79 @@ async function loadState() {
       <button class="btn btn-primary" onclick="loadState()">Retry</button>
     </div>`;
   }
+}
+
+function showItemLoading(key) {
+  const entry = state[key] || {};
+  const item = entry.item || {};
+  document.getElementById('review-main').innerHTML = `
+    <div class="text-center text-muted" style="padding-top:100px">
+      <div style="font-size:1.1rem;color:var(--black);margin-bottom:8px">${escapeHtml(item.item_code || key || 'Item')}</div>
+      <div>Loading item details...</div>
+    </div>
+  `;
+}
+
+function showItemLoadError(key, message) {
+  const entry = state[key] || {};
+  const item = entry.item || {};
+  const main = document.getElementById('review-main');
+  main.innerHTML = `
+    <div class="text-center" style="padding-top:100px">
+      <div style="font-size:1.1rem;color:var(--black);margin-bottom:8px">${escapeHtml(item.item_code || key || 'Item')}</div>
+      <p class="text-muted mb-3">Could not load this item — ${escapeHtml(message)}</p>
+      <button class="btn btn-primary" id="retry-item-load-btn">Retry</button>
+    </div>
+  `;
+  const retryBtn = document.getElementById('retry-item-load-btn');
+  if (retryBtn) retryBtn.addEventListener('click', () => selectItem(key));
+}
+
+async function ensureEntryDetails(key) {
+  const entry = state[key];
+  if (!entry) return null;
+  if (entry.details_loaded) return entry;
+  if (entry._detailsPromise) return entry._detailsPromise;
+
+  entry._detailsPromise = (async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const resp = await fetch(`/review/${SESSION_ID}/items/${entry.id}`, { signal: ctrl.signal });
+      if (resp.status === 401) {
+        window.location.href = '/login';
+        return null;
+      }
+      if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+
+      const data = await resp.json();
+      state[key] = {
+        ...state[key],
+        ...data,
+        item: { ...(state[key].item || {}), ...(data.item || {}) },
+        candidates: data.candidates || [],
+        scores: data.scores || {},
+        additional_urls: data.additional_urls || [],
+        details_loaded: true,
+      };
+      return state[key];
+    } finally {
+      clearTimeout(timer);
+      delete entry._detailsPromise;
+    }
+  })();
+
+  return entry._detailsPromise;
+}
+
+function prefetchNearbyDetails(key) {
+  const idx = keys.indexOf(key);
+  [idx - 1, idx + 1].forEach(i => {
+    const neighbor = keys[i];
+    if (neighbor && state[neighbor] && !state[neighbor].details_loaded && !state[neighbor]._detailsPromise) {
+      ensureEntryDetails(neighbor).catch(() => {});
+    }
+  });
 }
 
 function updateSidebar() {
@@ -292,12 +377,32 @@ function filterItems(f) {
   updateSidebar();
 }
 
-function selectItem(key) {
+async function selectItem(key) {
   currentKey = key;
   updateSidebar();
-  renderMain(key);
   const activeEl = document.querySelector('.review-item.active');
   if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+
+  const renderToken = ++currentRenderToken;
+  const entry = state[key];
+  if (!entry) return;
+
+  if (!entry.details_loaded) {
+    showItemLoading(key);
+    try {
+      await ensureEntryDetails(key);
+    } catch (err) {
+      if (renderToken === currentRenderToken && currentKey === key) {
+        const msg = err?.name === 'AbortError' ? 'Request timed out.' : (err?.message || 'Unknown error');
+        showItemLoadError(key, msg);
+      }
+      return;
+    }
+  }
+
+  if (renderToken !== currentRenderToken || currentKey !== key) return;
+  renderMain(key);
+  prefetchNearbyDetails(key);
 }
 
 function renderMain(key) {
@@ -458,6 +563,9 @@ async function submitCustomUrl(key, itemId) {
     showAlert(data.error || 'Could not save that image URL.', 'Save Failed');
     return;
   }
+  if (!state[key].candidates) state[key].candidates = [];
+  if (!state[key].scores) state[key].scores = {};
+  state[key].details_loaded = true;
   state[key].approved_url = url;
   state[key].status = 'approved';
   state[key].auto_selected = false;
@@ -477,6 +585,7 @@ async function approveUrl(key, itemId, url) {
     showAlert(data.error || 'Could not update this item.', 'Update Failed');
     return;
   }
+  state[key].details_loaded = true;
   state[key].approved_url = url;
   state[key].status = 'approved';
   state[key].auto_selected = false;
@@ -505,6 +614,7 @@ async function toggleExtra(key, itemId, url) {
     showAlert(data.error || 'Could not update extra images.', 'Update Failed');
     return;
   }
+  entry.details_loaded = true;
   entry.additional_urls = extras;
   renderMain(key);
 }
@@ -530,6 +640,7 @@ async function doResearch(key, itemId) {
     });
     const data = await resp.json();
     if (data.ok) {
+      state[key].details_loaded = true;
       state[key].candidates = data.candidates;
       state[key].scores = data.scores;
       state[key].approved_url = data.approved_url;
@@ -641,7 +752,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown' && idx < filtered.length - 1) { selectItem(filtered[idx + 1]); e.preventDefault(); }
   if (e.key >= '1' && e.key <= '9') {
     const entry = state[currentKey];
-    if (entry) {
+    if (entry && entry.details_loaded) {
       const n = parseInt(e.key) - 1;
       if (entry.candidates[n]) approveUrl(currentKey, entry.id, entry.candidates[n]);
     }
