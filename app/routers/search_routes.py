@@ -145,11 +145,16 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         def _search_one(item_id: int, item_dict: dict):
             cache_db = SessionLocal()
             try:
+                cache_item_code, cache_color_code, cache_brand = searcher.cache_identity(item_dict) if searcher else (
+                    item_dict["item_code"],
+                    item_dict.get("color_code") or "",
+                    (item_dict.get("brand") or "").lower(),
+                )
                 # Check cross-session cache first
                 cached = cache_db.query(SearchCache).filter(
-                    SearchCache.item_code == item_dict["item_code"],
-                    SearchCache.color_code == (item_dict.get("color_code") or ""),
-                    SearchCache.brand == (item_dict.get("brand") or ""),
+                    SearchCache.item_code == cache_item_code,
+                    SearchCache.color_code == cache_color_code,
+                    SearchCache.brand == cache_brand,
                 ).first()
 
                 if cached and cached.candidates:
@@ -234,18 +239,18 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 # ── STEP 6: Save to cache — upsert pattern avoids constraint errors (M5)
                 try:
                     existing_cache = cache_db.query(SearchCache).filter(
-                        SearchCache.item_code == item_dict["item_code"],
-                        SearchCache.color_code == (item_dict.get("color_code") or ""),
-                        SearchCache.brand == (item_dict.get("brand") or ""),
+                        SearchCache.item_code == cache_item_code,
+                        SearchCache.color_code == cache_color_code,
+                        SearchCache.brand == cache_brand,
                     ).first()
                     if existing_cache:
                         existing_cache.candidates = candidates
                         existing_cache.scores = scores
                     else:
                         new_cache = SearchCache(
-                            item_code=item_dict["item_code"],
-                            color_code=item_dict.get("color_code") or "",
-                            brand=item_dict.get("brand") or "",
+                            item_code=cache_item_code,
+                            color_code=cache_color_code,
+                            brand=cache_brand,
                         )
                         new_cache.candidates = candidates
                         new_cache.scores = scores
@@ -267,6 +272,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     "color_name": item.color_name,
                     "style_name": item.style_name,
                     "brand": item.brand,
+                    "barcode": item.barcode,
+                    "item_group": item.item_group,
                 }
                 futures[executor.submit(_search_one, item.id, item_dict)] = item
 

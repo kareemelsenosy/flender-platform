@@ -444,6 +444,8 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
         "color_name": item.color_name,
         "style_name": item.style_name,
         "brand": item.brand,
+        "barcode": item.barcode,
+        "item_group": item.item_group,
     }
 
     # Build AI queries using instructions if provided

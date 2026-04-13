@@ -198,6 +198,30 @@ function getConfidenceLabel(score) {
   return { label: 'LOW', cls: 'confidence-poor' };
 }
 
+function normalizeSearchItemCode(item) {
+  const raw = String(item?.item_code || '').trim();
+  if (!raw) return '';
+  const combined = `${item?.item_group || ''} ${item?.style_name || ''}`.toLowerCase();
+  const footwearHint = /shoe|sneaker|trainer|running|runner|boot|footwear|slipper|loafer/.test(combined);
+  let m = raw.match(/^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$/i);
+  if (m) return m[1];
+  if (footwearHint) {
+    m = raw.match(/^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$/i);
+    if (m) return m[1];
+  }
+  return raw;
+}
+
+function buildManualQuery(item) {
+  return [
+    item?.brand || '',
+    item?.style_name || '',
+    item?.item_group || '',
+    item?.color_name || '',
+    normalizeSearchItemCode(item),
+  ].filter(Boolean).join(' ').trim();
+}
+
 async function loadState() {
   const mainEl = document.getElementById('review-main');
   try {
@@ -417,7 +441,7 @@ function renderMain(key) {
   const brandLine = item.brand ? `${item.brand} · ` : '';
   const colorLine = item.color_name ? ` · ${item.color_name}` : '';
   const priceLine = item.wholesale_price ? ` · €${Number(item.wholesale_price).toFixed(2)}` : '';
-  const searchQuery = `${item.brand || ''} ${item.item_code || ''} ${item.style_name || ''}`.trim();
+  const searchQuery = buildManualQuery(item);
 
   // If we have a selected image URL (not local), offer reverse image search to find the exact photo.
   // Otherwise fall back to text image search.
@@ -443,6 +467,7 @@ function renderMain(key) {
           ${escapeHtml(colorLine)}
           ${escapeHtml(priceLine)}
         </div>
+        <div class="text-muted" style="font-size:0.72rem;margin-top:6px">Search query: ${escapeHtml(searchQuery)}</div>
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
         <button class="btn btn-outline btn-sm" id="custom-url-toggle">Paste URL</button>

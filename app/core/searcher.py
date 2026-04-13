@@ -4,6 +4,7 @@ Refactored from images-finder/searcher.py into a class (no globals).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 import threading
@@ -140,6 +141,106 @@ _CDN_PATTERNS = [
 ]
 _PRODUCT_PATHS = ["/product/", "/products/", "/p/", "/item/", "/images/product", "/catalog/product"]
 
+_STOP_TOKENS = {
+    "and", "the", "with", "for", "from", "mens", "men", "women", "womens",
+    "woman", "man", "kid", "kids", "junior", "jr", "adult", "unisex", "new",
+    "wmns", "gs", "ps", "td", "eu", "uk", "us",
+}
+_COLOR_WORDS = {
+    "black", "white", "blue", "navy", "green", "red", "pink", "purple", "orange",
+    "yellow", "grey", "gray", "beige", "brown", "tan", "khaki", "olive", "cream",
+    "silver", "gold", "multi", "multicolor", "violet", "indigo", "aqua", "turquoise",
+    "pelican", "ghost", "salt", "lakers", "natural", "oxide", "wax", "dog",
+}
+_CATEGORY_FAMILY_TERMS: dict[str, set[str]] = {
+    "footwear": {
+        "footwear", "shoe", "shoes", "sneaker", "sneakers", "trainer", "trainers",
+        "running", "runner", "runners", "boot", "boots", "sandals", "sandals",
+        "slipper", "slippers", "loafer", "loafers", "clog", "clogs",
+    },
+    "shorts": {"short", "shorts", "bermuda", "bermudas", "swimshort", "swimshorts"},
+    "tshirt": {"tshirt", "tshirts", "tee", "tees", "t-shirt", "t-shirts", "jersey"},
+    "shirt": {"shirt", "shirts", "overshirt", "overshirts", "polo", "polos", "blouse", "top", "tops"},
+    "hoodie": {"hoodie", "hoodies", "sweatshirt", "sweatshirts", "crewneck", "pullover", "pullovers"},
+    "pants": {
+        "pant", "pants", "trouser", "trousers", "jean", "jeans", "denim",
+        "legging", "leggings", "cargo", "cargos", "chino", "chinos",
+    },
+    "jacket": {
+        "jacket", "jackets", "coat", "coats", "parka", "parkas", "vest", "vests",
+        "gilet", "gilets", "blazer", "blazers", "windbreaker", "anorak",
+    },
+    "bag": {
+        "bag", "bags", "backpack", "backpacks", "tote", "totes", "satchel", "satchels",
+        "pouch", "pouches", "wallet", "wallets", "keyholder", "keyholders",
+        "keychain", "keychains", "shoulderbag", "crossbody",
+    },
+    "hat": {"hat", "hats", "cap", "caps", "beanie", "beanies", "bucket", "buckethat", "buckethats"},
+    "dress": {"dress", "dresses", "gown", "gowns"},
+    "skirt": {"skirt", "skirts"},
+    "accessory": {"bracelet", "bracelets", "necklace", "necklaces", "ring", "rings", "belt", "belts", "scarf", "scarves"},
+}
+_NEGATIVE_HINT_TERMS: dict[str, set[str]] = {
+    "footwear": {"bike", "bikes", "bicycle", "bicycles", "mtb", "mountainbike", "drink", "beverage", "can", "cans"},
+    "shorts": {"tshirt", "tshirts", "tee", "tees", "hoodie", "hoodies", "shirt", "shirts", "jacket", "jackets"},
+    "tshirt": {"shorts", "bermuda", "bermudas", "pants", "trousers", "shoes", "sneakers"},
+}
+_LOW_QUALITY_TERMS = {
+    "logo", "logos", "banner", "banners", "icon", "icons", "avatar", "avatars",
+    "wallpaper", "wallpapers", "illustration", "illustrations", "vector", "vectors",
+    "mockup", "mockups", "template", "templates", "clipart", "poster", "posters",
+}
+_TRANSIENT_QUERY_PARAMS = {
+    "w", "h", "width", "height", "q", "quality", "fit", "fm", "fl", "f",
+    "auto", "dpr", "ixlib", "imwidth", "crop", "rect", "bg",
+}
+_SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
+_TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
+
+
+@dataclass
+class SearchHit:
+    url: str
+    page_url: str = ""
+    title: str = ""
+    description: str = ""
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def _tokenize(value: str) -> list[str]:
+    text = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
+    return [token for token in text.split() if token and token not in _STOP_TOKENS]
+
+
+def _unique_preserve(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _canonical_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(str(url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return str(url or "").strip()
+    kept = []
+    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() not in _TRANSIENT_QUERY_PARAMS:
+            kept.append((key, value))
+    return urllib.parse.urlunsplit((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        parsed.path,
+        urllib.parse.urlencode(sorted(kept)),
+        "",
+    ))
+
 
 class ImageSearcher:
     """Search for product images across multiple sources."""
@@ -153,18 +254,166 @@ class ImageSearcher:
         # Extra priority domains that apply to every item in this session
         self.extra_site_urls: list[str] = self.config.get("extra_site_urls", [])
 
+    def _normalize_item_code(self, item_code: str, item_group: str | None, style_name: str | None) -> str:
+        code = str(item_code or "").strip()
+        if not code:
+            return ""
+        text = " ".join(filter(None, [item_group, style_name])).lower()
+        footwear_hint = any(term in text for term in _CATEGORY_FAMILY_TERMS["footwear"])
+
+        m = _SIZE_SUFFIX_RE.match(code)
+        if m:
+            return m.group(1)
+        if footwear_hint:
+            m = _TRAILING_SIZE_TOKEN_RE.match(code)
+            if m:
+                return m.group(1)
+        return code
+
+    def _normalized_color_identity(self, color_code: str | None, color_name: str | None) -> str:
+        if color_name:
+            return _slug(color_name)
+        code = str(color_code or "").strip()
+        if "|" in code:
+            code = code.split("|", 1)[0]
+        return _slug(code)
+
+    def _infer_category_family(self, item_group: str | None, style_name: str | None) -> tuple[str | None, set[str]]:
+        tokens = set(_tokenize(" ".join(filter(None, [item_group, style_name]))))
+        family_scores: dict[str, int] = {}
+        matched_terms: dict[str, set[str]] = {}
+        for family, terms in _CATEGORY_FAMILY_TERMS.items():
+            hits = {token for token in tokens if token in terms}
+            if hits:
+                family_scores[family] = len(hits)
+                matched_terms[family] = hits
+        if not family_scores:
+            return None, set()
+        family = max(family_scores, key=family_scores.get)
+        return family, matched_terms.get(family, set())
+
+    def _build_item_context(self, item: dict) -> dict[str, Any]:
+        item_code = str(item.get("item_code") or "").strip()
+        color_code = str(item.get("color_code") or "").strip() or None
+        color_name = str(item.get("color_name") or "").strip() or None
+        style_name = str(item.get("style_name") or "").strip() or None
+        brand = str(item.get("brand") or "").strip()
+        barcode = str(item.get("barcode") or "").strip() or None
+        item_group = str(item.get("item_group") or "").strip() or None
+        base_item_code = self._normalize_item_code(item_code, item_group, style_name)
+        family, family_terms = self._infer_category_family(item_group, style_name)
+        style_tokens = [
+            token for token in _tokenize(style_name or "")
+            if token not in family_terms and token not in _COLOR_WORDS and len(token) >= 3
+        ]
+        color_tokens = [token for token in _tokenize(color_name or "") if len(token) >= 3]
+        return {
+            "item_code": item_code,
+            "base_item_code": base_item_code or item_code,
+            "color_code": color_code,
+            "color_name": color_name,
+            "style_name": style_name,
+            "brand": brand,
+            "barcode": barcode,
+            "item_group": item_group,
+            "category_family": family,
+            "category_terms": family_terms,
+            "style_tokens": _unique_preserve(style_tokens),
+            "color_tokens": _unique_preserve(color_tokens),
+            "normalized_color_identity": self._normalized_color_identity(color_code, color_name),
+        }
+
+    def cache_identity(self, item: dict) -> tuple[str, str, str]:
+        ctx = self._build_item_context(item)
+        return (
+            ctx["base_item_code"] or ctx["item_code"],
+            ctx["normalized_color_identity"],
+            (ctx["brand"] or "").lower().strip(),
+        )
+
+    def build_manual_search_query(self, item: dict) -> str:
+        ctx = self._build_item_context(item)
+        parts = [
+            ctx["brand"],
+            ctx["style_name"],
+            ctx["item_group"],
+            ctx["color_name"],
+            ctx["base_item_code"],
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    def _build_text_query(self, ctx: dict[str, Any], include_category: bool = True, prefer_base_code: bool = True) -> str:
+        item_code = ctx["base_item_code"] if prefer_base_code else ctx["item_code"]
+        parts = [ctx["brand"], item_code, ctx["style_name"], ctx["color_name"]]
+        if include_category:
+            parts.append(ctx["item_group"])
+        return " ".join(part for part in parts if part).strip()
+
+    def _build_code_query(self, ctx: dict[str, Any]) -> str:
+        parts = [ctx["brand"], ctx["base_item_code"], ctx["item_group"], "product image"]
+        return " ".join(part for part in parts if part).strip()
+
+    def _coerce_hits(self, raw_hits: list[Any]) -> list[SearchHit]:
+        hits: list[SearchHit] = []
+        for raw in raw_hits or []:
+            if isinstance(raw, SearchHit):
+                hit = raw
+            elif isinstance(raw, dict):
+                url = str(raw.get("url") or "").strip()
+                if not url:
+                    continue
+                hit = SearchHit(
+                    url=url,
+                    page_url=str(raw.get("page_url") or "").strip(),
+                    title=str(raw.get("title") or "").strip(),
+                    description=str(raw.get("description") or "").strip(),
+                )
+            else:
+                url = str(raw or "").strip()
+                if not url:
+                    continue
+                hit = SearchHit(url=url)
+            hits.append(hit)
+        return hits
+
+    def _aggregate_hits(self, source_results: dict[str, list[SearchHit]]) -> list[dict[str, Any]]:
+        combined: dict[str, dict[str, Any]] = {}
+        for source_name, hits in source_results.items():
+            for index, hit in enumerate(hits):
+                key = _canonical_url(hit.url)
+                entry = combined.setdefault(key, {
+                    "url": hit.url,
+                    "page_url": "",
+                    "title": "",
+                    "description": "",
+                    "source_names": set(),
+                    "positions": [],
+                })
+                if (
+                    ("mm.bing.net" in entry["url"].lower() or "th.bing.com" in entry["url"].lower())
+                    and "bing.net" not in hit.url.lower()
+                ):
+                    entry["url"] = hit.url
+                entry["source_names"].add(source_name)
+                entry["positions"].append(index)
+                if hit.page_url and not entry["page_url"]:
+                    entry["page_url"] = hit.page_url
+                if hit.title and not entry["title"]:
+                    entry["title"] = hit.title
+                if hit.description and not entry["description"]:
+                    entry["description"] = hit.description
+        return list(combined.values())
+
     def search(self, item: dict, ai_queries: list[str] | None = None) -> tuple[list[str], dict[str, float]]:
         """
         Search for product images — all sources fire in parallel (no sequential waits).
         Returns (candidates, scores).
         """
-        item_code  = str(item.get("item_code")  or "").strip()
-        color_code = str(item.get("color_code") or "").strip() or None
-        color_name = str(item.get("color_name") or "").strip() or None
-        style_name = str(item.get("style_name") or "").strip() or None
-        brand      = str(item.get("brand")      or "").strip()
+        ctx = self._build_item_context(item)
+        item_code = ctx["item_code"]
+        brand = ctx["brand"]
 
-        source_results: dict[str, list[str]] = {}
+        source_results: dict[str, list[SearchHit]] = {}
         lock = threading.Lock()
 
         # Resolve brand site domain once (before spawning threads)
@@ -186,29 +435,27 @@ class ImageSearcher:
             d = extra_domain.strip().lstrip("https://").lstrip("http://").rstrip("/")
             if d:
                 tasks[f"extra_{ei}"] = lambda dom=d: self._bing_site_search(
-                    dom, item_code, color_name, style_name
+                    dom, self._build_text_query(ctx)
                 )
 
         if site_urls:
             tasks["brand_site"] = lambda: self._bing_site_search(
-                site_urls[0], item_code, color_name, style_name
+                site_urls[0], self._build_text_query(ctx)
             )
             # Also try a second brand-site search focusing on style/product name
-            if style_name and style_name.lower() != item_code.lower():
+            if ctx["style_name"] and ctx["style_name"].lower() != item_code.lower():
                 tasks["brand_site_style"] = lambda: self._bing_site_search(
-                    site_urls[0], style_name, color_name, None
+                    site_urls[0], self._build_text_query(ctx, prefer_base_code=False)
                 )
 
         if self.google_api_key and self.google_cse_id:
-            tasks["google"] = lambda: self._google_search(
-                brand, item_code, color_name, style_name
-            )
+            tasks["google"] = lambda: self._google_search(self._build_text_query(ctx))
 
-        tasks["bing"] = lambda: self._bing_search(brand, item_code, color_name, style_name)
-        tasks["bing_code_only"] = lambda: self._bing_raw(f"{item_code} {brand} product image") if item_code else []
-        tasks["google_scrape"] = lambda: self._google_images_scrape(brand, item_code, color_name, style_name)
-        tasks["ddg"]  = lambda: self._duckduckgo_search(brand, item_code, color_name, style_name)
-        tasks["yahoo"] = lambda: self._yahoo_images_scrape(brand, item_code, color_name, style_name)
+        tasks["bing"] = lambda: self._bing_search(self._build_text_query(ctx))
+        tasks["bing_code_only"] = lambda: self._bing_raw(self._build_code_query(ctx)) if item_code else []
+        tasks["google_scrape"] = lambda: self._google_images_scrape(self._build_text_query(ctx))
+        tasks["ddg"] = lambda: self._duckduckgo_search(self._build_text_query(ctx))
+        tasks["yahoo"] = lambda: self._yahoo_images_scrape(self._build_text_query(ctx))
 
         # Fire all sources at the same time
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -216,113 +463,158 @@ class ImageSearcher:
             for future in as_completed(futures):
                 key = futures[future]
                 try:
-                    found = future.result()
+                    found = self._coerce_hits(future.result())
                     if found:
                         with lock:
                             source_results[key] = found
                 except Exception:
                     pass
 
-        all_urls = self._dedupe([u for v in source_results.values() for u in v])
-        url_sources = {
-            url: sum(1 for v in source_results.values() if url in v)
-            for url in all_urls
-        }
-        raw_scores = {
-            url: self._score_url(
-                url, item_code, color_code, color_name, brand, i, url_sources[url]
-            )
-            for i, url in enumerate(all_urls)
-        }
-        candidates = sorted(all_urls, key=lambda u: raw_scores[u], reverse=True)[:self.max_candidates]
+        combined_hits = self._aggregate_hits(source_results)
+        raw_scores = {}
+        for hit in combined_hits:
+            raw_scores[hit["url"]] = self._score_hit(hit, ctx)
+
+        candidates = sorted(
+            [hit["url"] for hit in combined_hits],
+            key=lambda url: raw_scores[url],
+            reverse=True,
+        )[:self.max_candidates]
         scores = {u: round(raw_scores[u], 2) for u in candidates}
         return candidates, scores
 
-    def _score_url(self, url: str, item_code: str, color_code: str | None,
-                   color_name: str | None,
-                   brand: str, position: int = 0, source_count: int = 1) -> float:
+    def _score_hit(self, hit: dict[str, Any], ctx: dict[str, Any]) -> float:
+        url = hit["url"]
+        page_url = hit.get("page_url") or ""
+        title = hit.get("title") or ""
+        description = hit.get("description") or ""
+        source_names = hit.get("source_names") or set()
+        positions = hit.get("positions") or []
+
         score = 0.0
-        lower = url.lower()
-        code_clean = re.sub(r"[-_ ]", "", item_code).lower()
-        url_clean = re.sub(r"[-_ ]", "", lower)
+        lower = " ".join([url, page_url, title, description]).lower()
+        normalized_text = _slug(lower)
+        text_tokens = set(_tokenize(lower))
 
-        if item_code.lower() in lower or (len(code_clean) > 3 and code_clean in url_clean):
-            score += 0.40
+        full_code = ctx["item_code"]
+        base_code = ctx["base_item_code"]
+        full_code_slug = _slug(full_code)
+        base_code_slug = _slug(base_code)
+        if full_code_slug and full_code_slug in normalized_text:
+            score += 0.75
+        elif base_code_slug and base_code_slug in normalized_text:
+            score += 0.65
         else:
-            tokens = [t for t in re.split(r"[-_ ]+", item_code.lower()) if len(t) >= 4]
-            if tokens:
-                matched = sum(1 for t in tokens if t in url_clean)
-                if matched == len(tokens):
-                    score += 0.35
-                elif matched >= 2:
-                    score += 0.20
-                elif matched == 1:
-                    score += 0.08
+            code_tokens = [token for token in _tokenize(base_code) if len(token) >= 3]
+            if code_tokens:
+                matches = sum(1 for token in code_tokens if token in text_tokens or token in normalized_text)
+                if matches == len(code_tokens):
+                    score += 0.45
+                elif matches >= max(2, len(code_tokens) - 1):
+                    score += 0.28
+                elif matches >= 1:
+                    score += 0.12
 
-        if color_code and color_code.lower() in lower:
-            score += 0.20
+        barcode = ctx.get("barcode") or ""
+        barcode_slug = _slug(barcode)
+        if barcode_slug and barcode_slug in normalized_text:
+            score += 0.6
 
-        # Color name matching — boost if URL contains color words, penalize obvious mismatches
-        if color_name:
-            color_words = [w.lower() for w in re.split(r"[\s+\-/]", color_name) if len(w) >= 3]
-            color_clean = re.sub(r"[\s+\-/]", "", color_name.lower())
-            if color_clean and color_clean in url_clean:
-                score += 0.15
-            elif any(w in url_clean for w in color_words):
-                score += 0.08
+        style_tokens = ctx.get("style_tokens") or []
+        if style_tokens:
+            style_matches = sum(1 for token in style_tokens if token in text_tokens or token in normalized_text)
+            score += min(0.35, style_matches * 0.08)
+            if style_matches == 0 and base_code_slug not in normalized_text:
+                score -= 0.08
+
+        color_code = ctx.get("color_code") or ""
+        color_code_slug = _slug(color_code)
+        if color_code_slug and color_code_slug in normalized_text:
+            score += 0.18
+
+        color_tokens = ctx.get("color_tokens") or []
+        if color_tokens:
+            color_matches = {token for token in color_tokens if token in text_tokens or token in normalized_text}
+            if color_matches:
+                score += min(0.18, len(color_matches) * 0.06)
+            other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)
+            if other_colors and not color_matches:
+                score -= 0.1
 
         # Boost for user-specified priority domains (highest priority)
         for extra_d in self.extra_site_urls:
             clean_d = extra_d.strip().lstrip("https://").lstrip("http://").rstrip("/")
-            if clean_d and clean_d in lower:
-                score += 0.45
+            if clean_d and (clean_d in url.lower() or clean_d in page_url.lower()):
+                score += 0.55
                 break
 
-        domain = BRAND_DOMAINS.get(brand.lower().strip())
-        if domain and domain in lower:
-            score += 0.35  # strong boost for official brand domain
+        domain = BRAND_DOMAINS.get((ctx.get("brand") or "").lower().strip())
+        if domain and (domain in url.lower() or domain in page_url.lower()):
+            score += 0.45
         else:
-            brand_slug = re.sub(r"[^\w]", "", brand).lower()
-            if brand_slug and len(brand_slug) > 3 and brand_slug in lower:
+            brand_slug = _slug(ctx.get("brand") or "")
+            if brand_slug and len(brand_slug) > 3 and brand_slug in normalized_text:
                 score += 0.15
             # Penalize URLs from wrong brand domains
             for other_brand, other_domain in BRAND_DOMAINS.items():
-                if other_brand != brand.lower().strip() and other_domain in lower:
-                    score -= 0.30  # penalize images from wrong brand's site
+                if other_brand != (ctx.get("brand") or "").lower().strip() and (
+                    other_domain in url.lower() or other_domain in page_url.lower()
+                ):
+                    score -= 0.35
                     break
 
         if any(p in lower for p in _CDN_PATTERNS) or any(p in lower for p in _PRODUCT_PATHS):
             score += 0.10
+        if "mm.bing.net" in url.lower() or "th.bing.com" in url.lower():
+            score -= 0.12
 
-        score += max(0.0, 0.06 - (position + 1) * 0.01)
+        category_family = ctx.get("category_family")
+        if category_family:
+            family_terms = _CATEGORY_FAMILY_TERMS.get(category_family, set())
+            family_hits = {token for token in text_tokens if token in family_terms}
+            if family_hits:
+                score += 0.35
+            conflicting_hits = set()
+            for other_family, other_terms in _CATEGORY_FAMILY_TERMS.items():
+                if other_family == category_family:
+                    continue
+                matched = {token for token in text_tokens if token in other_terms}
+                if matched:
+                    conflicting_hits |= matched
+            if conflicting_hits and not family_hits:
+                score -= 0.45
+            negative_terms = _NEGATIVE_HINT_TERMS.get(category_family, set())
+            if any(token in text_tokens for token in negative_terms):
+                score -= 0.4
 
+        if any(token in text_tokens for token in _LOW_QUALITY_TERMS):
+            score -= 0.25
+
+        if "brand_site" in source_names:
+            score += 0.35
+        if "brand_site_style" in source_names:
+            score += 0.2
+        if any(name.startswith("extra_") for name in source_names):
+            score += 0.45
+
+        best_position = min(positions) if positions else 99
+        score += max(0.0, 0.06 - (best_position + 1) * 0.01)
+
+        source_count = len(source_names)
         if source_count >= 2:
-            score += 0.30
+            score += min(0.25, (source_count - 1) * 0.10)
 
-        return min(score, 1.0)
+        return min(max(score, 0.0), 1.0)
 
-    def _bing_site_search(self, domain: str, item_code: str,
-                          color_name: str | None, style_name: str | None) -> list[str]:
+    def _bing_site_search(self, domain: str, query: str) -> list[SearchHit]:
         """Search Bing limited to a specific domain."""
-        parts = [f"site:{domain}", item_code]
-        if style_name:
-            parts.append(style_name)
-        if color_name:
-            parts.append(color_name)
-        query = " ".join(p for p in parts if p)
+        query = " ".join(p for p in [f"site:{domain}", query] if p)
         return self._bing_raw(query)
 
-    def _bing_search(self, brand: str, item_code: str,
-                     color_name: str | None, style_name: str | None) -> list[str]:
-        parts = [brand, item_code]
-        if style_name:
-            parts.append(style_name)
-        if color_name:
-            parts.append(color_name)
-        query = " ".join(p for p in parts if p)
+    def _bing_search(self, query: str) -> list[SearchHit]:
         return self._bing_raw(query)
 
-    def _bing_raw(self, query: str) -> list[str]:
+    def _bing_raw(self, query: str) -> list[SearchHit]:
         bing_headers = {
             "User-Agent": _HEADERS["User-Agent"],
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -335,19 +627,14 @@ class ImageSearcher:
             return []
 
         import html as _html
-        urls: list[str] = []
         raw = resp.text
         # Decode HTML entities — Bing encodes JSON as &quot;murl&quot;:&quot;https://...&quot;
         decoded = _html.unescape(raw)
 
         soup = BeautifulSoup(raw, "html.parser")
 
-        # Collect murl (source URL) and turl (Bing thumbnail) as pairs.
-        # murl = original retailer CDN — high quality but often blocked by CDN
-        # turl = th.bing.com thumbnail — lower res but ALWAYS loads reliably
-        # Strategy: store murl first (for quality), turl right after (as fallback).
-        murl_list: list[str] = []
-        turl_list: list[str] = []
+        hits: list[SearchHit] = []
+        seen: set[str] = set()
 
         # Method 1: iusc anchor tags with JSON metadata — best source for paired murl+turl
         for tag in soup.find_all("a", class_="iusc"):
@@ -356,59 +643,63 @@ class ImageSearcher:
                 continue
             try:
                 obj = json.loads(m)
-                if "murl" in obj:
-                    murl_list.append(obj["murl"])
-                if "turl" in obj:
-                    turl_list.append(obj["turl"])
+                title = str(obj.get("t") or obj.get("title") or "").strip()
+                page_url = str(obj.get("purl") or obj.get("surl") or obj.get("ru") or "").strip()
+                description = str(obj.get("desc") or obj.get("caption") or "").strip()
+                for key in ("murl", "turl"):
+                    value = str(obj.get(key) or "").strip()
+                    if value and value not in seen:
+                        seen.add(value)
+                        hits.append(SearchHit(
+                            url=value,
+                            page_url=page_url,
+                            title=title,
+                            description=description,
+                        ))
             except Exception:
                 pass
 
         # Method 2: murl/turl from decoded JSON blobs (handles &quot; encoding)
         for text in (raw, decoded):
-            murl_list.extend(re.findall(r'"murl"\s*:\s*"(https?://[^"\\]+)"', text))
-            turl_list.extend(re.findall(r'"turl"\s*:\s*"(https?://[^"\\]+)"', text))
+            for value in re.findall(r'"murl"\s*:\s*"(https?://[^"\\]+)"', text):
+                if value and value not in seen:
+                    seen.add(value)
+                    hits.append(SearchHit(url=value))
+            for value in re.findall(r'"turl"\s*:\s*"(https?://[^"\\]+)"', text):
+                if value and value not in seen:
+                    seen.add(value)
+                    hits.append(SearchHit(url=value))
 
         # Method 3: imgurl= in raw HTML
         imgurl_matches = re.findall(r'imgurl=(https?://[^&"\'\\s]+)', decoded)
-        murl_list.extend([urllib.parse.unquote(u) for u in imgurl_matches])
+        for value in [urllib.parse.unquote(u) for u in imgurl_matches]:
+            if value and value not in seen:
+                seen.add(value)
+                hits.append(SearchHit(url=value))
 
         # Method 4: contentUrl / mediaUrl patterns
         for pat in [r'"contentUrl"\s*:\s*"(https?://[^"\\]+)"',
                     r'"mediaUrl"\s*:\s*"(https?://[^"\\]+)"']:
-            murl_list.extend(re.findall(pat, decoded))
+            for value in re.findall(pat, decoded):
+                if value and value not in seen:
+                    seen.add(value)
+                    hits.append(SearchHit(url=value))
 
         # Method 5: any https URL ending in image extension
-        if len(murl_list) < 3:
+        if len(hits) < 3:
             img_urls = re.findall(r'https?://[^\s"\'<>&]{15,}\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>&]*)?', decoded)
-            murl_list.extend([u for u in img_urls if "bing.com" not in u and "microsoft.com" not in u])
+            for value in img_urls:
+                if "bing.com" in value or "microsoft.com" in value:
+                    continue
+                if value not in seen:
+                    seen.add(value)
+                    hits.append(SearchHit(url=value))
 
-        # Interleave: murl then its turl fallback, so auto-advance finds turl right away
-        # when murl fails (no waiting through all murls before hitting reliable turls).
-        seen: set[str] = set()
-        interleaved: list[str] = []
-        murl_deduped = [u for u in murl_list if u not in seen and not seen.add(u)]  # type: ignore[func-returns-value]
-        turl_deduped = [u for u in turl_list if u not in seen and not seen.add(u)]  # type: ignore[func-returns-value]
-        for i, mu in enumerate(murl_deduped):
-            interleaved.append(mu)
-            if i < len(turl_deduped):
-                interleaved.append(turl_deduped[i])
-        # Append any remaining turls not yet added
-        interleaved.extend(turl_deduped[len(murl_deduped):])
+        return hits
 
-        urls.extend(interleaved)
-        return self._dedupe(urls)
-
-    def _google_search(self, brand: str, item_code: str,
-                       color_name: str | None, style_name: str | None) -> list[str]:
+    def _google_search(self, query: str) -> list[SearchHit]:
         if not self.google_api_key or not self.google_cse_id:
             return []
-        parts = [brand, item_code]
-        if color_name:
-            parts.append(color_name)
-        if style_name:
-            parts.append(style_name)
-        query = " ".join(p for p in parts if p)
-
         resp = self._get("https://www.googleapis.com/customsearch/v1", params={
             "key": self.google_api_key, "cx": self.google_cse_id, "q": query,
             "searchType": "image", "num": self.max_candidates,
@@ -418,20 +709,23 @@ class ImageSearcher:
             return []
         try:
             data = resp.json()
-            return [it["link"] for it in data.get("items", []) if "link" in it]
+            hits: list[SearchHit] = []
+            for item in data.get("items", []):
+                url = str(item.get("link") or "").strip()
+                if not url:
+                    continue
+                hits.append(SearchHit(
+                    url=url,
+                    page_url=str(item.get("image", {}).get("contextLink") or "").strip(),
+                    title=str(item.get("title") or "").strip(),
+                    description=str(item.get("snippet") or "").strip(),
+                ))
+            return hits
         except Exception:
             return []
 
-    def _google_images_scrape(self, brand: str, item_code: str,
-                              color_name: str | None, style_name: str | None) -> list[str]:
+    def _google_images_scrape(self, query: str) -> list[SearchHit]:
         """Scrape Google Images search results (no API key needed)."""
-        parts = [brand, item_code]
-        if style_name:
-            parts.append(style_name)
-        if color_name:
-            parts.append(color_name)
-        query = " ".join(p for p in parts if p)
-
         google_headers = {
             "User-Agent": _HEADERS["User-Agent"],
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -463,9 +757,9 @@ class ImageSearcher:
         filtered = [u for u in urls if "google.com" not in u and "gstatic.com" not in u
                     and "googleapis.com" not in u and len(u) > 20]
 
-        # If few results, try a tighter code-only query as fallback
-        if len(filtered) < 3 and item_code:
-            fallback_query = f"{item_code} {brand}"
+        # If few results, retry once with the same text query to pick up alternate embeds
+        if len(filtered) < 3:
+            fallback_query = query
             fallback_url = f"https://www.google.com/search?q={urllib.parse.quote(fallback_query)}&tbm=isch&hl=en"
             resp2 = self._get(fallback_url, headers=google_headers)
             if resp2:
@@ -473,16 +767,9 @@ class ImageSearcher:
                 extra = [u for u in ou2 if "google.com" not in u and "gstatic.com" not in u and len(u) > 20]
                 filtered = self._dedupe(filtered + extra)
 
-        return self._dedupe(filtered)[:self.max_candidates]
+        return [SearchHit(url=u) for u in self._dedupe(filtered)[:self.max_candidates]]
 
-    def _duckduckgo_search(self, brand: str, item_code: str,
-                           color_name: str | None, style_name: str | None) -> list[str]:
-        parts = [brand, item_code]
-        if style_name:
-            parts.append(style_name)
-        if color_name:
-            parts.append(color_name)
-        query = " ".join(p for p in parts if p)
+    def _duckduckgo_search(self, query: str) -> list[SearchHit]:
 
         headers = {"User-Agent": _HEADERS["User-Agent"], "Accept-Language": "en-US,en;q=0.9"}
         try:
@@ -494,7 +781,8 @@ class ImageSearcher:
 
         vqd = re.search(r"vqd=([\d-]+)", resp.text)
         if not vqd:
-            return re.findall(r'"image"\s*:\s*"(https://[^"]+?)"', resp.text)[:self.max_candidates]
+            fallback = re.findall(r'"image"\s*:\s*"(https://[^"]+?)"', resp.text)[:self.max_candidates]
+            return [SearchHit(url=u) for u in fallback]
 
         try:
             img_resp = _HTTP.get("https://duckduckgo.com/i.js",
@@ -502,20 +790,23 @@ class ImageSearcher:
                                  headers={**headers, "Referer": "https://duckduckgo.com/"},
                                  timeout=REQUEST_TIMEOUT)
             data = img_resp.json()
-            return [r["image"] for r in data.get("results", [])[:self.max_candidates] if "image" in r]
+            hits: list[SearchHit] = []
+            for result in data.get("results", [])[:self.max_candidates]:
+                url = str(result.get("image") or "").strip()
+                if not url:
+                    continue
+                hits.append(SearchHit(
+                    url=url,
+                    page_url=str(result.get("url") or "").strip(),
+                    title=str(result.get("title") or "").strip(),
+                    description=str(result.get("source") or "").strip(),
+                ))
+            return hits
         except Exception:
             return []
 
-    def _yahoo_images_scrape(self, brand: str, item_code: str,
-                             color_name: str | None, style_name: str | None) -> list[str]:
+    def _yahoo_images_scrape(self, query: str) -> list[SearchHit]:
         """Scrape Yahoo Image Search results (no API key needed)."""
-        parts = [brand, item_code]
-        if style_name:
-            parts.append(style_name)
-        if color_name:
-            parts.append(color_name)
-        query = " ".join(p for p in parts if p)
-
         headers = {
             "User-Agent": _HEADERS["User-Agent"],
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -545,7 +836,7 @@ class ImageSearcher:
             if "yimg.com" not in u and "yahoo.com" not in u:
                 urls.append(u)
 
-        return self._dedupe(urls)[:self.max_candidates]
+        return [SearchHit(url=u) for u in self._dedupe(urls)[:self.max_candidates]]
 
     def _get(self, url: str, params: dict | None = None,
              headers: dict | None = None, retries: int = 2) -> requests.Response | None:

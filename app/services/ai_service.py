@@ -153,6 +153,8 @@ def ai_optimize_search_query(
     item_code = item.get("item_code", "")
     style_name = item.get("style_name", "")
     color_name = item.get("color_name", "")
+    barcode = item.get("barcode", "")
+    item_group = item.get("item_group", "")
 
     instructions_block = ""
     if search_instructions.strip():
@@ -164,6 +166,8 @@ Brand: {brand}
 SKU/Code: {item_code}
 Style: {style_name}
 Color: {color_name}
+Barcode: {barcode}
+Category: {item_group}
 {f'Previous failed queries: {json.dumps(failed_queries)}' if failed_queries else ''}{instructions_block}
 
 Return ONLY a JSON array of search query strings:
@@ -191,6 +195,8 @@ def ai_build_search_queries(item: dict, brand: str, search_instructions: str = "
     item_code = item.get("item_code", "")
     style_name = item.get("style_name", "")
     color_name = item.get("color_name", "")
+    barcode = item.get("barcode", "")
+    item_group = item.get("item_group", "")
 
     prompt = f"""You are helping search for product images for a fashion B2B platform.
 
@@ -200,6 +206,8 @@ Brand: {brand}
 SKU/Code: {item_code}
 Style: {style_name}
 Color: {color_name}
+Barcode: {barcode}
+Category: {item_group}
 
 User instructions:
 {search_instructions.strip()}
@@ -228,6 +236,8 @@ def ai_rank_urls(urls: list[str], item: dict, brand: str) -> list[str]:
     item_code = item.get("item_code", "")
     style_name = item.get("style_name", "")
     color_name = item.get("color_name", "")
+    barcode = item.get("barcode", "")
+    item_group = item.get("item_group", "")
 
     # Number the URLs so AI can reference them
     numbered = "\n".join(f"{i+1}. {u}" for i, u in enumerate(urls))
@@ -241,6 +251,8 @@ Product:
 - SKU/Code: {item_code}
 - Style: {style_name}
 - Color: {color_name}
+- Barcode: {barcode}
+- Category: {item_group}
 
 Image URLs:
 {numbered}
@@ -252,6 +264,7 @@ Ranking criteria (most important first):
 4. URL does NOT look like a logo, banner, thumbnail, or avatar
 5. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
 6. If a color is specified, prefer URLs that contain the color name or code — EXCLUDE URLs that suggest a completely different color
+7. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
 
 Return ONLY a JSON array of the URL numbers in order from best to worst:
 [3, 1, 5, 2, 4]

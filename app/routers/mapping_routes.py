@@ -221,6 +221,9 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             wholesale_price=item.get("wholesale_price"),
             retail_price=item.get("retail_price"),
             qty_available=item.get("qty_available"),
+            barcode=item.get("barcode"),
+            item_group=item.get("item_group"),
+            pictures_url=item.get("pictures_url"),
         )
         ui.sizes = normalized_sizes
         db.add(ui)

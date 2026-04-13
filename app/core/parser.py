@@ -273,6 +273,9 @@ class FileParser:
                     "wholesale_price": row.get("wholesale_price"),
                     "retail_price": row.get("retail_price"),
                     "gender": row.get("gender"),
+                    "barcode": row.get("barcode"),
+                    "item_group": row.get("item_group"),
+                    "pictures_url": row.get("pictures_url"),
                     "sizes": [],
                     "qty_available": 0,
                 }
