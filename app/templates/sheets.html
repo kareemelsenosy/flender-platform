@@ -24,11 +24,24 @@
     </small>
   </div>
 
+  <div class="form-group mb-3">
+    <label class="flex items-center gap-2" style="cursor:pointer;font-weight:500">
+      <input type="checkbox" id="save-images">
+      <span>Save images with import</span>
+    </label>
+    <small class="text-muted" style="margin-top:4px;display:block;margin-left:24px">
+      Automatically save images from spreadsheet IMAGE formulas and Dropbox links
+    </small>
+  </div>
+
   <div class="form-group mb-4">
     <label class="flex items-center gap-2" style="cursor:pointer;font-weight:500">
-      <input type="checkbox" id="search-missing" checked>
-      <span>Search images for items without photos</span>
+      <input type="checkbox" id="search-missing">
+      <span>Search for missing images</span>
     </label>
+    <small class="text-muted" style="margin-top:4px;display:block;margin-left:24px">
+      Automatically search the web for items without photos
+    </small>
   </div>
 
   <button id="import-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="importAll()"
@@ -40,9 +53,12 @@
 <!-- Batch progress section -->
 <div id="batch-section" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <h3 style="margin:0">Importing Spreadsheets</h3>
+    <h3 style="margin:0">Importing & Combining Spreadsheets</h3>
     <span id="batch-summary" class="text-muted" style="font-size:0.85rem"></span>
   </div>
+  <p style="font-size:0.85rem;color:var(--gray-500);margin:0 0 12px 0">
+    ℹ All selected sheets will be combined into a single Excel export
+  </p>
   <div id="job-list" style="display:flex;flex-direction:column;gap:12px"></div>
 </div>
 
@@ -54,10 +70,10 @@
   <h4 class="mb-2">How it works</h4>
   <ol style="padding-left:20px;font-size:0.85rem;color:var(--gray-500);line-height:1.8">
     <li>Add one or more Google Sheets URLs above</li>
-    <li>All sheets import <strong>simultaneously</strong> — each with its own progress bar</li>
-    <li>Images from =IMAGE() formulas and Dropbox links are automatically imported</li>
-    <li>Review images, then export as a formatted Excel order sheet</li>
-    <li>Optionally search for missing images across all sheets at once</li>
+    <li>Select which tabs/sheets to import (all tabs selected by default)</li>
+    <li>Toggle "Save images" to include images from =IMAGE() formulas and Dropbox links</li>
+    <li>All sheets import <strong>simultaneously</strong> and combine into a <strong>single Excel export</strong></li>
+    <li>Review the combined data, then search for missing images if needed</li>
   </ol>
 </div>
 
@@ -205,6 +221,10 @@ function showCompletedJobs(jobs) {
   const jobList = document.getElementById('job-list');
   jobList.innerHTML = '';
 
+  // Get unique session ID (all sheets combined into one)
+  const sessionIds = new Set(jobs.filter(j => j.status === 'done').map(j => j.session_id).filter(Boolean));
+  const combinedSession = sessionIds.size === 1 ? Array.from(sessionIds)[0] : null;
+
   jobs.forEach((job, idx) => {
     jobList.appendChild(mkCard(idx, job.url || job.title || `Sheet ${idx+1}`));
     if (job.status === 'done') {
@@ -220,7 +240,7 @@ function showCompletedJobs(jobs) {
   });
 
   const doneCount = jobs.filter(j => j.status === 'done').length;
-  document.getElementById('batch-summary').textContent = `All ${jobs.length} sheets imported (${doneCount} succeeded)`;
+  document.getElementById('batch-summary').textContent = `All ${jobs.length} sheets imported and combined (${doneCount} succeeded)`;
 
   // Show "New Import" button
   const newBtn = document.createElement('button');
@@ -390,6 +410,7 @@ async function importAll() {
   const urls = getUrls();
   if(!urls.length){showAlert('Please enter at least one Google Sheets URL.','Missing URL');return;}
 
+  const saveImages = document.getElementById('save-images').checked;
   const searchMissing = document.getElementById('search-missing').checked;
   document.getElementById('import-btn').disabled=true;
   document.getElementById('import-card').style.display='none';
@@ -403,7 +424,7 @@ async function importAll() {
 
   const resp = await fetch('/sheets/import-batch',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({urls, selected_tabs: _tabSelections}),
+    body:JSON.stringify({urls, selected_tabs: _tabSelections, save_images: saveImages, search_missing: searchMissing}),
   });
   if(!resp.ok){
     const err=await resp.json().catch(()=>({error:'Server error'}));
@@ -460,7 +481,9 @@ function _showPostImport(jobs,searchMissing){
   const container=document.getElementById('post-import');
   const withMissing=jobs.filter(j=>j.status==='done'&&j.without_images>0);
   const allIds=jobs.filter(j=>j.status==='done').map(j=>j.session_id);
-  if(!searchMissing||!withMissing.length||!allIds.length){container.style.display='none';return;}
+  // Deduplicate session IDs (since combined sheets use same session)
+  const uniqueIds=[...new Set(allIds)];
+  if(!searchMissing||!withMissing.length||!uniqueIds.length){container.style.display='none';return;}
   const totalMissing=withMissing.reduce((s,j)=>s+j.without_images,0);
   container.style.display='block';
   container.innerHTML=`
@@ -468,9 +491,9 @@ function _showPostImport(jobs,searchMissing){
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
         <div>
           <h4 style="margin-bottom:4px">Search Missing Images</h4>
-          <p class="text-muted" style="font-size:0.85rem;margin:0">${totalMissing} items across ${withMissing.length} sheet(s) have no image</p>
+          <p class="text-muted" style="font-size:0.85rem;margin:0">${totalMissing} items in combined sheets have no image</p>
         </div>
-        <button class="btn btn-primary" id="search-all-btn" onclick="searchAllMissing(${JSON.stringify(allIds)})">
+        <button class="btn btn-primary" id="search-all-btn" onclick="searchAllMissing(${JSON.stringify(uniqueIds)})">
           Search All ${totalMissing} Images in Parallel
         </button>
       </div>
