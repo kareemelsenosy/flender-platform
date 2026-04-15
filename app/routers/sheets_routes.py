@@ -49,7 +49,9 @@ def _get_credentials_path(user_id: int) -> str:
 
 
 def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
-                          selected_tabs: list[str] | None = None) -> dict:
+                          selected_tabs: list[str] | None = None,
+                          save_images: bool = True,
+                          session_id: int | None = None) -> dict:
     """Synchronous import logic — safe to run in a thread."""
     db = SessionLocal()
     try:
@@ -68,16 +70,29 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         if not result["tabs"]:
             return {"error": "No data found in spreadsheet"}
 
-        sess = Session(
-            user_id=uid,
-            name=result["title"],
-            source_type="google_sheets",
-            source_ref=sheets_url,
-            status="reviewing",
-        )
-        db.add(sess)
-        db.commit()
-        db.refresh(sess)
+        # Use existing session if combining multiple sheets, otherwise create new one
+        if session_id:
+            sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+            if not sess:
+                return {"error": "Session not found"}
+            # Update name to indicate combined import
+            if " + " not in sess.name:
+                sess.name = f"{sess.name} + {result['title']}"
+            else:
+                # Already has one combined name, just add this sheet's info
+                sess.name = f"{sess.name} + {result['title']}"
+            db.commit()
+        else:
+            sess = Session(
+                user_id=uid,
+                name=result["title"],
+                source_type="google_sheets",
+                source_ref=sheets_url,
+                status="reviewing",
+            )
+            db.add(sess)
+            db.commit()
+            db.refresh(sess)
 
         # Reuse the already-authenticated reader instance
         reader_inst = reader
@@ -146,8 +161,9 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                     "barcode": item.get("barcode", ""),
                     "item_group": item.get("item_group", ""),
                     "sap_code": item.get("sap_code", ""),
-                    "image_url": item.get("image_url") or "",
-                    "pictures_url": item.get("dropbox_url") or "",
+                    "image_url": item.get("image_url") or "" if save_images else "",
+                    "pictures_url": item.get("dropbox_url") or "" if save_images else "",
+                    "comming_soon_qty": item.get("comming_soon_qty", ""),
                 })
 
         # Store currency in session config
@@ -173,11 +189,12 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                 qty_available=row["qty_available"],
                 barcode=row["barcode"],
                 item_group=row["item_group"],
+                comming_soon_qty=row.get("comming_soon_qty", ""),
             )
             ui.sizes = [size] if size else []
             ui.pictures_url = row.get("pictures_url") or ""
             image_url = row["image_url"]
-            if image_url:
+            if image_url and save_images:
                 ui.approved_url = image_url
                 ui.review_status = "approved"
                 ui.auto_selected = True
@@ -185,8 +202,13 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
             db.add(ui)
             total_items += 1
 
-        sess.total_items = total_items
-        sess.searched_items = total_items
+        # If reusing session, add to existing counts; otherwise set them
+        if session_id:
+            sess.total_items = (sess.total_items or 0) + total_items
+            sess.searched_items = (sess.searched_items or 0) + total_items
+        else:
+            sess.total_items = total_items
+            sess.searched_items = total_items
         try:
             db.commit()
         except Exception:
@@ -211,11 +233,12 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                         qty_available=row["qty_available"],
                         barcode=row["barcode"],
                         item_group=row["item_group"],
+                        comming_soon_qty=row.get("comming_soon_qty", ""),
                     )
                     ui2.sizes = [size] if size else []
                     ui2.pictures_url = row.get("pictures_url") or ""
                     image_url = row["image_url"]
-                    if image_url:
+                    if image_url and save_images:
                         ui2.approved_url = image_url
                         ui2.review_status = "approved"
                         ui2.auto_selected = True
@@ -225,8 +248,12 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                     total_items += 1
                 except Exception:
                     db.rollback()
-            sess.total_items = total_items
-            sess.searched_items = total_items
+            if session_id:
+                sess.total_items = (sess.total_items or 0) + total_items
+                sess.searched_items = (sess.searched_items or 0) + total_items
+            else:
+                sess.total_items = total_items
+                sess.searched_items = total_items
             db.commit()
 
         with_images = db.query(UniqueItem).filter(
@@ -336,6 +363,8 @@ async def import_sheets_batch(request: Request):
     urls: list[str] = [u.strip() for u in data.get("urls", []) if u.strip()]
     # selected_tabs_per_url: dict mapping url -> list of tab names to import
     selected_tabs_per_url: dict[str, list[str]] = data.get("selected_tabs", {})
+    save_images: bool = data.get("save_images", True)
+    search_missing: bool = data.get("search_missing", True)
     if not urls:
         return JSONResponse({"error": "No URLs provided"}, status_code=400)
 
@@ -356,6 +385,7 @@ async def import_sheets_batch(request: Request):
         "running": True,
         "done": 0,
         "total": len(urls),
+        "combined_session_id": None,  # Track the combined session for all sheets
     }
 
     async def _run_job(idx: int, url: str):
@@ -364,31 +394,28 @@ async def import_sheets_batch(request: Request):
         _persist_batch(batch_id, uid)
         try:
             sel_tabs = selected_tabs_per_url.get(url) or None
+            # For first sheet, create new session; for others, reuse it
+            session_id = _batch_progress[batch_id]["combined_session_id"] if idx > 0 else None
             result = await asyncio.wait_for(
-                asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs),
+                asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs, save_images, session_id),
                 timeout=300,  # 5 min max per sheet
             )
             job = _batch_progress[batch_id]["jobs"][idx]
             if result.get("ok"):
+                # Store first sheet's session as the combined session for all sheets
+                if idx == 0:
+                    _batch_progress[batch_id]["combined_session_id"] = result["session_id"]
+
+                session_id = _batch_progress[batch_id]["combined_session_id"]
                 job.update({
                     "status": "done",
-                    "session_id": result["session_id"],
+                    "session_id": session_id,
                     "title": result["title"],
                     "items": result["items"],
                     "with_images": result["with_images"],
                     "without_images": result["without_images"],
                 })
                 _persist_batch(batch_id, uid)
-                add_notification(
-                    uid, "import_done",
-                    f"Import Complete: {result['title']}",
-                    f"{result['items']} items · {result['with_images']} with images",
-                    result["session_id"],
-                    [
-                        {"label": "Review", "url": f"/review/{result['session_id']}"},
-                        {"label": "Export", "url": f"/generate/{result['session_id']}"},
-                    ],
-                )
             else:
                 job["status"] = "error"
                 job["error"] = result.get("error", "Unknown error")
@@ -410,6 +437,30 @@ async def import_sheets_batch(request: Request):
         await asyncio.gather(*[_run_job(i, url) for i, url in enumerate(urls)])
         _batch_progress[batch_id]["running"] = False
         _persist_batch(batch_id, uid)
+
+        # Send final notification for combined import
+        from app.services.notifications import add_notification
+        combined_session_id = _batch_progress[batch_id]["combined_session_id"]
+        jobs = _batch_progress[batch_id]["jobs"]
+        total_items = sum(j.get("items", 0) for j in jobs)
+        total_with_images = sum(j.get("with_images", 0) for j in jobs)
+        total_without_images = sum(j.get("without_images", 0) for j in jobs)
+
+        if combined_session_id and jobs and jobs[0]["status"] == "done":
+            title = f"Combined Import: {len(urls)} sheet(s)"
+            add_notification(
+                uid, "import_done",
+                "Combined Import Complete",
+                f"{total_items} items · {total_with_images} with images",
+                combined_session_id,
+                [
+                    {"label": "Review", "url": f"/review/{combined_session_id}"},
+                    {"label": "Export", "url": f"/generate/{combined_session_id}"},
+                ] if search_missing and total_without_images > 0 else [
+                    {"label": "Review", "url": f"/review/{combined_session_id}"},
+                    {"label": "Export", "url": f"/generate/{combined_session_id}"},
+                ],
+            )
 
         # Save completed batch info for page revisits (kept 10 min)
         from datetime import datetime, timezone
