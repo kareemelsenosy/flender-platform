@@ -111,6 +111,7 @@ class UniqueItem(Base):
     pictures_url = Column(Text)  # original Dropbox folder link from "Pictures" column
     additional_urls_json = Column(Text, default="[]")  # extra images for folder download
     auto_selected = Column(Boolean, default=False)
+    comming_soon_qty = Column(String(50))  # "Comming Soon" column from Google Sheets (Dubai Reorder)
 
     session = relationship("Session", back_populates="unique_items")
 
@@ -168,6 +169,7 @@ class UniqueItem(Base):
             "qty_available": self.qty_available,
             "barcode": self.barcode,
             "item_group": self.item_group,
+            "comming_soon_qty": self.comming_soon_qty,
             "candidates": self.candidates,
             "scores": self.scores,
             "review_status": self.review_status,

@@ -73,6 +73,10 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN pictures_url TEXT"
                 ))
+            if "comming_soon_qty" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN comming_soon_qty VARCHAR(50)"
+                ))
         # Ensure email_verified column exists on users
         if "users" in insp.get_table_names():
             user_cols = {c["name"] for c in insp.get_columns("users")}

@@ -99,6 +99,7 @@ STANDARD_COLUMNS = {
     "Color":                 {"width": 14,  "align": LEFT},
     "Size":                  {"width": 8,   "align": CENTER},
     "Stock":                 {"width": 11,  "align": CENTER},
+    "Comming Soon":          {"width": 12,  "align": CENTER},
     "QTY":                   {"width": 8,   "align": CENTER},
     "QTY Total":             {"width": 14,  "align": RIGHT},
     "WHS Price":             {"width": 12,  "align": RIGHT},
@@ -113,6 +114,29 @@ STANDARD_COLUMNS = {
     "Row Brand Name":        {"width": 0},
     "ItemCode":              {"width": 14,  "align": LEFT},
 }
+
+
+def _has_comming_soon_column(items: list[dict]) -> bool:
+    for item in items:
+        if "comming_soon_qty" not in item:
+            continue
+        value = item.get("comming_soon_qty")
+        if value is None:
+            continue
+        if str(value).strip() != "":
+            return True
+    return False
+
+
+def _coerce_sheet_value(value: Any) -> Any:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    if re.fullmatch(r"-?\d+\.\d+", text):
+        return float(text)
+    return text
 
 
 class OrderSheetGenerator:
@@ -154,6 +178,8 @@ class OrderSheetGenerator:
 
         # Build column list
         out_headers = list(STANDARD_COLUMNS.keys())
+        if not _has_comming_soon_column(items):
+            out_headers = [header for header in out_headers if header != "Comming Soon"]
 
         # ── Header row (row 2) ──
         SUMMARY_ROW = 1
@@ -330,6 +356,13 @@ class OrderSheetGenerator:
                     cell.font = Font(size=9, color="166534", name="Calibri")
                     cell.alignment = CENTER
                     cell.number_format = "#,##0"
+
+                elif header == "Comming Soon":
+                    comming_soon = item.get("comming_soon_qty")
+                    cell.value = _coerce_sheet_value(comming_soon)
+                    cell.fill = gfill
+                    cell.font = BODY_FONT
+                    cell.alignment = CENTER
 
                 elif header == "QTY":
                     cell.value = 0

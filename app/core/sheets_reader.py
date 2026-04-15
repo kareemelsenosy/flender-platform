@@ -159,6 +159,14 @@ class SheetsReader:
         for i, h in enumerate(headers):
             col_idx[h.strip()] = i
 
+        def _find_column(*names: str) -> int:
+            normalized = {str(k).strip().lower(): v for k, v in col_idx.items()}
+            for name in names:
+                idx = normalized.get(name.strip().lower())
+                if idx is not None:
+                    return idx
+            return -1
+
         items = []
         # "last_" vars carry forward values from merged/blank cells
         last_item_code = ""
@@ -172,10 +180,14 @@ class SheetsReader:
         last_retail_price = ""
         last_image_url = ""
         last_dropbox_url = ""
+        last_comming_soon_qty = ""
 
         for ri, row in enumerate(display_rows):
-            def get_val(col_name):
-                idx = col_idx.get(col_name, -1)
+            def get_val(*col_names):
+                if len(col_names) == 1:
+                    idx = col_idx.get(col_names[0], -1)
+                else:
+                    idx = _find_column(*col_names)
                 if idx < 0 or idx >= len(row):
                     return ""
                 return str(row[idx]).strip()
@@ -209,6 +221,7 @@ class SheetsReader:
                 last_retail_price = get_val("RRP Price")
                 last_image_url = image_url or last_image_url
                 last_dropbox_url = dropbox_url or last_dropbox_url
+                last_comming_soon_qty = get_val("Comming Soon", "Coming Soon")
             else:
                 # Merged / blank row — only include if we have a size value
                 # (continuation of previous product's sizes)
@@ -236,6 +249,7 @@ class SheetsReader:
                 "image_url": last_image_url,
                 "dropbox_url": last_dropbox_url,
                 "sap_code": row_sap_code,
+                "comming_soon_qty": last_comming_soon_qty,
             })
 
         return items
