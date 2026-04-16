@@ -73,9 +73,45 @@
 
   <!-- Toast Notifications -->
   <div id="toast-container" style="
-    position:fixed; bottom:28px; right:28px; z-index:9999;
+    position:fixed; bottom:104px; right:28px; z-index:9999;
     display:flex; flex-direction:column; gap:10px; align-items:flex-end; pointer-events:none;
   "></div>
+
+  {% set _assistant_hidden = request.url.path in ['/login', '/register', '/forgot-password'] or request.url.path.startswith('/reset-password') %}
+  {% if not _assistant_hidden %}
+  <button id="ai-assistant-toggle" class="ai-assistant-toggle" type="button">
+    <span class="ai-assistant-toggle-dot"></span>
+    Ask AI
+  </button>
+
+  <div id="ai-assistant-panel" class="ai-assistant-panel" aria-hidden="true">
+    <div class="ai-assistant-header">
+      <div>
+        <div class="ai-assistant-kicker">FLENDER AI</div>
+        <div class="ai-assistant-title">Search, review, sheets, export</div>
+      </div>
+      <button type="button" id="ai-assistant-close" class="ai-assistant-close" aria-label="Close AI assistant">✕</button>
+    </div>
+    <div id="ai-assistant-context-note" class="ai-assistant-context-note"></div>
+    <div id="ai-assistant-quick-actions" class="ai-assistant-quick-actions"></div>
+    <div id="ai-assistant-messages" class="ai-assistant-messages"></div>
+    <div id="ai-assistant-apply-box" class="ai-assistant-apply-box" style="display:none">
+      <div class="ai-assistant-apply-title">AI prepared search improvements</div>
+      <div id="ai-assistant-apply-text" class="ai-assistant-apply-text"></div>
+      <div class="ai-assistant-apply-actions">
+        <button type="button" class="btn btn-sm btn-primary" id="ai-assistant-apply-btn">Apply to Step 3</button>
+        <button type="button" class="btn btn-sm btn-outline" id="ai-assistant-copy-btn">Copy</button>
+      </div>
+    </div>
+    <div class="ai-assistant-input-wrap">
+      <textarea id="ai-assistant-input" rows="3" placeholder="Ask things like: why is this image wrong, improve Step 3, fix American Rag domains, or help me group this order sheet"></textarea>
+      <div class="ai-assistant-footer">
+        <span id="ai-assistant-status" class="ai-assistant-status">AI reads your current page context and settings.</span>
+        <button type="button" class="btn btn-primary btn-sm" id="ai-assistant-send">Send</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <style>
   .toast {
@@ -117,6 +153,196 @@
   .toast.toast-error .toast-progress-bar  { background:var(--danger); }
   .toast.toast-info .toast-progress-bar   { background:#2563eb; }
   @keyframes toastTimer { from { width:100%; } to { width:0%; } }
+
+  .ai-assistant-toggle {
+    position: fixed;
+    right: 28px;
+    bottom: 28px;
+    z-index: 9998;
+    border: none;
+    border-radius: 999px;
+    background: var(--black);
+    color: var(--white);
+    padding: 12px 18px;
+    font: inherit;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+    cursor: pointer;
+  }
+  .ai-assistant-toggle:hover { transform: translateY(-1px); }
+  .ai-assistant-toggle-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #55d591;
+    box-shadow: 0 0 0 4px rgba(85, 213, 145, 0.16);
+  }
+  .ai-assistant-panel {
+    position: fixed;
+    right: 28px;
+    bottom: 88px;
+    width: min(420px, calc(100vw - 32px));
+    max-height: min(72vh, 760px);
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid var(--gray-200);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.98);
+    backdrop-filter: blur(18px);
+    box-shadow: 0 28px 80px rgba(0,0,0,0.22);
+    z-index: 9998;
+  }
+  .ai-assistant-panel.open { display: flex; }
+  .ai-assistant-header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .ai-assistant-kicker {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--gray-400);
+  }
+  .ai-assistant-title { font-size: 1rem; font-weight: 700; color: var(--black); }
+  .ai-assistant-close {
+    border: none;
+    background: transparent;
+    color: var(--gray-400);
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  .ai-assistant-context-note {
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--gray-500);
+    background: var(--gray-50);
+    border: 1px solid var(--gray-100);
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+  .ai-assistant-quick-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ai-assistant-chip {
+    border: 1px solid var(--gray-200);
+    background: var(--white);
+    color: var(--black);
+    border-radius: 999px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .ai-assistant-chip:hover { border-color: var(--black); }
+  .ai-assistant-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    min-height: 140px;
+    max-height: 280px;
+    padding-right: 4px;
+  }
+  .ai-assistant-msg {
+    border-radius: 14px;
+    padding: 12px;
+    font-size: 0.84rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+  .ai-assistant-msg.user {
+    background: var(--black);
+    color: var(--white);
+    align-self: flex-end;
+    max-width: 92%;
+  }
+  .ai-assistant-msg.assistant {
+    background: var(--gray-50);
+    color: var(--black);
+    border: 1px solid var(--gray-100);
+  }
+  .ai-assistant-msg-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--gray-400);
+  }
+  .ai-assistant-suggestions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .ai-assistant-apply-box {
+    border: 1px solid rgba(41, 182, 114, 0.25);
+    background: rgba(85, 213, 145, 0.08);
+    border-radius: 14px;
+    padding: 12px;
+  }
+  .ai-assistant-apply-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--black);
+    margin-bottom: 4px;
+  }
+  .ai-assistant-apply-text {
+    font-size: 0.76rem;
+    line-height: 1.5;
+    color: var(--gray-500);
+  }
+  .ai-assistant-apply-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .ai-assistant-input-wrap {
+    border-top: 1px solid var(--gray-100);
+    padding-top: 12px;
+  }
+  .ai-assistant-input-wrap textarea {
+    width: 100%;
+    resize: vertical;
+    min-height: 78px;
+    border-radius: 12px;
+    border: 1px solid var(--gray-200);
+    padding: 10px 12px;
+    font: inherit;
+    background: var(--white);
+  }
+  .ai-assistant-footer {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap: 12px;
+    margin-top: 8px;
+  }
+  .ai-assistant-status {
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--gray-400);
+  }
+  @media (max-width: 768px) {
+    .ai-assistant-panel {
+      right: 12px;
+      left: 12px;
+      bottom: 78px;
+      width: auto;
+      max-height: 76vh;
+    }
+    .ai-assistant-toggle {
+      right: 12px;
+      bottom: 12px;
+    }
+  }
   </style>
 
   <!-- Global Modal -->
@@ -204,6 +430,338 @@
       return '#';
     }
   }
+
+  {% if not _assistant_hidden %}
+  const assistantState = {
+    open: false,
+    busy: false,
+    messages: [{
+      role: 'assistant',
+      text: 'I can help improve search quality, explain why matches are wrong, suggest Step 3 priority domains, and advise on sheets/export/grouping from the page you are on right now.',
+      suggestions: [
+        'Improve Step 3 for this session',
+        'Why is the current image result weak?',
+        'How should we group this order sheet?',
+      ],
+    }],
+    latestApplyPayload: null,
+  };
+
+  function assistantEls() {
+    return {
+      toggle: document.getElementById('ai-assistant-toggle'),
+      panel: document.getElementById('ai-assistant-panel'),
+      close: document.getElementById('ai-assistant-close'),
+      note: document.getElementById('ai-assistant-context-note'),
+      quick: document.getElementById('ai-assistant-quick-actions'),
+      messages: document.getElementById('ai-assistant-messages'),
+      input: document.getElementById('ai-assistant-input'),
+      send: document.getElementById('ai-assistant-send'),
+      status: document.getElementById('ai-assistant-status'),
+      applyBox: document.getElementById('ai-assistant-apply-box'),
+      applyText: document.getElementById('ai-assistant-apply-text'),
+      applyBtn: document.getElementById('ai-assistant-apply-btn'),
+      copyBtn: document.getElementById('ai-assistant-copy-btn'),
+    };
+  }
+
+  function currentAssistantHelperContext() {
+    try {
+      if (typeof window.getReviewAssistantContext === 'function') {
+        return window.getReviewAssistantContext() || {};
+      }
+      if (typeof window.getSearchAssistantContext === 'function') {
+        return window.getSearchAssistantContext() || {};
+      }
+      if (typeof window.getGenerateAssistantContext === 'function') {
+        return window.getGenerateAssistantContext() || {};
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  function parseSessionIdFromPath() {
+    const match = location.pathname.match(/^\/(?:mapping|search|review|generate)\/(\d+)/);
+    return match ? Number(match[1]) : null;
+  }
+
+  function collectAssistantContext() {
+    const helper = currentAssistantHelperContext() || {};
+    const heading = document.querySelector('h1, h2, .review-nav-brand, .sidebar-header strong');
+    return {
+      page_title: document.title,
+      page_path: location.pathname + location.search,
+      heading: heading ? heading.textContent.trim().slice(0, 160) : '',
+      can_apply_step3_suggestions: typeof window.applyAssistantSearchSuggestions === 'function',
+      group_mode_available: Boolean(helper.group_mode_available || typeof window.getReviewAssistantContext === 'function'),
+      helper_context: helper,
+    };
+  }
+
+  function assistantQuickPrompts() {
+    if (location.pathname.startsWith('/search/')) {
+      return [
+        'Build exact Step 3 instructions for this session',
+        'Fix the priority brand domains for this search',
+        'How can I make color matching stricter here?',
+      ];
+    }
+    if (location.pathname.startsWith('/review/')) {
+      return [
+        'Why is the current image likely wrong?',
+        'Should I apply one image to this whole group?',
+        'How can I improve re-search for this item?',
+      ];
+    }
+    if (location.pathname.startsWith('/generate/')) {
+      return [
+        'Check this export setup for problems',
+        'How should we improve this order sheet layout?',
+        'What should I verify before delivery?',
+      ];
+    }
+    if (location.pathname.startsWith('/sheets')) {
+      return [
+        'Check this Google Sheets import setup',
+        'What columns should I preserve in export?',
+        'How can AI help this sheet workflow?',
+      ];
+    }
+    return [
+      'How can AI improve image search across the site?',
+      'What should we improve before final delivery?',
+      'How should we group order-sheet items better?',
+    ];
+  }
+
+  function renderAssistantContextNote() {
+    const els = assistantEls();
+    if (!els.note) return;
+    const helper = currentAssistantHelperContext() || {};
+    const parts = ['AI sees the current page'];
+    if (helper.session_id || parseSessionIdFromPath()) parts.push('the active session');
+    if (helper.item_id) parts.push('the selected review item');
+    if (typeof window.applyAssistantSearchSuggestions === 'function') parts.push('and can apply Step 3 search suggestions directly');
+    els.note.textContent = parts.join(', ') + '.';
+  }
+
+  function renderAssistantQuickActions() {
+    const els = assistantEls();
+    if (!els.quick) return;
+    els.quick.innerHTML = '';
+    assistantQuickPrompts().forEach(prompt => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ai-assistant-chip';
+      btn.textContent = prompt;
+      btn.addEventListener('click', () => {
+        els.input.value = prompt;
+        els.input.focus();
+      });
+      els.quick.appendChild(btn);
+    });
+  }
+
+  function renderAssistantMessages() {
+    const els = assistantEls();
+    if (!els.messages) return;
+    els.messages.innerHTML = '';
+    assistantState.messages.forEach(msg => {
+      const wrap = document.createElement('div');
+      wrap.className = `ai-assistant-msg ${msg.role}`;
+
+      const label = document.createElement('span');
+      label.className = 'ai-assistant-msg-label';
+      label.textContent = msg.role === 'user' ? 'You' : 'FLENDER AI';
+      wrap.appendChild(label);
+
+      const body = document.createElement('div');
+      body.textContent = msg.text || '';
+      wrap.appendChild(body);
+
+      if (Array.isArray(msg.suggestions) && msg.suggestions.length) {
+        const suggestions = document.createElement('div');
+        suggestions.className = 'ai-assistant-suggestions';
+        msg.suggestions.forEach(text => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ai-assistant-chip';
+          btn.textContent = text;
+          btn.addEventListener('click', () => {
+            els.input.value = text;
+            els.input.focus();
+          });
+          suggestions.appendChild(btn);
+        });
+        wrap.appendChild(suggestions);
+      }
+
+      els.messages.appendChild(wrap);
+    });
+    els.messages.scrollTop = els.messages.scrollHeight;
+  }
+
+  function renderAssistantApplyBox() {
+    const els = assistantEls();
+    if (!els.applyBox || !els.applyText) return;
+    const payload = assistantState.latestApplyPayload;
+    if (!payload || (!payload.search_instructions && !(payload.priority_domains || []).length)) {
+      els.applyBox.style.display = 'none';
+      return;
+    }
+    const parts = [];
+    if ((payload.priority_domains || []).length) {
+      parts.push(`Domains: ${(payload.priority_domains || []).join(', ')}`);
+    }
+    if (payload.search_instructions) {
+      parts.push(payload.search_instructions);
+    }
+    els.applyText.textContent = parts.join(' \n\n');
+    els.applyBtn.disabled = typeof window.applyAssistantSearchSuggestions !== 'function';
+    els.applyBtn.textContent = typeof window.applyAssistantSearchSuggestions === 'function'
+      ? 'Apply to Step 3'
+      : 'Use on Step 3 manually';
+    els.applyBox.style.display = 'block';
+  }
+
+  function openAssistantPanel() {
+    const els = assistantEls();
+    assistantState.open = true;
+    if (!els.panel) return;
+    els.panel.classList.add('open');
+    els.panel.setAttribute('aria-hidden', 'false');
+    renderAssistantContextNote();
+    renderAssistantQuickActions();
+    renderAssistantMessages();
+    renderAssistantApplyBox();
+  }
+
+  function closeAssistantPanel() {
+    const els = assistantEls();
+    assistantState.open = false;
+    if (!els.panel) return;
+    els.panel.classList.remove('open');
+    els.panel.setAttribute('aria-hidden', 'true');
+  }
+
+  async function copyAssistantRecommendations() {
+    const payload = assistantState.latestApplyPayload || {};
+    const text = [
+      (payload.priority_domains || []).length ? `Priority domains:\n${payload.priority_domains.join('\n')}` : '',
+      payload.search_instructions || '',
+    ].filter(Boolean).join('\n\n');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const els = assistantEls();
+      if (els.status) els.status.textContent = 'Copied AI search suggestions.';
+    } catch (_) {}
+  }
+
+  function applyAssistantRecommendations() {
+    const payload = assistantState.latestApplyPayload || {};
+    if (!payload) return;
+    if (typeof window.applyAssistantSearchSuggestions === 'function') {
+      window.applyAssistantSearchSuggestions(payload);
+      const els = assistantEls();
+      if (els.status) els.status.textContent = 'Applied AI suggestions to Step 3.';
+      assistantState.messages.push({
+        role: 'assistant',
+        text: 'I applied the suggested priority domains and search instructions to Step 3. You can review them and start or rerun the search.',
+        suggestions: [],
+      });
+      renderAssistantMessages();
+      return;
+    }
+    copyAssistantRecommendations();
+  }
+
+  async function sendAssistantMessage(prefilledMessage) {
+    const els = assistantEls();
+    if (!els.input || assistantState.busy) return;
+    const message = String(prefilledMessage || els.input.value || '').trim();
+    if (!message) return;
+
+    const helper = currentAssistantHelperContext() || {};
+    const pageContext = collectAssistantContext();
+    const sessionId = helper.session_id || parseSessionIdFromPath();
+    const itemId = helper.item_id || null;
+
+    assistantState.busy = true;
+    assistantState.messages.push({ role: 'user', text: message, suggestions: [] });
+    renderAssistantMessages();
+    els.input.value = '';
+    if (els.status) els.status.textContent = 'AI is analyzing the current page and session...';
+    if (els.send) els.send.disabled = true;
+
+    try {
+      const resp = await fetch('/api/ai-assistant/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          page_path: location.pathname + location.search,
+          session_id: sessionId,
+          item_id: itemId,
+          page_context: pageContext,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'AI request failed');
+
+      assistantState.latestApplyPayload = {
+        search_instructions: String(data.search_instructions || '').trim(),
+        priority_domains: Array.isArray(data.priority_domains) ? data.priority_domains : [],
+      };
+      assistantState.messages.push({
+        role: 'assistant',
+        text: String(data.reply || '').trim() || 'I do not have a strong recommendation yet.',
+        suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
+      });
+      renderAssistantMessages();
+      renderAssistantApplyBox();
+      if (els.status) {
+        els.status.textContent = data.ai_available
+          ? 'AI is ready. You can ask a follow-up or apply Step 3 suggestions.'
+          : 'AI provider is not configured right now, so this answer used fallback behavior.';
+      }
+    } catch (err) {
+      assistantState.messages.push({
+        role: 'assistant',
+        text: `I hit a problem while asking AI: ${err.message || 'unknown error'}`,
+        suggestions: [],
+      });
+      renderAssistantMessages();
+      if (els.status) els.status.textContent = 'AI request failed. Please try again.';
+    } finally {
+      assistantState.busy = false;
+      if (els.send) els.send.disabled = false;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const els = assistantEls();
+    if (!els.toggle) return;
+    els.toggle.addEventListener('click', () => {
+      if (assistantState.open) closeAssistantPanel();
+      else openAssistantPanel();
+    });
+    els.close?.addEventListener('click', closeAssistantPanel);
+    els.send?.addEventListener('click', () => sendAssistantMessage());
+    els.applyBtn?.addEventListener('click', applyAssistantRecommendations);
+    els.copyBtn?.addEventListener('click', copyAssistantRecommendations);
+    els.input?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendAssistantMessage();
+      }
+    });
+    renderAssistantContextNote();
+    renderAssistantQuickActions();
+    renderAssistantMessages();
+    renderAssistantApplyBox();
+  });
+  {% endif %}
 
   // ── Toast system ───────────────────────────────────────────────────────────
   function showToast(title, message, actions, type) {
@@ -425,6 +983,10 @@
 
         history.pushState({path: newPath}, '', url.href);
         window.scrollTo(0, 0);
+        if (typeof assistantState !== 'undefined') assistantState.latestApplyPayload = null;
+        if (typeof renderAssistantContextNote === 'function') renderAssistantContextNote();
+        if (typeof renderAssistantQuickActions === 'function') renderAssistantQuickActions();
+        if (typeof renderAssistantApplyBox === 'function') renderAssistantApplyBox();
 
       } catch(e) {
         location.href = href;
@@ -496,6 +1058,10 @@
 
         history.pushState({}, '', finalUrl);
         window.scrollTo(0, 0);
+        if (typeof assistantState !== 'undefined') assistantState.latestApplyPayload = null;
+        if (typeof renderAssistantContextNote === 'function') renderAssistantContextNote();
+        if (typeof renderAssistantQuickActions === 'function') renderAssistantQuickActions();
+        if (typeof renderAssistantApplyBox === 'function') renderAssistantApplyBox();
       } catch(err) {
         location.href = action;
         return;
@@ -506,6 +1072,8 @@
     // Back / forward
     window.addEventListener('popstate', function() {
       navigate(location.href);
+      if (typeof renderAssistantContextNote === 'function') renderAssistantContextNote();
+      if (typeof renderAssistantQuickActions === 'function') renderAssistantQuickActions();
     });
   })();
 

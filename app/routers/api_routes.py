@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -9,10 +10,171 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
 from app.config import INTERNAL_API_ENABLED
+from app.core.searcher import ImageSearcher, split_and_normalize_domains
 from app.database import get_db
+from app.models import BrandSearchConfig, Session as SessionModel, UniqueItem
+from app.services.ai_service import ai_assistant_chat, ai_available
 from app.services.notifications import poll_notifications
 
 router = APIRouter()
+
+
+def _trim_assistant_value(value: Any, depth: int = 0) -> Any:
+    if depth > 4:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value.strip()[:600]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, raw in list(value.items())[:24]:
+            trimmed = _trim_assistant_value(raw, depth + 1)
+            if trimmed is None:
+                continue
+            if isinstance(trimmed, (str, list, dict)) and not trimmed:
+                continue
+            out[str(key)[:80]] = trimmed
+        return out
+    if isinstance(value, (list, tuple, set)):
+        out = []
+        for raw in list(value)[:12]:
+            trimmed = _trim_assistant_value(raw, depth + 1)
+            if trimmed is None:
+                continue
+            out.append(trimmed)
+        return out
+    return str(value)[:300]
+
+
+def _build_assistant_session_context(db: DBSession, uid: int, session_id: int) -> dict[str, Any] | None:
+    from sqlalchemy import or_
+
+    session = db.query(SessionModel).filter(
+        SessionModel.id == session_id,
+        SessionModel.user_id == uid,
+    ).first()
+    if not session:
+        return None
+
+    items_q = db.query(UniqueItem).filter(UniqueItem.session_id == session.id)
+    brands = [
+        brand for (brand,) in db.query(UniqueItem.brand).filter(
+            UniqueItem.session_id == session.id,
+            UniqueItem.brand.isnot(None),
+            UniqueItem.brand != "",
+        ).distinct().limit(12).all()
+        if brand
+    ]
+    missing_samples = items_q.filter(
+        or_(UniqueItem.approved_url == None, UniqueItem.approved_url == "")
+    ).limit(5).all()
+    user_configs = db.query(BrandSearchConfig).filter(BrandSearchConfig.user_id == uid).all()
+    searcher = ImageSearcher({
+        "brand_site_urls": {cfg.brand_name: cfg.site_urls for cfg in user_configs},
+    })
+    matched_brand_domains: dict[str, list[str]] = {}
+    for brand in brands:
+        domains: list[str] = []
+        for _, urls in searcher.matching_brand_configs(brand):
+            domains.extend(urls)
+        if domains:
+            matched_brand_domains[brand] = list(dict.fromkeys(domains))[:8]
+
+    cfg = session.config
+    return {
+        "id": session.id,
+        "name": session.name,
+        "status": session.status,
+        "source_type": session.source_type,
+        "source_ref": str(session.source_ref or "")[:200],
+        "total_items": session.total_items,
+        "searched_items": session.searched_items,
+        "brands": brands,
+        "search_config": {
+            "search_mode": cfg.get("search_mode", "web"),
+            "local_folder": bool(cfg.get("local_folder")),
+            "priority_domains": split_and_normalize_domains(cfg.get("extra_brand_urls", [])),
+            "search_notes": str(cfg.get("search_notes", "") or "").strip()[:800],
+        },
+        "matched_brand_domains": matched_brand_domains,
+        "counts": {
+            "approved": items_q.filter(UniqueItem.review_status == "approved").count(),
+            "missing_images": items_q.filter(
+                or_(UniqueItem.approved_url == None, UniqueItem.approved_url == "")
+            ).count(),
+            "edited": items_q.filter(
+                UniqueItem.review_status == "approved",
+                UniqueItem.auto_selected == False,
+            ).count(),
+        },
+        "sample_missing_items": [
+            {
+                "id": item.id,
+                "item_code": item.item_code,
+                "brand": item.brand,
+                "style_name": item.style_name,
+                "color_name": item.color_name,
+                "item_group": item.item_group,
+                "barcode": item.barcode,
+            }
+            for item in missing_samples
+        ],
+    }
+
+
+def _build_assistant_item_context(
+    db: DBSession,
+    uid: int,
+    session_id: int | None,
+    item_id: int | None,
+) -> dict[str, Any] | None:
+    if not item_id:
+        return None
+
+    query = db.query(UniqueItem).join(SessionModel, UniqueItem.session_id == SessionModel.id).filter(
+        UniqueItem.id == item_id,
+        SessionModel.user_id == uid,
+    )
+    if session_id:
+        query = query.filter(UniqueItem.session_id == session_id)
+    item = query.first()
+    if not item:
+        return None
+
+    label_base = str(item.style_name or item.item_group or item.item_code or "").strip()
+    color_label = str(item.color_name or item.color_code or "").strip()
+    group_count = db.query(UniqueItem).filter(
+        UniqueItem.session_id == item.session_id,
+        UniqueItem.brand == item.brand,
+        UniqueItem.style_name == item.style_name,
+        UniqueItem.item_group == item.item_group,
+        UniqueItem.color_name == item.color_name,
+        UniqueItem.color_code == item.color_code,
+    ).count()
+    return {
+        "id": item.id,
+        "session_id": item.session_id,
+        "item_code": item.item_code,
+        "brand": item.brand,
+        "style_name": item.style_name,
+        "color_name": item.color_name,
+        "color_code": item.color_code,
+        "item_group": item.item_group,
+        "barcode": item.barcode,
+        "qty_available": item.qty_available,
+        "approved_url": item.approved_url,
+        "candidate_count": len(item.candidates),
+        "top_candidates": item.candidates[:5],
+        "top_scores": [
+            {"url": url, "score": item.scores.get(url)}
+            for url in item.candidates[:5]
+        ],
+        "group_label": " · ".join(part for part in [label_base, color_label] if part),
+        "group_count": group_count,
+        "auto_selected": bool(item.auto_selected),
+        "review_status": item.review_status,
+    }
 
 
 @router.get("/api/health")
@@ -154,6 +316,62 @@ async def active_tasks(request: Request, db: DBSession = Depends(get_db)):
         })
 
     return JSONResponse({"tasks": tasks})
+
+
+@router.post("/api/ai-assistant/chat")
+async def ai_assistant_chat_api(request: Request, db: DBSession = Depends(get_db)):
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    message = str(data.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"error": "message is required"}, status_code=400)
+
+    try:
+        session_id = int(data.get("session_id")) if data.get("session_id") is not None else None
+    except Exception:
+        session_id = None
+    try:
+        item_id = int(data.get("item_id")) if data.get("item_id") is not None else None
+    except Exception:
+        item_id = None
+
+    page_context = _trim_assistant_value(data.get("page_context") or {}) or {}
+    page_path = str(data.get("page_path") or "").strip()[:200]
+
+    context: dict[str, Any] = {
+        "page_path": page_path,
+        "page_context": page_context,
+        "assistant_capabilities": {
+            "configured": ai_available(),
+            "can_apply_step3_suggestions": bool((page_context or {}).get("can_apply_step3_suggestions")),
+            "can_review_by_group": bool((page_context or {}).get("group_mode_available")),
+        },
+    }
+
+    session_context = _build_assistant_session_context(db, uid, session_id) if session_id else None
+    if session_context:
+        context["session"] = session_context
+
+    item_context = _build_assistant_item_context(db, uid, session_id, item_id)
+    if item_context:
+        context["item"] = item_context
+
+    result = ai_assistant_chat(message, context)
+    return JSONResponse({
+        "ok": True,
+        "ai_available": ai_available(),
+        "reply": result.get("reply", ""),
+        "suggestions": result.get("suggestions", []),
+        "search_instructions": result.get("search_instructions", ""),
+        "priority_domains": result.get("priority_domains", []),
+    })
 
 
 @router.get("/api/search-test")

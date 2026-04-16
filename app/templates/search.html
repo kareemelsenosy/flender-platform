@@ -348,6 +348,37 @@ async function startSearch() {
   connectProgressSSE();
 }
 
+window.getSearchAssistantContext = function() {
+  const modeEl = document.querySelector('input[name="search_mode"]:checked');
+  return {
+    type: 'search',
+    session_id: sessionId,
+    search_mode: modeEl ? modeEl.value : 'web',
+    priority_domains: document.getElementById('brand-urls').value.trim()
+      .split(/[\n,;]+/).map(u => u.trim()).filter(Boolean),
+    search_notes: document.getElementById('search-notes').value.trim(),
+    local_folder_ready: Boolean(_uploadedFolderPath || (_pendingFiles && _pendingFiles.length)),
+    group_mode_available: false,
+  };
+};
+
+window.applyAssistantSearchSuggestions = function(payload) {
+  const domains = Array.isArray(payload?.priority_domains) ? payload.priority_domains.map(d => String(d || '').trim()).filter(Boolean) : [];
+  const notes = String(payload?.search_instructions || '').trim();
+  const brandUrlsEl = document.getElementById('brand-urls');
+  const searchNotesEl = document.getElementById('search-notes');
+
+  if (brandUrlsEl && domains.length) {
+    const existing = brandUrlsEl.value.trim().split(/[\n,;]+/).map(u => u.trim()).filter(Boolean);
+    brandUrlsEl.value = Array.from(new Set([...existing, ...domains])).join('\n');
+  }
+
+  if (searchNotesEl && notes) {
+    const current = searchNotesEl.value.trim();
+    searchNotesEl.value = current ? `${current}\n\n${notes}` : notes;
+  }
+};
+
 // ── Auto-reconnect if search is already running in background ────────────────
 {% if is_running %}
 document.getElementById('search-config').style.display = 'none';

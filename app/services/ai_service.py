@@ -337,6 +337,67 @@ IMPORTANT:
         return urls
 
 
+def ai_assistant_chat(message: str, context: dict[str, Any]) -> dict[str, Any]:
+    """Context-aware FLENDER assistant for search, review, sheets, and export."""
+    prompt = f"""You are FLENDER AI, an in-product assistant for an order-sheet and product-image workflow.
+
+The user is asking from inside the website. Your job is to help with:
+- image search quality
+- exact color/category/product matching
+- priority brand domains
+- Google Sheets import behavior
+- review/grouping workflow
+- export/ordersheet issues
+
+Context:
+{json.dumps(context, ensure_ascii=False, default=str, indent=2)}
+
+User message:
+{message.strip()}
+
+Important rules:
+- Be concrete and operational. Give actions the user can take in this website.
+- If the request is about image search, prioritize exact SKU, exact color, exact product family, official brand domains, and grouping when appropriate.
+- If the request is about review, mention whether applying one image to a whole product/color group is a good idea.
+- If the request is about export or Google Sheets, explain what fields/columns matter.
+- Be honest: do NOT claim you can see pixels in images unless the context explicitly includes visual inspection output. If you only have metadata/session context, say so briefly and still help.
+- Prefer short, high-signal answers.
+
+Return ONLY valid JSON in this format:
+{{
+  "reply": "main assistant reply",
+  "suggestions": ["short actionable suggestion 1", "short actionable suggestion 2"],
+  "search_instructions": "optional search-instructions text to apply in Step 3 if relevant, else empty string",
+  "priority_domains": ["optional domain.com", "optional domain2.com"]
+}}"""
+
+    text = _call_ai(prompt, max_tokens=1400)
+    if not text:
+        return {
+            "reply": "AI is not available right now. I can still help once the AI provider is configured again.",
+            "suggestions": [],
+            "search_instructions": "",
+            "priority_domains": [],
+        }
+
+    try:
+        data = json.loads(_extract_json(text))
+        return {
+            "reply": str(data.get("reply") or "").strip() or "I analyzed the context, but I do not have a strong recommendation yet.",
+            "suggestions": [str(s).strip() for s in (data.get("suggestions") or []) if str(s).strip()][:4],
+            "search_instructions": str(data.get("search_instructions") or "").strip(),
+            "priority_domains": [str(d).strip() for d in (data.get("priority_domains") or []) if str(d).strip()][:5],
+        }
+    except Exception as e:
+        logger.error(f"AI assistant JSON parse failed: {e}")
+        return {
+            "reply": text.strip(),
+            "suggestions": [],
+            "search_instructions": "",
+            "priority_domains": [],
+        }
+
+
 def ai_available() -> bool:
     """Check if any AI service is configured."""
     return bool(GEMINI_API_KEY or CLAUDE_API_KEY)

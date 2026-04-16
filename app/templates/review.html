@@ -992,6 +992,42 @@ function _observeLazyThumbs(container) {
   });
 }
 
+window.getReviewAssistantContext = function() {
+  const entry = currentKey ? state[currentKey] : null;
+  const item = entry?.item || {};
+  const groupInfo = item.group_key ? (groups[item.group_key] || {}) : {};
+  return {
+    type: 'review',
+    session_id: SESSION_ID,
+    item_id: entry?.id || null,
+    current_key: currentKey,
+    filter,
+    group_mode: groupMode,
+    group_mode_available: true,
+    visible_counts: {
+      total: keys.length,
+      approved: keys.filter(k => state[k]?.approved_url && state[k]?.status === 'approved').length,
+      edited: keys.filter(k => !state[k]?.auto_selected && state[k]?.status === 'approved').length,
+      no_image: keys.filter(k => !state[k]?.approved_url).length,
+    },
+    current_item: entry ? {
+      item_code: item.item_code || currentKey,
+      brand: item.brand || '',
+      style_name: item.style_name || '',
+      color_name: item.color_name || '',
+      item_group: item.item_group || '',
+      barcode: item.barcode || '',
+      approved_url: entry.approved_url || '',
+      candidate_count: (entry.candidates || []).length,
+      top_candidates: (entry.candidates || []).slice(0, 5),
+      group_label: groupInfo.label || item.group_label || '',
+      group_size: (groupInfo.keys || []).length || 1,
+      auto_selected: !!entry.auto_selected,
+      review_status: entry.status || '',
+    } : null,
+  };
+};
+
 loadState();
 </script>
 {% endblock %}
