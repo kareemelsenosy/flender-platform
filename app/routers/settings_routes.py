@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
 from app.config import BASE_DIR
+from app.core.searcher import split_and_normalize_domains
 from app.database import get_db
 from app.templates_config import templates
 from app.models import BrandSearchConfig, ColumnMappingFormat, User
@@ -64,7 +65,7 @@ async def save_brand_config(request: Request, db: DBSession = Depends(get_db)):
         return JSONResponse({"error": "Search notes too long (max 5000 chars)"}, status_code=400)
 
     # Clean URLs
-    clean_urls = [u.strip() for u in site_urls if u.strip()]
+    clean_urls = split_and_normalize_domains(site_urls)
 
     existing = db.query(BrandSearchConfig).filter(
         BrandSearchConfig.user_id == uid,

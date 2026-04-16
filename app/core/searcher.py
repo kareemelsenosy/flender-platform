@@ -190,6 +190,10 @@ _LOW_QUALITY_TERMS = {
     "wallpaper", "wallpapers", "illustration", "illustrations", "vector", "vectors",
     "mockup", "mockups", "template", "templates", "clipart", "poster", "posters",
 }
+_GENERIC_BRAND_TOKENS = {
+    "co", "company", "cie", "inc", "ltd", "llc", "group", "official", "brand",
+    "spa", "srl", "the",
+}
 _TRANSIENT_QUERY_PARAMS = {
     "w", "h", "width", "height", "q", "quality", "fit", "fm", "fl", "f",
     "auto", "dpr", "ixlib", "imwidth", "crop", "rect", "bg",
@@ -242,6 +246,32 @@ def _canonical_url(url: str) -> str:
     ))
 
 
+def normalize_search_domain(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = f"https://{text}"
+    parsed = urllib.parse.urlsplit(text)
+    host = (parsed.netloc or parsed.path or "").strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host.rstrip("/")
+
+
+def split_and_normalize_domains(values: list[str] | str | None) -> list[str]:
+    if values is None:
+        return []
+    raw_values = values if isinstance(values, list) else [values]
+    out: list[str] = []
+    for raw in raw_values:
+        for chunk in re.split(r"[\n,;]+", str(raw or "")):
+            domain = normalize_search_domain(chunk)
+            if domain:
+                out.append(domain)
+    return _unique_preserve(out)
+
+
 class ImageSearcher:
     """Search for product images across multiple sources."""
 
@@ -250,9 +280,78 @@ class ImageSearcher:
         self.max_candidates = int(self.config.get("max_candidates", MAX_CANDIDATES))
         self.google_api_key = self.config.get("google_api_key", "")
         self.google_cse_id = self.config.get("google_cse_id", "")
-        self.brand_site_urls: dict[str, list[str]] = self.config.get("brand_site_urls", {})
+        raw_brand_site_urls = self.config.get("brand_site_urls", {}) or {}
+        self.brand_site_urls: dict[str, list[str]] = {}
+        for brand_name, urls in raw_brand_site_urls.items():
+            clean_urls = split_and_normalize_domains(urls)
+            if clean_urls:
+                self.brand_site_urls[str(brand_name or "").strip().lower()] = clean_urls
         # Extra priority domains that apply to every item in this session
-        self.extra_site_urls: list[str] = self.config.get("extra_site_urls", [])
+        self.extra_site_urls: list[str] = split_and_normalize_domains(
+            self.config.get("extra_site_urls", [])
+        )
+
+    def _brand_identity_keys(self, brand: str) -> set[str]:
+        text = str(brand or "").strip().lower()
+        if not text:
+            return set()
+        tokenized = re.sub(r"[^a-z0-9]+", " ", text).split()
+        filtered = [token for token in tokenized if token not in _GENERIC_BRAND_TOKENS]
+        keys = {
+            text,
+            _slug(text),
+            _slug(" ".join(filtered)),
+        }
+        return {key for key in keys if key and len(key) >= 2}
+
+    def _domain_identity_keys(self, urls: list[str]) -> set[str]:
+        keys: set[str] = set()
+        for url in urls or []:
+            host = normalize_search_domain(url)
+            if not host:
+                continue
+            pieces = [piece for piece in host.split(".") if piece and piece != "www"]
+            if pieces:
+                keys.add(_slug(pieces[0]))
+            keys.add(_slug(host))
+        return {key for key in keys if key and len(key) >= 2}
+
+    def _config_matches_brand(self, brand: str, config_brand: str, config_urls: list[str]) -> bool:
+        brand_keys = self._brand_identity_keys(brand)
+        config_keys = self._brand_identity_keys(config_brand)
+        if not brand_keys or not config_keys:
+            return False
+
+        if brand_keys & config_keys:
+            return True
+
+        for a in brand_keys:
+            for b in config_keys:
+                if min(len(a), len(b)) >= 5 and (a in b or b in a):
+                    return True
+
+        domain_keys = self._domain_identity_keys(config_urls)
+        for brand_key in brand_keys:
+            for domain_key in domain_keys:
+                if min(len(brand_key), len(domain_key)) >= 5 and (
+                    brand_key in domain_key or domain_key in brand_key
+                ):
+                    return True
+
+        return False
+
+    def matching_brand_configs(self, brand: str) -> list[tuple[str, list[str]]]:
+        matches: list[tuple[str, list[str]]] = []
+        for config_brand, config_urls in self.brand_site_urls.items():
+            if self._config_matches_brand(brand, config_brand, config_urls):
+                matches.append((config_brand, config_urls))
+        return matches
+
+    def matching_brand_site_urls(self, brand: str) -> list[str]:
+        urls: list[str] = []
+        for _config_brand, config_urls in self.matching_brand_configs(brand):
+            urls.extend(config_urls)
+        return _unique_preserve(urls)
 
     def _normalize_item_code(self, item_code: str, item_group: str | None, style_name: str | None) -> str:
         code = str(item_code or "").strip()
@@ -417,11 +516,11 @@ class ImageSearcher:
         lock = threading.Lock()
 
         # Resolve brand site domain once (before spawning threads)
-        site_urls = self.brand_site_urls.get(brand.lower(), [])
+        site_urls = self.matching_brand_site_urls(brand)
         if not site_urls:
             domain = BRAND_DOMAINS.get(brand.lower().strip())
             if domain:
-                site_urls = [domain]
+                site_urls = [normalize_search_domain(domain)]
 
         # Build task list — all run simultaneously
         tasks: dict[str, Any] = {}
@@ -432,21 +531,25 @@ class ImageSearcher:
 
         # Extra priority domains (from step-3 form) — searched first, before brand domains
         for ei, extra_domain in enumerate(self.extra_site_urls[:3]):
-            d = extra_domain.strip().lstrip("https://").lstrip("http://").rstrip("/")
+            d = normalize_search_domain(extra_domain)
             if d:
                 tasks[f"extra_{ei}"] = lambda dom=d: self._bing_site_search(
                     dom, self._build_text_query(ctx)
                 )
 
         if site_urls:
-            tasks["brand_site"] = lambda: self._bing_site_search(
-                site_urls[0], self._build_text_query(ctx)
-            )
-            # Also try a second brand-site search focusing on style/product name
-            if ctx["style_name"] and ctx["style_name"].lower() != item_code.lower():
-                tasks["brand_site_style"] = lambda: self._bing_site_search(
-                    site_urls[0], self._build_text_query(ctx, prefer_base_code=False)
+            seen_domains = set(self.extra_site_urls)
+            for site_idx, site_url in enumerate(site_urls[:2]):
+                if not site_url or site_url in seen_domains:
+                    continue
+                seen_domains.add(site_url)
+                tasks[f"brand_site_{site_idx}"] = lambda dom=site_url: self._bing_site_search(
+                    dom, self._build_text_query(ctx)
                 )
+                if ctx["style_name"] and ctx["style_name"].lower() != item_code.lower():
+                    tasks[f"brand_site_{site_idx}_style"] = lambda dom=site_url: self._bing_site_search(
+                        dom, self._build_text_query(ctx, prefer_base_code=False)
+                    )
 
         if self.google_api_key and self.google_cse_id:
             tasks["google"] = lambda: self._google_search(self._build_text_query(ctx))
@@ -543,14 +646,22 @@ class ImageSearcher:
 
         # Boost for user-specified priority domains (highest priority)
         for extra_d in self.extra_site_urls:
-            clean_d = extra_d.strip().lstrip("https://").lstrip("http://").rstrip("/")
+            clean_d = normalize_search_domain(extra_d)
             if clean_d and (clean_d in url.lower() or clean_d in page_url.lower()):
                 score += 0.55
                 break
 
+        matched_brand_domain = ""
+        for brand_d in self.matching_brand_site_urls(ctx.get("brand") or ""):
+            clean_d = normalize_search_domain(brand_d)
+            if clean_d and (clean_d in url.lower() or clean_d in page_url.lower()):
+                matched_brand_domain = clean_d
+                score += 0.40
+                break
+
         domain = BRAND_DOMAINS.get((ctx.get("brand") or "").lower().strip())
         if domain and (domain in url.lower() or domain in page_url.lower()):
-            score += 0.45
+            score += 0.25 if matched_brand_domain == normalize_search_domain(domain) else 0.45
         else:
             brand_slug = _slug(ctx.get("brand") or "")
             if brand_slug and len(brand_slug) > 3 and brand_slug in normalized_text:
@@ -590,9 +701,9 @@ class ImageSearcher:
         if any(token in text_tokens for token in _LOW_QUALITY_TERMS):
             score -= 0.25
 
-        if "brand_site" in source_names:
+        if any(name.startswith("brand_site") and "style" not in name for name in source_names):
             score += 0.35
-        if "brand_site_style" in source_names:
+        if any(name.startswith("brand_site") and "style" in name for name in source_names):
             score += 0.2
         if any(name.startswith("extra_") for name in source_names):
             score += 0.45

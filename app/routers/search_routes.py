@@ -18,11 +18,12 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
-from app.core.searcher import ImageSearcher
+from app.core.searcher import ImageSearcher, split_and_normalize_domains
 from app.services.file_safety import normalize_uploaded_name, unique_path
 from app.services.ai_service import (
     ai_available,
     ai_build_search_queries,
+    compose_search_instructions,
     ai_optimize_search_query,
     ai_rank_urls,
 )
@@ -54,6 +55,49 @@ def _validate_local_folder(local_folder: str, user_id: int | None) -> str:
         return str(resolved) if resolved.is_dir() else ""
     except Exception:
         return ""
+
+
+def _session_search_defaults(db: DBSession, user_id: int, session_id: int) -> dict:
+    brands = [
+        brand for (brand,) in db.query(UniqueItem.brand).filter(
+            UniqueItem.session_id == session_id,
+            UniqueItem.brand.isnot(None),
+            UniqueItem.brand != "",
+        ).distinct().all()
+        if brand
+    ]
+    user_brands = db.query(BrandSearchConfig).filter(
+        BrandSearchConfig.user_id == user_id
+    ).all()
+    searcher = ImageSearcher({
+        "brand_site_urls": {bc.brand_name: bc.site_urls for bc in user_brands},
+    })
+    notes_by_brand = {
+        bc.brand_name.strip().lower(): bc.search_notes.strip()
+        for bc in user_brands
+        if bc.search_notes and bc.search_notes.strip()
+    }
+
+    matched_urls: list[str] = []
+    note_sections: list[str] = []
+    matched_labels: list[str] = []
+    for brand in brands:
+        matches = searcher.matching_brand_configs(brand)
+        if not matches:
+            continue
+        matched_labels.append(brand)
+        for cfg_brand, urls in matches:
+            matched_urls.extend(urls)
+            note = notes_by_brand.get(cfg_brand)
+            if note:
+                note_sections.append(f"[{brand}]\n{note}")
+
+    return {
+        "brands": list(dict.fromkeys(brands)),
+        "matched_brand_labels": list(dict.fromkeys(matched_labels)),
+        "brand_urls": list(dict.fromkeys(matched_urls)),
+        "search_notes": "\n\n".join(note_sections).strip(),
+    }
 
 
 def _reset_items_for_search(db: DBSession, session_id: int) -> int:
@@ -117,7 +161,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         session_notes = config.get("search_notes", "")
 
         # Extra brand URLs entered in Step 3 form — apply to ALL items as priority domains
-        extra_brand_urls = config.get("extra_brand_urls", [])
+        extra_brand_urls = split_and_normalize_domains(config.get("extra_brand_urls", []))
 
         search_config = {
             **config,
@@ -142,28 +186,65 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
         use_ai = ai_available()
 
-        def _search_one(item_id: int, item_dict: dict):
+        grouped_items: dict[tuple[str, str, str], dict] = {}
+        for item in items:
+            item_dict = {
+                "item_code": item.item_code,
+                "color_code": item.color_code,
+                "color_name": item.color_name,
+                "style_name": item.style_name,
+                "brand": item.brand,
+                "barcode": item.barcode,
+                "item_group": item.item_group,
+            }
+            group_identity = searcher.cache_identity(item_dict) if searcher else (
+                item.item_code,
+                item.color_code or "",
+                (item.brand or "").lower().strip(),
+            )
+            grouped = grouped_items.setdefault(group_identity, {
+                "items": [],
+                "item_dict": item_dict,
+                "label": item.item_code,
+            })
+            grouped["items"].append(item)
+
+        def _search_one(item_dict: dict):
             cache_db = SessionLocal()
             try:
-                cache_item_code, cache_color_code, cache_brand = searcher.cache_identity(item_dict) if searcher else (
-                    item_dict["item_code"],
-                    item_dict.get("color_code") or "",
-                    (item_dict.get("brand") or "").lower(),
-                )
-                # Check cross-session cache first
-                cached = cache_db.query(SearchCache).filter(
-                    SearchCache.item_code == cache_item_code,
-                    SearchCache.color_code == cache_color_code,
-                    SearchCache.brand == cache_brand,
-                ).first()
+                cache_item_code = item_dict["item_code"]
+                cache_color_code = item_dict.get("color_code") or ""
+                cache_brand = (item_dict.get("brand") or "").lower()
+                cached = None
+                if searcher:
+                    cache_item_code, cache_color_code, cache_brand = searcher.cache_identity(item_dict)
+                    # Check cross-session cache first for web search only.
+                    cached = cache_db.query(SearchCache).filter(
+                        SearchCache.item_code == cache_item_code,
+                        SearchCache.color_code == cache_color_code,
+                        SearchCache.brand == cache_brand,
+                    ).first()
 
                 if cached and cached.candidates:
-                    return item_id, cached.candidates, cached.scores, True
+                    return cached.candidates, cached.scores, True
 
                 candidates = []
                 scores = {}
-                item_brand = (item_dict.get("brand") or "").lower()
                 brand_label = item_dict.get("brand", "")
+                matched_brand_configs = searcher.matching_brand_configs(brand_label) if searcher else []
+                matched_brand_notes = [
+                    brand_notes.get(cfg_brand, "")
+                    for cfg_brand, _urls in matched_brand_configs
+                    if brand_notes.get(cfg_brand, "").strip()
+                ]
+                matched_brand_urls = []
+                for _cfg_brand, urls in matched_brand_configs:
+                    matched_brand_urls.extend(urls)
+                effective_instructions = compose_search_instructions(
+                    session_notes=session_notes,
+                    brand_notes=matched_brand_notes,
+                    priority_domains=extra_brand_urls + matched_brand_urls,
+                )
 
                 # ── STEP 1: AI builds initial search queries ─────────────────
                 # Always use AI for query building when available.
@@ -171,17 +252,17 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 # Otherwise AI still crafts smarter queries than simple concatenation.
                 ai_queries = []
                 if use_ai:
-                    combined_notes = "\n".join(filter(None, [
-                        session_notes,
-                        brand_notes.get(item_brand, ""),
-                    ]))
-                    if combined_notes.strip():
+                    if effective_instructions:
                         ai_queries = ai_build_search_queries(
-                            item_dict, brand_label, combined_notes
+                            item_dict, brand_label, effective_instructions
                         )
                     else:
                         # No instructions → AI still generates optimized queries
-                        ai_queries = ai_optimize_search_query(item_dict, brand_label)
+                        ai_queries = ai_optimize_search_query(
+                            item_dict,
+                            brand_label,
+                            search_instructions=effective_instructions,
+                        )
 
                 # ── STEP 2: Local folder search ───────────────────────────────
                 if local_search_fn:
@@ -206,7 +287,10 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 # new queries based on what failed.
                 if use_ai and searcher and len(candidates) < 2:
                     retry_queries = ai_optimize_search_query(
-                        item_dict, brand_label, failed_queries=ai_queries or None
+                        item_dict,
+                        brand_label,
+                        failed_queries=ai_queries or None,
+                        search_instructions=effective_instructions,
                     )
                     if retry_queries:
                         retry_candidates, retry_scores = searcher.search(
@@ -236,46 +320,40 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                         candidates = reranked
                         scores = new_scores
 
-                # ── STEP 6: Save to cache — upsert pattern avoids constraint errors (M5)
-                try:
-                    existing_cache = cache_db.query(SearchCache).filter(
-                        SearchCache.item_code == cache_item_code,
-                        SearchCache.color_code == cache_color_code,
-                        SearchCache.brand == cache_brand,
-                    ).first()
-                    if existing_cache:
-                        existing_cache.candidates = candidates
-                        existing_cache.scores = scores
-                    else:
-                        new_cache = SearchCache(
-                            item_code=cache_item_code,
-                            color_code=cache_color_code,
-                            brand=cache_brand,
-                        )
-                        new_cache.candidates = candidates
-                        new_cache.scores = scores
-                        cache_db.add(new_cache)
-                    cache_db.commit()
-                except Exception:
-                    cache_db.rollback()
+                # ── STEP 6: Save to cache — web search only ──────────────────
+                if searcher:
+                    try:
+                        existing_cache = cache_db.query(SearchCache).filter(
+                            SearchCache.item_code == cache_item_code,
+                            SearchCache.color_code == cache_color_code,
+                            SearchCache.brand == cache_brand,
+                        ).first()
+                        if existing_cache:
+                            existing_cache.candidates = candidates
+                            existing_cache.scores = scores
+                        else:
+                            new_cache = SearchCache(
+                                item_code=cache_item_code,
+                                color_code=cache_color_code,
+                                brand=cache_brand,
+                            )
+                            new_cache.candidates = candidates
+                            new_cache.scores = scores
+                            cache_db.add(new_cache)
+                        cache_db.commit()
+                    except Exception:
+                        cache_db.rollback()
 
-                return item_id, candidates, scores, False
+                return candidates, scores, False
             finally:
                 cache_db.close()
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        group_entries = list(grouped_items.values())
+
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(group_entries) or 1))) as executor:
             futures = {}
-            for item in items:
-                item_dict = {
-                    "item_code": item.item_code,
-                    "color_code": item.color_code,
-                    "color_name": item.color_name,
-                    "style_name": item.style_name,
-                    "brand": item.brand,
-                    "barcode": item.barcode,
-                    "item_group": item.item_group,
-                }
-                futures[executor.submit(_search_one, item.id, item_dict)] = item
+            for grouped in group_entries:
+                futures[executor.submit(_search_one, grouped["item_dict"])] = grouped
 
             for future in as_completed(futures):
                 # Check if search was cancelled (remap bumped search_gen)
@@ -289,28 +367,29 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     pass
 
                 try:
-                    item_id, candidates, scores, from_cache = future.result()
-                    db_item = db.get(UniqueItem, item_id)
-                    if db_item:
+                    candidates, scores, _from_cache = future.result()
+                    grouped = futures[future]
+                    best = max(candidates, key=lambda u: scores.get(u, 0)) if candidates else ""
+                    for source_item in grouped["items"]:
+                        db_item = db.get(UniqueItem, source_item.id)
+                        if not db_item:
+                            continue
                         db_item.candidates = candidates
                         db_item.scores = scores
                         db_item.search_status = "done"
-                        if candidates:
-                            best = max(candidates, key=lambda u: scores.get(u, 0))
-                            db_item.approved_url = best
-                            db_item.review_status = "approved"
-                            db_item.auto_selected = True
-                        else:
-                            db_item.approved_url = ""
-                            db_item.review_status = "approved"
-                            db_item.auto_selected = True
-                        db.commit()
+                        db_item.approved_url = best
+                        db_item.review_status = "approved"
+                        db_item.auto_selected = True
+                    db.commit()
                 except Exception as e:
                     logger.error(f"Search error: {e}")
 
-                _search_progress[session_id]["done"] += 1
-                item_obj = futures[future]
-                _search_progress[session_id]["current"] = item_obj.item_code
+                grouped = futures[future]
+                _search_progress[session_id]["done"] += len(grouped["items"])
+                label = grouped["label"]
+                if len(grouped["items"]) > 1:
+                    label = f"{label} (+{len(grouped['items']) - 1})"
+                _search_progress[session_id]["current"] = label
 
         # Update session status — only if this search generation is still current
         # (guards against a remap happening mid-search that bumped search_gen)
@@ -371,8 +450,8 @@ async def start_batch_search(request: Request, db: DBSession = Depends(get_db)):
     session_ids: list[int] = data.get("session_ids", [])
     search_mode = data.get("search_mode", "web")
     local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
-    brand_urls = data.get("brand_urls", [])
-    search_notes = data.get("search_notes", "")
+    brand_urls = split_and_normalize_domains(data.get("brand_urls", []))
+    search_notes = str(data.get("search_notes", "") or "").strip()
 
     if not session_ids:
         return JSONResponse({"error": "No session IDs provided"}, status_code=400)
@@ -556,9 +635,16 @@ def search_page(session_id: int, request: Request, db: DBSession = Depends(get_d
             db.commit()
             return RedirectResponse(f"/review/{session_id}", status_code=302)
 
+    defaults = _session_search_defaults(db, uid, session_id)
+    config = dict(sess.config or {})
+
     return templates.TemplateResponse(request, "search.html", {
         "session": sess,
         "is_running": is_running,
+        "current_search_mode": config.get("search_mode", "web"),
+        "default_brand_urls": split_and_normalize_domains(config.get("extra_brand_urls", [])) or defaults["brand_urls"],
+        "default_search_notes": str(config.get("search_notes", "") or "").strip() or defaults["search_notes"],
+        "matched_brand_labels": defaults["matched_brand_labels"],
     })
 
 
@@ -576,8 +662,8 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     data = await request.json()
     search_mode = data.get("search_mode", "web")  # web, local, both
     local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
-    brand_urls = data.get("brand_urls", [])  # Additional brand URLs for this search
-    search_notes = data.get("search_notes", "")
+    brand_urls = split_and_normalize_domains(data.get("brand_urls", []))  # Additional brand URLs for this search
+    search_notes = str(data.get("search_notes", "") or "").strip()
     if search_mode == "local" and not local_folder:
         return JSONResponse({"error": "Upload an image folder before starting local search"}, status_code=400)
 

@@ -27,6 +27,7 @@ def _reload_app_modules():
         "models": importlib.import_module("app.models"),
         "auth": importlib.import_module("app.auth"),
         "search_routes": importlib.import_module("app.routers.search_routes"),
+        "review_routes": importlib.import_module("app.routers.review_routes"),
         "generate_routes": importlib.import_module("app.routers.generate_routes"),
         "sheets_routes": importlib.import_module("app.routers.sheets_routes"),
         "notifications": importlib.import_module("app.services.notifications"),

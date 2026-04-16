@@ -20,10 +20,17 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id, get_current_user_id_db
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
-from app.core.searcher import ImageSearcher
+from app.core.searcher import ImageSearcher, split_and_normalize_domains
 from app.database import get_db
 from app.templates_config import templates
 from app.models import BrandSearchConfig, Session, UniqueItem
+from app.services.ai_service import (
+    ai_available,
+    ai_build_search_queries,
+    ai_optimize_search_query,
+    ai_rank_urls,
+    compose_search_instructions,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -55,6 +62,28 @@ _fail_cache: dict[str, float] = {}
 _FAIL_CACHE_MAX_AGE = 600  # 10 minutes
 _LOCAL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 _UPSTREAM_HTTP = _make_upstream_http()
+
+
+def _review_group_identity(
+    *,
+    item_code: str | None = None,
+    brand: str | None = None,
+    style_name: str | None = None,
+    item_group: str | None = None,
+    color_name: str | None = None,
+    color_code: str | None = None,
+) -> tuple[str, str]:
+    label_base = str(style_name or item_group or item_code or "").strip()
+    color_label = str(color_name or color_code or "").strip()
+    brand_label = str(brand or "").strip()
+    group_key_parts = [
+        brand_label.lower(),
+        label_base.lower(),
+        color_label.lower(),
+    ]
+    group_key = "||".join(part for part in group_key_parts if part) or str(item_code or "")
+    group_label = " · ".join(part for part in [label_base or str(item_code or ""), color_label] if part)
+    return group_key, group_label or str(item_code or "")
 
 
 def _normalize_image_url(url: str | None, uid: int | None = None, allow_empty: bool = False) -> str | None:
@@ -249,7 +278,10 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
         UniqueItem.id,
         UniqueItem.item_code,
         UniqueItem.color_code,
+        UniqueItem.color_name,
         UniqueItem.brand,
+        UniqueItem.style_name,
+        UniqueItem.item_group,
         UniqueItem.approved_url,
         UniqueItem.review_status,
         UniqueItem.auto_selected,
@@ -257,22 +289,39 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
         UniqueItem.session_id == session_id
     ).order_by(UniqueItem.id.asc()).all()
     state = {}
+    # Build group info: item_group -> list of item keys
+    groups = {}
     for item in items:
         key = f"{item.item_code}__{item.color_code or ''}"
+        group_key, group_label = _review_group_identity(
+            item_code=item.item_code,
+            brand=item.brand,
+            style_name=item.style_name,
+            item_group=item.item_group,
+            color_name=item.color_name,
+            color_code=item.color_code,
+        )
         state[key] = {
             "id": item.id,
             "item": {
                 "item_code": item.item_code,
                 "color_code": item.color_code,
+                "color_name": item.color_name,
                 "brand": item.brand,
+                "style_name": item.style_name,
+                "item_group": item.item_group,
+                "group_key": group_key,
+                "group_label": group_label,
             },
             "approved_url": item.approved_url,
             "status": item.review_status,
             "auto_selected": item.auto_selected,
             "details_loaded": False,
         }
+        group_entry = groups.setdefault(group_key, {"label": group_label, "keys": []})
+        group_entry["keys"].append(key)
 
-    return JSONResponse(state)
+    return JSONResponse({"state": state, "groups": groups})
 
 
 @router.get("/review/{session_id}/items/{item_id}")
@@ -331,6 +380,50 @@ async def approve_item(session_id: int, request: Request, db: DBSession = Depend
     db.commit()
 
     return JSONResponse({"ok": True})
+
+
+@router.post("/review/{session_id}/approve-group")
+async def approve_group(session_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Approve the same image for all items in a computed product/color group."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    data = await request.json()
+    group_key = str(data.get("group_key") or "").strip()
+    url = _normalize_image_url(data.get("url"), uid=uid, allow_empty=True)
+    if url is None:
+        return JSONResponse({"error": "invalid url"}, status_code=400)
+    if not group_key:
+        return JSONResponse({"error": "group_key required"}, status_code=400)
+
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    items = db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+    ).all()
+    updated = 0
+    for item in items:
+        current_group_key, _group_label = _review_group_identity(
+            item_code=item.item_code,
+            brand=item.brand,
+            style_name=item.style_name,
+            item_group=item.item_group,
+            color_name=item.color_name,
+            color_code=item.color_code,
+        )
+        if current_group_key != group_key:
+            continue
+        item.approved_url = url
+        item.review_status = "approved"
+        item.auto_selected = False
+        updated += 1
+
+    db.commit()
+
+    return JSONResponse({"ok": True, "updated": updated})
 
 
 @router.post("/review/{session_id}/skip")
@@ -425,14 +518,23 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
 
     # Load brand search config for this user
     brand_site_urls = {}
+    brand_notes = {}
     user_brands = db.query(BrandSearchConfig).filter(
         BrandSearchConfig.user_id == uid
     ).all()
     for bc in user_brands:
         brand_site_urls[bc.brand_name.lower()] = bc.site_urls
+        if bc.search_notes and bc.search_notes.strip():
+            brand_notes[bc.brand_name.lower()] = bc.search_notes.strip()
+
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    session_config = dict(sess.config or {}) if sess else {}
+    extra_site_urls = split_and_normalize_domains(session_config.get("extra_brand_urls", []))
+    session_notes = str(session_config.get("search_notes", "") or "").strip()
 
     search_config = {
         "brand_site_urls": brand_site_urls,
+        "extra_site_urls": extra_site_urls,
         "google_api_key": GOOGLE_SEARCH_KEY,
         "google_cse_id": GOOGLE_CSE_ID,
     }
@@ -448,14 +550,34 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
         "item_group": item.item_group,
     }
 
+    matched_brand_configs = searcher.matching_brand_configs(item.brand or "")
+    matched_brand_notes = [
+        brand_notes.get(cfg_brand, "")
+        for cfg_brand, _urls in matched_brand_configs
+        if brand_notes.get(cfg_brand, "").strip()
+    ]
+    matched_brand_urls = []
+    for _cfg_brand, urls in matched_brand_configs:
+        matched_brand_urls.extend(urls)
+
+    effective_instructions = compose_search_instructions(
+        manual_instructions=instructions,
+        session_notes=session_notes,
+        brand_notes=matched_brand_notes,
+        priority_domains=extra_site_urls + matched_brand_urls,
+    )
+
     # Build AI queries using instructions if provided
     ai_queries = []
-    from app.services.ai_service import ai_available, ai_build_search_queries, ai_optimize_search_query, ai_rank_urls
     if ai_available():
-        if instructions:
-            ai_queries = ai_build_search_queries(item_dict, item.brand or "", instructions)
+        if effective_instructions:
+            ai_queries = ai_build_search_queries(item_dict, item.brand or "", effective_instructions)
         else:
-            ai_queries = ai_optimize_search_query(item_dict, item.brand or "")
+            ai_queries = ai_optimize_search_query(
+                item_dict,
+                item.brand or "",
+                search_instructions=effective_instructions,
+            )
 
     candidates, scores = searcher.search(item_dict, ai_queries=ai_queries or None)
 

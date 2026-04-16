@@ -133,7 +133,8 @@ def test_core_smoke_flow_upload_mapping_search_review_export_and_downloads(
 
     review_state = client.get(f"/review/{session_id}/state")
     assert review_state.status_code == 200
-    state = review_state.json()
+    payload = review_state.json()
+    state = payload["state"] if "state" in payload else payload
     assert len(state) == 2
     for entry in state.values():
         assert entry["status"] == "approved"

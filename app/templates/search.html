@@ -22,21 +22,21 @@
       <label>Search Source</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <label class="radio-card">
-          <input type="radio" name="search_mode" value="web" checked>
+          <input type="radio" name="search_mode" value="web" {% if current_search_mode == 'web' %}checked{% endif %}>
           <div class="radio-card-content">
             <strong>Web Search</strong>
             <small>Bing + DuckDuckGo + Google</small>
           </div>
         </label>
         <label class="radio-card">
-          <input type="radio" name="search_mode" value="local">
+          <input type="radio" name="search_mode" value="local" {% if current_search_mode == 'local' %}checked{% endif %}>
           <div class="radio-card-content">
             <strong>Local Folder</strong>
             <small>Match images by filename</small>
           </div>
         </label>
         <label class="radio-card">
-          <input type="radio" name="search_mode" value="both">
+          <input type="radio" name="search_mode" value="both" {% if current_search_mode == 'both' %}checked{% endif %}>
           <div class="radio-card-content">
             <strong>Both</strong>
             <small>Local first, then web</small>
@@ -45,7 +45,7 @@
       </div>
     </div>
 
-    <div class="form-group" id="local-folder-group" style="display:none">
+    <div class="form-group" id="local-folder-group" style="display:{% if current_search_mode in ['local', 'both'] %}block{% else %}none{% endif %}">
       <label>Upload Image Folder</label>
       <div id="upload-drop-zone"
            style="border:2px dashed var(--gray-300);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s"
@@ -78,8 +78,11 @@
 
     <div class="form-group">
       <label>Priority Brand URLs <span class="text-muted" style="font-weight:400">(optional)</span></label>
-      <textarea id="brand-urls" rows="2" placeholder="e.g. stoneisland.com, goldengoose.com (one per line)"></textarea>
+      <textarea id="brand-urls" rows="2" placeholder="e.g. stoneisland.com, goldengoose.com (one per line)">{{ '\n'.join(default_brand_urls or []) }}</textarea>
       <small class="text-muted">Search these sites first. Set default domains in <a href="/settings" style="color:var(--black);font-weight:600">Settings</a>.</small>
+      {% if matched_brand_labels %}
+      <small class="text-muted" style="display:block;margin-top:6px">Loaded defaults from Settings for: {{ ', '.join(matched_brand_labels) }}</small>
+      {% endif %}
     </div>
 
     <div class="form-group">
@@ -91,14 +94,14 @@
       <textarea id="search-notes" rows="3" placeholder="Give AI hints on how to search. Examples:
 - Search brand website by full SKU code
 - Product images end with _1.jpg on this brand
-- Use the style name in Italian for valentino.com"></textarea>
+- Use the style name in Italian for valentino.com">{{ default_search_notes or '' }}</textarea>
       <small class="text-muted">AI uses these instructions to build smarter search queries for every item.</small>
     </div>
 
     <!-- AI explanation -->
     <div class="card mb-4" style="background:var(--gray-50);border-color:var(--gray-200)">
       <p class="text-sm text-muted" style="margin:0; line-height:1.6">
-        <strong style="color:var(--black)">How AI helps search:</strong> AI generates optimized search queries, retries with different keywords if results are poor, and re-ranks all found images to pick the best match.
+        <strong style="color:var(--black)">How AI helps search:</strong> AI generates optimized search queries, uses your priority domains and instructions, retries with different keywords if results are poor, and re-ranks all found images to pick the best match.
       </p>
     </div>
 
@@ -307,7 +310,7 @@ async function startSearch() {
   const mode = document.querySelector('input[name="search_mode"]:checked').value;
   let localFolder = _uploadedFolderPath;
   const brandUrls = document.getElementById('brand-urls').value.trim()
-    .split('\n').filter(u => u.trim());
+    .split(/[\n,;]+/).map(u => u.trim()).filter(u => u);
   const searchNotes = document.getElementById('search-notes').value.trim();
 
   // Upload images first if local/both mode

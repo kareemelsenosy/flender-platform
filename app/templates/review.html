@@ -149,7 +149,10 @@
           <button onclick="filterItems('noimage')">No Image</button>
         </div>
         <div class="stats-bar" id="stats-bar">Loading...</div>
-        <a href="/generate/{{ session.id }}" class="btn btn-primary btn-sm" style="width:100%;margin-top:12px">Export Excel</a>
+        <div class="flex gap-2" style="margin-top:10px">
+          <a href="/generate/{{ session.id }}" class="btn btn-primary btn-sm" style="flex:1">Export Excel</a>
+          <button class="btn btn-outline btn-sm" id="group-toggle" onclick="toggleGroupMode()" style="white-space:nowrap">Group</button>
+        </div>
       </div>
       <div class="sidebar-items" id="sidebar-items"></div>
     </div>
@@ -222,6 +225,9 @@ function buildManualQuery(item) {
   ].filter(Boolean).join(' ').trim();
 }
 
+let groups = {};       // group_key -> {label, keys:[key,...]}
+let groupMode = false; // Whether to show grouped view
+
 async function loadState() {
   const mainEl = document.getElementById('review-main');
   try {
@@ -238,7 +244,15 @@ async function loadState() {
       throw new Error(`Server returned ${resp.status}`);
     }
 
-    const summary = await resp.json();
+    const data = await resp.json();
+    // Support both old format (flat state) and new format ({state, groups})
+    const summary = data.state || data;
+    groups = {};
+    for (const [groupKey, value] of Object.entries(data.groups || {})) {
+      groups[groupKey] = Array.isArray(value)
+        ? { label: groupKey, keys: value }
+        : { label: value.label || groupKey, keys: value.keys || [] };
+    }
     state = {};
     for (const [key, entry] of Object.entries(summary)) {
       state[key] = {
@@ -261,6 +275,39 @@ async function loadState() {
       <button class="btn btn-primary" onclick="loadState()">Retry</button>
     </div>`;
   }
+}
+
+function toggleGroupMode() {
+  groupMode = !groupMode;
+  const btn = document.getElementById('group-toggle');
+  if (btn) btn.textContent = groupMode ? 'Ungroup' : 'Group';
+  updateSidebar();
+}
+
+function approveGroup(key) {
+  const entry = state[key];
+  if (!entry) return;
+  const grp = entry.item.group_key;
+  const url = entry.approved_url || '';
+  if (!grp) return;
+
+  fetch(`/review/${SESSION_ID}/approve-group`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_key: grp, url }),
+  }).then(r => r.json()).then(data => {
+    if (!data.ok) return;
+    // Update all items in the group locally
+    const groupKeys = (groups[grp] && groups[grp].keys) || [];
+    groupKeys.forEach(k => {
+      if (state[k]) {
+        state[k].approved_url = url;
+        state[k].status = 'approved';
+        state[k].auto_selected = false;
+      }
+    });
+    updateSidebar();
+  });
 }
 
 function showItemLoading(key) {
@@ -351,37 +398,89 @@ function updateSidebar() {
   document.getElementById('stats-bar').textContent =
     `${approved} approved \u00b7 ${edited} edited \u00b7 ${noImg} no image \u00b7 ${keys.length} total`;
 
-  container.innerHTML = filtered.map(k => {
-    const item = state[k];
-    const info = item.item || {};
-    const thumbUrl = item.approved_url;
-    const isActive = k === currentKey;
-    const safeKey = escapeAttr(k);
-    const safeCode = escapeHtml(info.item_code || k);
-    const safeBrand = escapeHtml(info.brand || '');
+  // Update group toggle button style
+  const groupBtn = document.getElementById('group-toggle');
+  if (groupBtn) {
+    groupBtn.textContent = groupMode ? 'Ungroup' : 'Group';
+    groupBtn.style.background = groupMode ? 'var(--primary)' : '';
+    groupBtn.style.color = groupMode ? 'white' : '';
+  }
 
-    let badge, badgeCls;
-    if (!item.approved_url) { badge = 'NO IMG'; badgeCls = 'badge-red'; }
-    else if (item.auto_selected) { badge = 'AUTO'; badgeCls = 'badge-gray'; }
-    else { badge = 'EDITED'; badgeCls = 'badge-green'; }
+  if (groupMode) {
+    // Group mode: show one entry per group
+    const seenGroups = new Set();
+    const groupEntries = [];
+    for (const k of filtered) {
+      const grp = (state[k].item || {}).group_key || k;
+      if (seenGroups.has(grp)) continue;
+      seenGroups.add(grp);
+      const groupData = groups[grp] || {};
+      const groupKeys = (groupData.keys || []).filter(gk => filtered.includes(gk));
+      if (groupKeys.length === 0) continue;
+      groupEntries.push({ grp, label: groupData.label || ((state[groupKeys[0]] || {}).item || {}).group_label || grp, keys: groupKeys, firstKey: groupKeys[0] });
+    }
 
-    // Sidebar thumbnails: use data-src for lazy loading via IntersectionObserver.
-    // Loading 100+ images through the proxy at once floods the server.
-    // Only items visible in the sidebar viewport will actually fetch.
-    const thumbHtml = !thumbUrl
-      ? '<div class="thumb-placeholder">N/A</div>'
-      : isLocalFile(thumbUrl)
-        ? localFilePlaceholder(thumbUrl)
-        : `<img data-src="${escapeAttr(proxyUrl(thumbUrl))}" class="lazy-thumb" alt="${safeCode}" style="opacity:0;transition:opacity .2s"><div class="thumb-placeholder" style="display:none">ERR</div>`;
+    container.innerHTML = groupEntries.map(({ grp, label, keys: gKeys, firstKey }) => {
+      const firstItem = state[firstKey];
+      const info = firstItem.item || {};
+      const thumbUrl = firstItem.approved_url;
+      const isActive = gKeys.includes(currentKey);
+      const safeKey = escapeAttr(firstKey);
+      const count = gKeys.length;
 
-    return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}">
-      ${thumbHtml}
-      <div class="review-item-info">
-        <div class="code">${safeCode}</div>
-        <div class="brand">${safeBrand} <span class="badge ${badgeCls}">${badge}</span></div>
-      </div>
-    </div>`;
-  }).join('');
+      // Group status: all approved, mixed, or none
+      const allApproved = gKeys.every(k => state[k].approved_url && state[k].status === 'approved');
+      const anyMissing = gKeys.some(k => !state[k].approved_url);
+      let badge, badgeCls;
+      if (anyMissing) { badge = `${count} items`; badgeCls = 'badge-red'; }
+      else if (allApproved) { badge = `${count} items`; badgeCls = 'badge-green'; }
+      else { badge = `${count} items`; badgeCls = 'badge-gray'; }
+
+      const thumbHtml = !thumbUrl
+        ? '<div class="thumb-placeholder">N/A</div>'
+        : isLocalFile(thumbUrl)
+          ? localFilePlaceholder(thumbUrl)
+          : `<img data-src="${escapeAttr(proxyUrl(thumbUrl))}" class="lazy-thumb" alt="${escapeAttr(grp)}" style="opacity:0;transition:opacity .2s"><div class="thumb-placeholder" style="display:none">ERR</div>`;
+
+      return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}" data-group="${escapeAttr(grp)}">
+        ${thumbHtml}
+        <div class="review-item-info">
+          <div class="code">${escapeHtml(label || info.style_name || info.item_code || grp)}</div>
+          <div class="brand">${escapeHtml(info.brand || '')} · ${escapeHtml(info.color_name || '')} <span class="badge ${badgeCls}">${badge}</span></div>
+        </div>
+      </div>`;
+    }).join('');
+  } else {
+    // Normal mode: show individual items
+    container.innerHTML = filtered.map(k => {
+      const item = state[k];
+      const info = item.item || {};
+      const thumbUrl = item.approved_url;
+      const isActive = k === currentKey;
+      const safeKey = escapeAttr(k);
+      const safeCode = escapeHtml(info.item_code || k);
+      const safeBrand = escapeHtml(info.brand || '');
+
+      let badge, badgeCls;
+      if (!item.approved_url) { badge = 'NO IMG'; badgeCls = 'badge-red'; }
+      else if (item.auto_selected) { badge = 'AUTO'; badgeCls = 'badge-gray'; }
+      else { badge = 'EDITED'; badgeCls = 'badge-green'; }
+
+      const thumbHtml = !thumbUrl
+        ? '<div class="thumb-placeholder">N/A</div>'
+        : isLocalFile(thumbUrl)
+          ? localFilePlaceholder(thumbUrl)
+          : `<img data-src="${escapeAttr(proxyUrl(thumbUrl))}" class="lazy-thumb" alt="${safeCode}" style="opacity:0;transition:opacity .2s"><div class="thumb-placeholder" style="display:none">ERR</div>`;
+
+      return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}">
+        ${thumbHtml}
+        <div class="review-item-info">
+          <div class="code">${safeCode}</div>
+          <div class="brand">${safeBrand} <span class="badge ${badgeCls}">${badge}</span></div>
+        </div>
+      </div>`;
+    }).join('');
+  }
 
   container.querySelectorAll('.review-item[data-select-key]').forEach(el => {
     el.addEventListener('click', () => selectItem(el.dataset.selectKey));
@@ -442,6 +541,9 @@ function renderMain(key) {
   const colorLine = item.color_name ? ` · ${item.color_name}` : '';
   const priceLine = item.wholesale_price ? ` · €${Number(item.wholesale_price).toFixed(2)}` : '';
   const searchQuery = buildManualQuery(item);
+  const groupData = groups[item.group_key || ''] || {};
+  const groupKeys = groupData.keys || [key];
+  const canApplyGroup = groupKeys.length > 1 && selectedUrl;
 
   // If we have a selected image URL (not local), offer reverse image search to find the exact photo.
   // Otherwise fall back to text image search.
@@ -467,9 +569,11 @@ function renderMain(key) {
           ${escapeHtml(colorLine)}
           ${escapeHtml(priceLine)}
         </div>
+        ${groupKeys.length > 1 ? `<div class="text-muted" style="font-size:0.72rem;margin-top:4px">Group: ${escapeHtml(groupData.label || item.group_label || item.item_code || key)} · ${groupKeys.length} linked items</div>` : ''}
         <div class="text-muted" style="font-size:0.72rem;margin-top:6px">Search query: ${escapeHtml(searchQuery)}</div>
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
+        ${canApplyGroup ? `<button class="btn btn-primary btn-sm" id="apply-group-btn">Apply to Group (${groupKeys.length})</button>` : ''}
         <button class="btn btn-outline btn-sm" id="custom-url-toggle">Paste URL</button>
         <button class="btn btn-outline btn-sm" id="research-toggle" style="border-color:var(--primary);color:var(--primary)">Re-Search</button>
         <a href="${googleHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem" title="${canReverseSearch ? 'Find this exact image on Google Lens' : 'Search Google Images'}">${googleLabel}</a>
@@ -553,6 +657,9 @@ function renderMain(key) {
 
   const customUrlToggle = document.getElementById('custom-url-toggle');
   if (customUrlToggle) customUrlToggle.addEventListener('click', () => showCustomUrlInput(key, entry.id));
+
+  const applyGroupBtn = document.getElementById('apply-group-btn');
+  if (applyGroupBtn) applyGroupBtn.addEventListener('click', () => approveGroup(key));
 
   const customUrlSubmit = document.getElementById('custom-url-submit');
   if (customUrlSubmit) customUrlSubmit.addEventListener('click', () => submitCustomUrl(key, entry.id));
@@ -766,13 +873,29 @@ document.getElementById('review-main').addEventListener('contextmenu', e => {
 // Keyboard navigation
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  const filtered = keys.filter(k => {
+  const filteredItems = keys.filter(k => {
     if (filter === 'approved') return state[k].approved_url && state[k].status === 'approved';
     if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
     if (filter === 'noimage') return !state[k].approved_url;
     return true;
   });
-  const idx = filtered.indexOf(currentKey);
+  const filtered = groupMode
+    ? (() => {
+        const seenGroups = new Set();
+        const firstKeys = [];
+        for (const k of filteredItems) {
+          const grp = (state[k].item || {}).group_key || k;
+          if (seenGroups.has(grp)) continue;
+          seenGroups.add(grp);
+          firstKeys.push(k);
+        }
+        return firstKeys;
+      })()
+    : filteredItems;
+  const currentNavKey = groupMode
+    ? (filtered.find(k => ((groups[(state[k].item || {}).group_key || k] || {}).keys || []).includes(currentKey)) || currentKey)
+    : currentKey;
+  const idx = filtered.indexOf(currentNavKey);
   if (e.key === 'ArrowUp' && idx > 0) { selectItem(filtered[idx - 1]); e.preventDefault(); }
   if (e.key === 'ArrowDown' && idx < filtered.length - 1) { selectItem(filtered[idx + 1]); e.preventDefault(); }
   if (e.key >= '1' && e.key <= '9') {
