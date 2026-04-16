@@ -307,7 +307,12 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     web_urls = [u for u in candidates if not u.startswith("file://")]
                     local_urls = [u for u in candidates if u.startswith("file://")]
                     if web_urls:
-                        ranked_web = ai_rank_urls(web_urls, item_dict, brand_label)
+                        ranked_web = ai_rank_urls(
+                            web_urls,
+                            item_dict,
+                            brand_label,
+                            scores=scores,
+                        )
                         # Rebuild candidates: local first, then AI-ranked web
                         reranked = local_urls + ranked_web
                         # Carry over scores, default 0.5 for AI-promoted URLs

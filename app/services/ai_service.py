@@ -4,13 +4,38 @@ Uses Google Gemini (free) by default, falls back to Claude if set.
 """
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+
+import requests
+from PIL import Image, ImageOps
 
 from app.config import CLAUDE_API_KEY, GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
+
+_AI_IMAGE_MAX_CANDIDATES = 6
+_AI_IMAGE_MAX_DIM = 768
+_AI_IMAGE_FETCH_TIMEOUT = 8
+
+
+def _make_http_session() -> requests.Session:
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=32,
+        pool_maxsize=64,
+        max_retries=1,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_AI_HTTP = _make_http_session()
 
 
 def _call_gemini(prompt: str, max_tokens: int = 1024) -> str | None:
@@ -64,6 +89,151 @@ def _call_ai(prompt: str, max_tokens: int = 1024) -> str | None:
         if result:
             return result
     return None
+
+
+def _call_gemini_vision(prompt: str, images: list[dict[str, Any]], max_tokens: int = 1024) -> str | None:
+    if not GEMINI_API_KEY or not images:
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        parts: list[Any] = [types.Part.from_text(text=prompt)]
+        for image in images:
+            parts.append(types.Part.from_text(text=f"Candidate {image['index']}: {image['url']}"))
+            parts.append(types.Part.from_bytes(
+                data=image["data"],
+                mime_type=image["mime_type"],
+            ))
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=parts,
+            config=types.GenerateContentConfig(
+                max_output_tokens=max_tokens,
+                temperature=0.1,
+            ),
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Gemini vision API error: {e}")
+        return None
+
+
+def _call_claude_vision(prompt: str, images: list[dict[str, Any]], max_tokens: int = 1024) -> str | None:
+    if not CLAUDE_API_KEY or not images:
+        return None
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for image in images:
+            content.append({"type": "text", "text": f"Candidate {image['index']}: {image['url']}"})
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image["mime_type"],
+                    "data": base64.b64encode(image["data"]).decode("ascii"),
+                },
+            })
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": content}],
+        )
+        text_blocks = [
+            block.text.strip()
+            for block in message.content
+            if getattr(block, "type", "") == "text" and getattr(block, "text", "").strip()
+        ]
+        return "\n".join(text_blocks).strip() if text_blocks else None
+    except Exception as e:
+        logger.error(f"Claude vision API error: {e}")
+        return None
+
+
+def _call_ai_vision(prompt: str, images: list[dict[str, Any]], max_tokens: int = 1024) -> str | None:
+    if GEMINI_API_KEY:
+        result = _call_gemini_vision(prompt, images, max_tokens)
+        if result:
+            return result
+    if CLAUDE_API_KEY:
+        result = _call_claude_vision(prompt, images, max_tokens)
+        if result:
+            return result
+    return None
+
+
+def _load_image_for_ai(url: str) -> bytes | None:
+    text = str(url or "").strip()
+    if not text:
+        return None
+    try:
+        if text.startswith("file://"):
+            from pathlib import Path
+            return Path(text[7:]).read_bytes()
+
+        if not text.startswith(("http://", "https://")):
+            return None
+        resp = _AI_HTTP.get(
+            text,
+            headers={"User-Agent": "Mozilla/5.0 FLENDER/1.0"},
+            timeout=_AI_IMAGE_FETCH_TIMEOUT,
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return None
+        content_type = str(resp.headers.get("content-type") or "").lower()
+        if content_type and "image" not in content_type:
+            return None
+        return resp.content
+    except Exception:
+        return None
+
+
+def _prepare_image_for_ai(url: str, index: int) -> dict[str, Any] | None:
+    raw = _load_image_for_ai(url)
+    if not raw:
+        return None
+    try:
+        with Image.open(io.BytesIO(raw)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode not in ("RGB", "L"):
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                alpha = img.split()[-1] if "A" in img.getbands() else None
+                bg.paste(img, mask=alpha)
+                img = bg
+            elif img.mode == "L":
+                img = img.convert("RGB")
+
+            img.thumbnail((_AI_IMAGE_MAX_DIM, _AI_IMAGE_MAX_DIM))
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=84, optimize=True)
+            return {
+                "index": index,
+                "url": url,
+                "mime_type": "image/jpeg",
+                "data": out.getvalue(),
+            }
+    except Exception:
+        return None
+
+
+def _prepare_images_for_ai(urls: list[str]) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(4, len(urls) or 1)) as pool:
+        futures = {
+            pool.submit(_prepare_image_for_ai, url, idx): idx
+            for idx, url in enumerate(urls, start=1)
+        }
+        for future in as_completed(futures):
+            image = future.result()
+            if image:
+                prepared.append(image)
+    prepared.sort(key=lambda image: image["index"])
+    return prepared
 
 
 def _extract_json(text: str) -> str:
@@ -265,7 +435,116 @@ Return ONLY a JSON array of 2-3 search query strings:
         return []
 
 
-def ai_rank_urls(urls: list[str], item: dict, brand: str) -> list[str]:
+def _should_use_vision_ranking(
+    urls: list[str],
+    scores: dict[str, float] | None = None,
+    *,
+    prefer_vision: bool = False,
+) -> bool:
+    if len(urls) < 2:
+        return False
+    if prefer_vision:
+        return True
+    if not scores:
+        return len(urls) <= _AI_IMAGE_MAX_CANDIDATES
+
+    top_scores = [float(scores.get(url, 0.0) or 0.0) for url in urls[:3]]
+    top_1 = top_scores[0] if top_scores else 0.0
+    top_2 = top_scores[1] if len(top_scores) > 1 else 0.0
+    if top_1 >= 0.86 and (top_1 - top_2) >= 0.18:
+        return False
+    return True
+
+
+def _ai_rank_urls_with_vision(
+    urls: list[str],
+    item: dict,
+    brand: str,
+    *,
+    scores: dict[str, float] | None = None,
+    prefer_vision: bool = False,
+) -> list[str] | None:
+    if not _should_use_vision_ranking(urls, scores, prefer_vision=prefer_vision):
+        return None
+
+    inspect_urls = list(urls[:_AI_IMAGE_MAX_CANDIDATES])
+    prepared = _prepare_images_for_ai(inspect_urls)
+    if len(prepared) < 2:
+        return None
+
+    item_code = item.get("item_code", "")
+    style_name = item.get("style_name", "")
+    color_name = item.get("color_name", "")
+    barcode = item.get("barcode", "")
+    item_group = item.get("item_group", "")
+    listed = "\n".join(f"{image['index']}. {image['url']}" for image in prepared)
+    prompt = f"""You are visually checking candidate product images for a fashion B2B platform.
+
+Product to match:
+- Brand: {brand}
+- SKU/Code: {item_code}
+- Style: {style_name}
+- Color: {color_name}
+- Barcode: {barcode}
+- Category: {item_group}
+
+Attached below are candidate images in order. Their source URLs are:
+{listed}
+
+Judge the ACTUAL visible product in each image, not only the URL text.
+
+Ranking rules:
+1. Exact visible product type must match. Shorts are not t-shirts. Shoes are not bikes or drinks.
+2. Exact visible color match is critical. Wrong color should be rejected.
+3. Prefer clean product photos and official packshots when multiple candidates are otherwise similar.
+4. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
+
+Return ONLY valid JSON in this format:
+{{
+  "ranked": [2, 1],
+  "discarded": [3],
+  "notes": "short reason"
+}}
+
+Only use candidate numbers from the attached images."""
+
+    text = _call_ai_vision(prompt, prepared, max_tokens=900)
+    if not text:
+        return None
+
+    try:
+        data = json.loads(_extract_json(text))
+        ranked_indices = [int(idx) for idx in (data.get("ranked") or [])]
+        discarded_indices = {int(idx) for idx in (data.get("discarded") or [])}
+    except Exception as e:
+        logger.error(f"AI vision ranking parse failed: {e}")
+        return None
+
+    url_by_index = {image["index"]: image["url"] for image in prepared}
+    ranked_urls: list[str] = []
+    seen: set[str] = set()
+    for idx in ranked_indices:
+        url = url_by_index.get(idx)
+        if url and url not in seen:
+            seen.add(url)
+            ranked_urls.append(url)
+
+    middle_urls = [
+        image["url"]
+        for image in prepared
+        if image["index"] not in discarded_indices and image["url"] not in seen
+    ]
+    trailing_urls = [
+        image["url"]
+        for image in prepared
+        if image["index"] in discarded_indices and image["url"] not in seen
+    ]
+    remainder = [url for url in urls if url not in ranked_urls and url not in middle_urls and url not in trailing_urls]
+    final = ranked_urls + middle_urls + remainder + trailing_urls
+    return final if final else None
+
+
+def _ai_rank_urls_text_only(urls: list[str], item: dict, brand: str) -> list[str]:
     """
     Use AI to re-rank image URLs by likelihood of being the correct product image.
     Filters out logos, banners, and thumbnails. Returns re-ordered list.
@@ -335,6 +614,31 @@ IMPORTANT:
     except Exception as e:
         logger.error(f"AI rank URLs parse failed: {e}")
         return urls
+
+
+def ai_rank_urls(
+    urls: list[str],
+    item: dict,
+    brand: str,
+    *,
+    scores: dict[str, float] | None = None,
+    prefer_vision: bool = False,
+) -> list[str]:
+    """AI re-rank candidates, using vision first when the results are ambiguous."""
+    if not urls:
+        return urls
+
+    vision_ranked = _ai_rank_urls_with_vision(
+        urls,
+        item,
+        brand,
+        scores=scores,
+        prefer_vision=prefer_vision,
+    )
+    if vision_ranked:
+        return vision_ranked
+
+    return _ai_rank_urls_text_only(urls, item, brand)
 
 
 def ai_assistant_chat(message: str, context: dict[str, Any]) -> dict[str, Any]:

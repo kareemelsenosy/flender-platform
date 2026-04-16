@@ -585,7 +585,13 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     if ai_available() and candidates:
         web_urls = [u for u in candidates if not u.startswith("file://")]
         if web_urls:
-            ranked = ai_rank_urls(web_urls, item_dict, item.brand or "")
+            ranked = ai_rank_urls(
+                web_urls,
+                item_dict,
+                item.brand or "",
+                scores=scores,
+                prefer_vision=True,
+            )
             new_scores = {}
             for i, url in enumerate(ranked):
                 base = scores.get(url, 0.5)
