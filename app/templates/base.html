@@ -81,18 +81,22 @@
   {% if not _assistant_hidden %}
   <button id="ai-assistant-toggle" class="ai-assistant-toggle" type="button">
     <span class="ai-assistant-toggle-dot"></span>
-    Ask AI
+    <span class="ai-assistant-toggle-text">AI Copilot</span>
+    <span class="ai-assistant-toggle-pill">Ask</span>
   </button>
 
   <div id="ai-assistant-panel" class="ai-assistant-panel" aria-hidden="true">
     <div class="ai-assistant-header">
-      <div>
+      <div class="ai-assistant-header-copy">
         <div class="ai-assistant-kicker">FLENDER AI</div>
-        <div class="ai-assistant-title">Search, review, sheets, export</div>
+        <div class="ai-assistant-title-row">
+          <div class="ai-assistant-title">AI Copilot</div>
+          <div class="ai-assistant-title-badge">Context Aware</div>
+        </div>
+        <div id="ai-assistant-context-note" class="ai-assistant-context-note"></div>
       </div>
       <button type="button" id="ai-assistant-close" class="ai-assistant-close" aria-label="Close AI assistant">✕</button>
     </div>
-    <div id="ai-assistant-context-note" class="ai-assistant-context-note"></div>
     <div id="ai-assistant-quick-actions" class="ai-assistant-quick-actions"></div>
     <div id="ai-assistant-messages" class="ai-assistant-messages"></div>
     <div id="ai-assistant-apply-box" class="ai-assistant-apply-box" style="display:none">
@@ -104,9 +108,9 @@
       </div>
     </div>
     <div class="ai-assistant-input-wrap">
-      <textarea id="ai-assistant-input" rows="3" placeholder="Ask things like: why is this image wrong, improve Step 3, fix American Rag domains, or help me group this order sheet"></textarea>
-      <div class="ai-assistant-footer">
-        <span id="ai-assistant-status" class="ai-assistant-status">AI reads your current page context and settings.</span>
+      <textarea id="ai-assistant-input" rows="1" placeholder="Ask about image matching, Step 3 domains, grouping, sheets, or export quality..."></textarea>
+      <div class="ai-assistant-input-footer">
+        <div id="ai-assistant-status" class="ai-assistant-status">Ready. I can explain problems, suggest fixes, and improve Step 3 search settings.</div>
         <button type="button" class="btn btn-primary btn-sm" id="ai-assistant-send">Send</button>
       </div>
     </div>
@@ -161,18 +165,22 @@
     z-index: 9998;
     border: none;
     border-radius: 999px;
-    background: var(--black);
+    background: linear-gradient(135deg, #1f1f1f 0%, #2b2f2a 100%);
     color: var(--white);
-    padding: 12px 18px;
+    padding: 10px 12px 10px 14px;
     font: inherit;
     font-weight: 700;
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+    box-shadow: 0 18px 44px rgba(0,0,0,0.22);
     cursor: pointer;
+    transition: transform .18s ease, box-shadow .18s ease;
   }
-  .ai-assistant-toggle:hover { transform: translateY(-1px); }
+  .ai-assistant-toggle:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 22px 52px rgba(0,0,0,0.24);
+  }
   .ai-assistant-toggle-dot {
     width: 10px;
     height: 10px;
@@ -180,119 +188,260 @@
     background: #55d591;
     box-shadow: 0 0 0 4px rgba(85, 213, 145, 0.16);
   }
+  .ai-assistant-toggle-text {
+    letter-spacing: -0.01em;
+  }
+  .ai-assistant-toggle-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.92);
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
   .ai-assistant-panel {
     position: fixed;
     right: 28px;
-    bottom: 88px;
-    width: min(420px, calc(100vw - 32px));
-    max-height: min(72vh, 760px);
+    bottom: 92px;
+    width: min(430px, calc(100vw - 32px));
+    max-height: min(76vh, 760px);
     display: none;
     flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-    border: 1px solid var(--gray-200);
-    border-radius: 18px;
-    background: rgba(255,255,255,0.98);
-    backdrop-filter: blur(18px);
-    box-shadow: 0 28px 80px rgba(0,0,0,0.22);
+    gap: 0;
+    padding: 0;
+    border: 1px solid rgba(31,31,31,0.08);
+    border-radius: 24px;
+    background:
+      radial-gradient(circle at top right, rgba(121, 184, 120, 0.12), transparent 32%),
+      linear-gradient(180deg, #ffffff 0%, #fbfbf7 100%);
+    box-shadow: 0 30px 90px rgba(0,0,0,0.20);
     z-index: 9998;
+    overflow: hidden;
+    backdrop-filter: blur(22px);
   }
   .ai-assistant-panel.open { display: flex; }
-  .ai-assistant-header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
-  .ai-assistant-kicker {
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--gray-400);
+  .ai-assistant-header {
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:14px;
+    padding: 16px 18px 14px;
+    border-bottom: 1px solid rgba(31,31,31,0.06);
+    background: linear-gradient(180deg, rgba(246,247,237,0.9) 0%, rgba(255,255,255,0.92) 100%);
   }
-  .ai-assistant-title { font-size: 1rem; font-weight: 700; color: var(--black); }
-  .ai-assistant-close {
-    border: none;
-    background: transparent;
-    color: var(--gray-400);
+  .ai-assistant-header-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .ai-assistant-kicker {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #74806f;
+  }
+  .ai-assistant-title-row {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+  .ai-assistant-title {
     font-size: 1rem;
-    cursor: pointer;
+    font-weight: 700;
+    color: var(--black);
+    letter-spacing: -0.02em;
+  }
+  .ai-assistant-title-badge {
+    display:inline-flex;
+    align-items:center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(34, 197, 94, 0.12);
+    color: #17803f;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
   .ai-assistant-context-note {
-    font-size: 0.78rem;
+    font-size: 0.76rem;
     line-height: 1.45;
     color: var(--gray-500);
-    background: var(--gray-50);
-    border: 1px solid var(--gray-100);
-    border-radius: 12px;
-    padding: 10px 12px;
+    max-width: 320px;
   }
+  .ai-assistant-close {
+    border: none;
+    background: rgba(255,255,255,0.78);
+    color: var(--gray-400);
+    font-size: 0.9rem;
+    cursor: pointer;
+    padding: 7px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(31,31,31,0.08);
+  }
+  .ai-assistant-close:hover { color: var(--black); }
   .ai-assistant-quick-actions {
     display: flex;
     gap: 8px;
-    flex-wrap: wrap;
+    overflow-x: auto;
+    padding: 12px 18px 10px;
+    border-bottom: 1px solid rgba(31,31,31,0.05);
+    scrollbar-width: none;
   }
+  .ai-assistant-quick-actions::-webkit-scrollbar { display: none; }
   .ai-assistant-chip {
-    border: 1px solid var(--gray-200);
-    background: var(--white);
+    border: 1px solid rgba(31,31,31,0.08);
+    background: rgba(255,255,255,0.88);
     color: var(--black);
     border-radius: 999px;
-    padding: 6px 10px;
+    padding: 7px 12px;
     font: inherit;
-    font-size: 0.76rem;
+    font-size: 0.73rem;
     font-weight: 600;
+    white-space: nowrap;
     cursor: pointer;
+    transition: border-color .15s ease, transform .15s ease, background .15s ease;
   }
-  .ai-assistant-chip:hover { border-color: var(--black); }
+  .ai-assistant-chip:hover {
+    border-color: rgba(31,31,31,0.22);
+    background: #ffffff;
+    transform: translateY(-1px);
+  }
   .ai-assistant-messages {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     overflow-y: auto;
-    min-height: 140px;
-    max-height: 280px;
-    padding-right: 4px;
+    flex: 1;
+    min-height: 160px;
+    max-height: 420px;
+    padding: 16px 16px 14px;
+    background:
+      radial-gradient(circle at top left, rgba(246,247,237,0.85), transparent 36%),
+      linear-gradient(180deg, rgba(255,255,255,0.42) 0%, rgba(250,250,250,0.10) 100%);
   }
-  .ai-assistant-msg {
-    border-radius: 14px;
-    padding: 12px;
-    font-size: 0.84rem;
-    line-height: 1.55;
-    white-space: pre-wrap;
+  .ai-assistant-msg-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
   }
-  .ai-assistant-msg.user {
-    background: var(--black);
-    color: var(--white);
-    align-self: flex-end;
-    max-width: 92%;
+  .ai-assistant-msg-row.user {
+    justify-content: flex-end;
   }
-  .ai-assistant-msg.assistant {
-    background: var(--gray-50);
-    color: var(--black);
-    border: 1px solid var(--gray-100);
+  .ai-assistant-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
-  .ai-assistant-msg-label {
-    display: block;
-    margin-bottom: 6px;
+  .ai-assistant-avatar.assistant {
+    background: linear-gradient(135deg, #e6f3dd 0%, #f2f7eb 100%);
+    color: #1f5a2a;
+    border: 1px solid rgba(34, 197, 94, 0.18);
+  }
+  .ai-assistant-avatar.user {
+    background: linear-gradient(135deg, #1f1f1f 0%, #404040 100%);
+    color: white;
+  }
+  .ai-assistant-msg-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 86%;
+  }
+  .ai-assistant-msg-meta {
     font-size: 0.68rem;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--gray-400);
+    padding: 0 4px;
   }
-  .ai-assistant-suggestions {
+  .ai-assistant-msg {
+    border-radius: 18px;
+    padding: 11px 13px;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-shadow: 0 8px 22px rgba(0,0,0,0.04);
+  }
+  .ai-assistant-msg.user {
+    background: linear-gradient(135deg, #1f1f1f 0%, #303030 100%);
+    color: var(--white);
+    border-bottom-right-radius: 8px;
+  }
+  .ai-assistant-msg.assistant {
+    background: rgba(255,255,255,0.9);
+    color: var(--black);
+    border: 1px solid rgba(31,31,31,0.06);
+    border-bottom-left-radius: 8px;
+  }
+  .ai-assistant-msg-suggestions {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-top: 10px;
+    padding-left: 4px;
+  }
+  .ai-assistant-typing {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  .ai-assistant-typing-bubble {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 11px 13px;
+    background: rgba(255,255,255,0.9);
+    border: 1px solid rgba(31,31,31,0.06);
+    border-radius: 18px;
+    border-bottom-left-radius: 8px;
+    box-shadow: 0 8px 22px rgba(0,0,0,0.04);
+  }
+  .ai-assistant-typing-bubble span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--gray-400);
+    animation: aiDot 1.2s ease-in-out infinite;
+  }
+  .ai-assistant-typing-bubble span:nth-child(2) { animation-delay: 0.2s; }
+  .ai-assistant-typing-bubble span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes aiDot {
+    0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+    30% { opacity: 1; transform: scale(1); }
   }
   .ai-assistant-apply-box {
-    border: 1px solid rgba(41, 182, 114, 0.25);
-    background: rgba(85, 213, 145, 0.08);
-    border-radius: 14px;
-    padding: 12px;
+    margin: 0 16px 14px;
+    border: 1px solid rgba(41, 182, 114, 0.22);
+    background: linear-gradient(180deg, rgba(85, 213, 145, 0.08) 0%, rgba(255,255,255,0.88) 100%);
+    border-radius: 18px;
+    padding: 14px;
   }
   .ai-assistant-apply-title {
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     font-weight: 700;
     color: var(--black);
-    margin-bottom: 4px;
+    margin-bottom: 6px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
   .ai-assistant-apply-text {
     font-size: 0.76rem;
@@ -305,43 +454,58 @@
     margin-top: 10px;
   }
   .ai-assistant-input-wrap {
-    border-top: 1px solid var(--gray-100);
-    padding-top: 12px;
+    border-top: 1px solid rgba(31,31,31,0.06);
+    padding: 14px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: rgba(255,255,255,0.9);
   }
   .ai-assistant-input-wrap textarea {
     width: 100%;
-    resize: vertical;
-    min-height: 78px;
-    border-radius: 12px;
-    border: 1px solid var(--gray-200);
-    padding: 10px 12px;
+    resize: none;
+    min-height: 46px;
+    max-height: 118px;
+    border-radius: 16px;
+    border: 1px solid rgba(31,31,31,0.10);
+    padding: 11px 13px;
     font: inherit;
-    background: var(--white);
+    font-size: 0.8rem;
+    background: #ffffff;
+    line-height: 1.4;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.6);
   }
-  .ai-assistant-footer {
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap: 12px;
-    margin-top: 8px;
+  .ai-assistant-input-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .ai-assistant-input-wrap .btn {
+    flex-shrink: 0;
+    min-width: 78px;
   }
   .ai-assistant-status {
-    font-size: 0.72rem;
-    line-height: 1.4;
+    font-size: 0.7rem;
+    line-height: 1.35;
     color: var(--gray-400);
+    max-width: 260px;
   }
   @media (max-width: 768px) {
     .ai-assistant-panel {
-      right: 12px;
-      left: 12px;
+      right: 10px;
+      left: 10px;
       bottom: 78px;
       width: auto;
-      max-height: 76vh;
+      max-height: 72vh;
     }
     .ai-assistant-toggle {
       right: 12px;
       bottom: 12px;
     }
+    .ai-assistant-toggle-text { display: none; }
+    .ai-assistant-status { max-width: none; }
+    .ai-assistant-input-footer { align-items: flex-end; }
   }
   </style>
 
@@ -435,15 +599,7 @@
   const assistantState = {
     open: false,
     busy: false,
-    messages: [{
-      role: 'assistant',
-      text: 'I can help improve search quality, explain why matches are wrong, suggest Step 3 priority domains, and advise on sheets/export/grouping from the page you are on right now.',
-      suggestions: [
-        'Improve Step 3 for this session',
-        'Why is the current image result weak?',
-        'How should we group this order sheet?',
-      ],
-    }],
+    messages: [],
     latestApplyPayload: null,
   };
 
@@ -463,6 +619,49 @@
       applyBtn: document.getElementById('ai-assistant-apply-btn'),
       copyBtn: document.getElementById('ai-assistant-copy-btn'),
     };
+  }
+
+  function assistantPageKind() {
+    if (location.pathname.startsWith('/search/')) return 'search';
+    if (location.pathname.startsWith('/review/')) return 'review';
+    if (location.pathname.startsWith('/generate/')) return 'generate';
+    if (location.pathname.startsWith('/sheets')) return 'sheets';
+    if (location.pathname.startsWith('/settings')) return 'settings';
+    if (location.pathname.startsWith('/mapping/')) return 'mapping';
+    return 'dashboard';
+  }
+
+  function setAssistantStatus(text) {
+    const els = assistantEls();
+    if (els.status) els.status.textContent = text || '';
+  }
+
+  function assistantReadyStatus() {
+    const kind = assistantPageKind();
+    if (kind === 'search') {
+      return 'Ready to tune Step 3 domains, AI search instructions, and match quality.';
+    }
+    if (kind === 'review') {
+      return 'Ready to judge image quality, group matches, and re-search strategy.';
+    }
+    if (kind === 'generate') {
+      return 'Ready to explain export output, troubleshoot sheets, and improve delivery quality.';
+    }
+    if (kind === 'sheets') {
+      return 'Ready to help with Google Sheets import, special columns, and mapping issues.';
+    }
+    if (kind === 'mapping') {
+      return 'Ready to improve column mapping and catch fields that affect search quality.';
+    }
+    return 'Ready. I can explain problems, suggest fixes, and improve Step 3 search settings.';
+  }
+
+  function autoResizeAssistantInput() {
+    const els = assistantEls();
+    if (!els.input) return;
+    els.input.style.height = 'auto';
+    const nextHeight = Math.max(46, Math.min(140, els.input.scrollHeight));
+    els.input.style.height = `${nextHeight}px`;
   }
 
   function currentAssistantHelperContext() {
@@ -499,38 +698,86 @@
   }
 
   function assistantQuickPrompts() {
-    if (location.pathname.startsWith('/search/')) {
+    const helper = currentAssistantHelperContext() || {};
+    const kind = assistantPageKind();
+    if (kind === 'search') {
       return [
-        'Build exact Step 3 instructions for this session',
-        'Fix the priority brand domains for this search',
-        'How can I make color matching stricter here?',
+        {
+          label: 'Fix priority domains',
+          prompt: 'Review the current Step 3 setup and tell me the best priority brand URLs for this session. If needed, rewrite the AI search instructions too.',
+        },
+        {
+          label: 'Improve color matching',
+          prompt: 'Write stricter AI search instructions so the search prioritizes exact product type and visible color, and rejects lookalikes.',
+        },
+        {
+          label: 'Explain weak results',
+          prompt: 'Based on this Step 3 context, explain why the current search might still be returning weak or generic image matches.',
+        },
       ];
     }
-    if (location.pathname.startsWith('/review/')) {
+    if (kind === 'review') {
+      const code = helper.item_code || helper.item_name || 'this selected item';
       return [
-        'Why is the current image likely wrong?',
-        'Should I apply one image to this whole group?',
-        'How can I improve re-search for this item?',
+        {
+          label: 'Why is this wrong?',
+          prompt: `Look at the current review context for ${code} and explain why the selected image may be a weak match.`,
+        },
+        {
+          label: 'Apply by group?',
+          prompt: 'Should this image be applied to the full product group, or should we keep the variants separate? Explain why.',
+        },
+        {
+          label: 'Stronger re-search',
+          prompt: 'Give me the best manual re-search strategy for this selected item, with exact emphasis on product type, color, and brand domain.',
+        },
       ];
     }
-    if (location.pathname.startsWith('/generate/')) {
+    if (kind === 'generate') {
       return [
-        'Check this export setup for problems',
-        'How should we improve this order sheet layout?',
-        'What should I verify before delivery?',
+        {
+          label: 'Check export quality',
+          prompt: 'Review this export context and tell me what could still go wrong in the final Excel output.',
+        },
+        {
+          label: 'Explain columns',
+          prompt: 'Explain what the final export is going to include, especially any imported Google Sheets columns or special fields.',
+        },
+        {
+          label: 'Troubleshoot output',
+          prompt: 'Help me troubleshoot why a generated export might not match the source sheet exactly.',
+        },
       ];
     }
-    if (location.pathname.startsWith('/sheets')) {
+    if (kind === 'sheets') {
       return [
-        'Check this Google Sheets import setup',
-        'What columns should I preserve in export?',
-        'How can AI help this sheet workflow?',
+        {
+          label: 'Fix sheet import',
+          prompt: 'Explain what fields matter most for a clean Google Sheets import and how to avoid missing data in export.',
+        },
+        {
+          label: 'Special columns',
+          prompt: 'Check how special Google Sheets columns should flow through import and export, and tell me what to verify.',
+        },
+        {
+          label: 'Mapping advice',
+          prompt: 'Give me the best mapping advice for this sheet so image search and export quality stay strong.',
+        },
       ];
     }
     return [
-      'How can AI improve image search across the site?',
-      'What should we improve before final delivery?',
-      'How should we group order-sheet items better?',
+      {
+        label: 'Improve search quality',
+        prompt: 'Tell me the highest-impact way to improve image search quality across this website right now.',
+      },
+      {
+        label: 'Audit the flow',
+        prompt: 'Based on the current page, tell me what looks strong and what still needs work before delivery.',
+      },
+      {
+        label: 'Help me decide',
+        prompt: 'Give me the smartest next step from here if I want better search quality and cleaner exports.',
+      },
     ];
   }
 
@@ -538,65 +785,156 @@
     const els = assistantEls();
     if (!els.note) return;
     const helper = currentAssistantHelperContext() || {};
-    const parts = ['AI sees the current page'];
-    if (helper.session_id || parseSessionIdFromPath()) parts.push('the active session');
-    if (helper.item_id) parts.push('the selected review item');
-    if (typeof window.applyAssistantSearchSuggestions === 'function') parts.push('and can apply Step 3 search suggestions directly');
-    els.note.textContent = parts.join(', ') + '.';
+    const kind = assistantPageKind();
+    if (kind === 'review') {
+      const code = helper.item_code || helper.item_name || 'selected item';
+      const groupSize = Number(helper.group_size || 0);
+      els.note.textContent = groupSize > 1
+        ? `Reviewing ${code} with ${groupSize} linked variants. Ask me about mismatches, group decisions, or better re-search logic.`
+        : `Reviewing ${code}. Ask me why a result is weak or how to make re-search stricter.`;
+      return;
+    }
+    if (kind === 'search') {
+      els.note.textContent = 'Watching the current Step 3 setup. I can improve priority domains, AI search instructions, and result consistency.';
+      return;
+    }
+    if (kind === 'generate') {
+      els.note.textContent = 'Focused on export quality, workbook structure, and whether the final sheet matches the source expectations.';
+      return;
+    }
+    if (kind === 'sheets') {
+      els.note.textContent = 'Focused on Google Sheets import details, special columns, and how imported data survives into export.';
+      return;
+    }
+    if (kind === 'mapping') {
+      els.note.textContent = 'Focused on which mapped fields will make search, grouping, and export behave correctly later on.';
+      return;
+    }
+    els.note.textContent = 'Context aware across search, review, sheets, and export. Ask for concrete improvements, not just explanations.';
   }
 
   function renderAssistantQuickActions() {
     const els = assistantEls();
     if (!els.quick) return;
     els.quick.innerHTML = '';
-    assistantQuickPrompts().forEach(prompt => {
+    assistantQuickPrompts().forEach(item => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'ai-assistant-chip';
-      btn.textContent = prompt;
+      btn.textContent = item.label;
       btn.addEventListener('click', () => {
-        els.input.value = prompt;
+        if (!els.input) return;
+        els.input.value = item.prompt;
+        autoResizeAssistantInput();
         els.input.focus();
+        setAssistantStatus('Prompt ready. Press Send or edit it first.');
       });
       els.quick.appendChild(btn);
     });
   }
 
+  function ensureAssistantWelcomeMessage() {
+    if (assistantState.messages.length) return;
+    const kind = assistantPageKind();
+    let text = 'I can help explain issues, improve search quality, and suggest practical next steps.';
+    if (kind === 'search') {
+      text = 'I can tighten Step 3 search quality, improve priority domains, and write stronger AI instructions before you start or rerun search.';
+    } else if (kind === 'review') {
+      text = 'I can explain why a candidate is weak, suggest stricter re-search logic, and help decide when an image should be applied to a whole group.';
+    } else if (kind === 'generate') {
+      text = 'I can help verify whether the final export matches the source sheet and call out anything risky before delivery.';
+    } else if (kind === 'sheets') {
+      text = 'I can help with Google Sheets import issues, special columns, and mapping choices that affect search and export.';
+    }
+    assistantState.messages = [{
+      role: 'assistant',
+      text,
+      suggestions: assistantQuickPrompts().slice(0, 3),
+    }];
+  }
+
+  function renderAssistantSuggestions(host, suggestions) {
+    const list = Array.isArray(suggestions) ? suggestions.filter(Boolean).slice(0, 3) : [];
+    if (!list.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'ai-assistant-msg-suggestions';
+    list.forEach(item => {
+      const meta = typeof item === 'string' ? { label: item, prompt: item } : item;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ai-assistant-chip';
+      btn.textContent = meta.label || meta.prompt || 'Use prompt';
+      btn.addEventListener('click', () => {
+        const els = assistantEls();
+        if (!els.input) return;
+        els.input.value = String(meta.prompt || meta.label || '').trim();
+        autoResizeAssistantInput();
+        els.input.focus();
+        setAssistantStatus('Prompt ready. Press Send or edit it first.');
+      });
+      wrap.appendChild(btn);
+    });
+    host.appendChild(wrap);
+  }
+
+  function showTypingIndicator() {
+    const els = assistantEls();
+    if (!els.messages) return;
+    let typing = els.messages.querySelector('.ai-assistant-typing');
+    if (!typing) {
+      typing = document.createElement('div');
+      typing.className = 'ai-assistant-typing';
+      typing.innerHTML = `
+        <div class="ai-assistant-avatar assistant">AI</div>
+        <div class="ai-assistant-typing-bubble"><span></span><span></span><span></span></div>`;
+      els.messages.appendChild(typing);
+    }
+    els.messages.scrollTop = els.messages.scrollHeight;
+  }
+
+  function removeTypingIndicator() {
+    const els = assistantEls();
+    if (!els.messages) return;
+    const typing = els.messages.querySelector('.ai-assistant-typing');
+    if (typing) typing.remove();
+  }
+
   function renderAssistantMessages() {
     const els = assistantEls();
     if (!els.messages) return;
+    ensureAssistantWelcomeMessage();
     els.messages.innerHTML = '';
     assistantState.messages.forEach(msg => {
-      const wrap = document.createElement('div');
-      wrap.className = `ai-assistant-msg ${msg.role}`;
+      const row = document.createElement('div');
+      row.className = `ai-assistant-msg-row ${msg.role}`;
 
-      const label = document.createElement('span');
-      label.className = 'ai-assistant-msg-label';
-      label.textContent = msg.role === 'user' ? 'You' : 'FLENDER AI';
-      wrap.appendChild(label);
+      const avatar = document.createElement('div');
+      avatar.className = `ai-assistant-avatar ${msg.role}`;
+      avatar.textContent = msg.role === 'assistant' ? 'AI' : 'You';
 
-      const body = document.createElement('div');
-      body.textContent = msg.text || '';
-      wrap.appendChild(body);
+      const stack = document.createElement('div');
+      stack.className = 'ai-assistant-msg-stack';
 
-      if (Array.isArray(msg.suggestions) && msg.suggestions.length) {
-        const suggestions = document.createElement('div');
-        suggestions.className = 'ai-assistant-suggestions';
-        msg.suggestions.forEach(text => {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'ai-assistant-chip';
-          btn.textContent = text;
-          btn.addEventListener('click', () => {
-            els.input.value = text;
-            els.input.focus();
-          });
-          suggestions.appendChild(btn);
-        });
-        wrap.appendChild(suggestions);
+      const meta = document.createElement('div');
+      meta.className = 'ai-assistant-msg-meta';
+      meta.textContent = msg.role === 'assistant' ? 'AI Copilot' : 'You';
+
+      const bubble = document.createElement('div');
+      bubble.className = `ai-assistant-msg ${msg.role}`;
+      bubble.textContent = msg.text || '';
+
+      stack.appendChild(meta);
+      stack.appendChild(bubble);
+      renderAssistantSuggestions(stack, msg.suggestions);
+
+      if (msg.role === 'user') {
+        row.appendChild(stack);
+        row.appendChild(avatar);
+      } else {
+        row.appendChild(avatar);
+        row.appendChild(stack);
       }
-
-      els.messages.appendChild(wrap);
+      els.messages.appendChild(row);
     });
     els.messages.scrollTop = els.messages.scrollHeight;
   }
@@ -634,6 +972,9 @@
     renderAssistantQuickActions();
     renderAssistantMessages();
     renderAssistantApplyBox();
+    setAssistantStatus(assistantReadyStatus());
+    autoResizeAssistantInput();
+    if (els.input) els.input.focus();
   }
 
   function closeAssistantPanel() {
@@ -653,8 +994,7 @@
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      const els = assistantEls();
-      if (els.status) els.status.textContent = 'Copied AI search suggestions.';
+      setAssistantStatus('Copied AI search suggestions.');
     } catch (_) {}
   }
 
@@ -663,12 +1003,11 @@
     if (!payload) return;
     if (typeof window.applyAssistantSearchSuggestions === 'function') {
       window.applyAssistantSearchSuggestions(payload);
-      const els = assistantEls();
-      if (els.status) els.status.textContent = 'Applied AI suggestions to Step 3.';
+      setAssistantStatus('Applied AI suggestions to Step 3.');
       assistantState.messages.push({
         role: 'assistant',
         text: 'I applied the suggested priority domains and search instructions to Step 3. You can review them and start or rerun the search.',
-        suggestions: [],
+        suggestions: assistantQuickPrompts().slice(0, 2),
       });
       renderAssistantMessages();
       return;
@@ -691,8 +1030,10 @@
     assistantState.messages.push({ role: 'user', text: message, suggestions: [] });
     renderAssistantMessages();
     els.input.value = '';
-    if (els.status) els.status.textContent = 'AI is analyzing the current page and session...';
+    autoResizeAssistantInput();
     if (els.send) els.send.disabled = true;
+    setAssistantStatus('Thinking through the current page context and search state...');
+    showTypingIndicator();
 
     try {
       const resp = await fetch('/api/ai-assistant/chat', {
@@ -713,29 +1054,56 @@
         search_instructions: String(data.search_instructions || '').trim(),
         priority_domains: Array.isArray(data.priority_domains) ? data.priority_domains : [],
       };
+      removeTypingIndicator();
       assistantState.messages.push({
         role: 'assistant',
         text: String(data.reply || '').trim() || 'I do not have a strong recommendation yet.',
-        suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
+        suggestions: assistantQuickPrompts().slice(0, 3),
       });
       renderAssistantMessages();
       renderAssistantApplyBox();
-      if (els.status) {
-        els.status.textContent = data.ai_available
-          ? 'AI is ready. You can ask a follow-up or apply Step 3 suggestions.'
-          : 'AI provider is not configured right now, so this answer used fallback behavior.';
-      }
+      setAssistantStatus(
+        assistantState.latestApplyPayload.search_instructions || assistantState.latestApplyPayload.priority_domains.length
+          ? 'AI prepared search improvements you can apply or copy.'
+          : 'AI reply ready.'
+      );
     } catch (err) {
+      removeTypingIndicator();
       assistantState.messages.push({
         role: 'assistant',
-        text: `I hit a problem while asking AI: ${err.message || 'unknown error'}`,
-        suggestions: [],
+        text: `Something went wrong: ${err.message || 'unknown error'}`,
+        suggestions: assistantQuickPrompts().slice(0, 2),
       });
       renderAssistantMessages();
-      if (els.status) els.status.textContent = 'AI request failed. Please try again.';
+      setAssistantStatus('AI hit a problem. You can retry or tweak the prompt.');
     } finally {
       assistantState.busy = false;
       if (els.send) els.send.disabled = false;
+    }
+  }
+
+  function refreshAssistantSurface() {
+    const els = assistantEls();
+    if (!els.panel) return;
+    renderAssistantContextNote();
+    renderAssistantQuickActions();
+    renderAssistantApplyBox();
+    if (els.input && !els.input.value) {
+      if (assistantPageKind() === 'search') {
+        els.input.placeholder = 'Ask about priority domains, AI search instructions, color matching, or weak results...';
+      } else if (assistantPageKind() === 'review') {
+        els.input.placeholder = 'Ask why this image is weak, whether to apply it to the group, or how to re-search better...';
+      } else if (assistantPageKind() === 'generate') {
+        els.input.placeholder = 'Ask about export quality, workbook output, or anything that still looks risky...';
+      } else if (assistantPageKind() === 'sheets') {
+        els.input.placeholder = 'Ask about Google Sheets import, special columns, mapping, or export flow...';
+      } else {
+        els.input.placeholder = 'Ask about image matching, Step 3 domains, grouping, sheets, or export quality...';
+      }
+    }
+    autoResizeAssistantInput();
+    if (!assistantState.busy) {
+      setAssistantStatus(assistantReadyStatus());
     }
   }
 
@@ -750,16 +1118,15 @@
     els.send?.addEventListener('click', () => sendAssistantMessage());
     els.applyBtn?.addEventListener('click', applyAssistantRecommendations);
     els.copyBtn?.addEventListener('click', copyAssistantRecommendations);
+    els.input?.addEventListener('input', autoResizeAssistantInput);
     els.input?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendAssistantMessage();
       }
     });
-    renderAssistantContextNote();
-    renderAssistantQuickActions();
+    refreshAssistantSurface();
     renderAssistantMessages();
-    renderAssistantApplyBox();
   });
   {% endif %}
 
@@ -984,8 +1351,7 @@
         history.pushState({path: newPath}, '', url.href);
         window.scrollTo(0, 0);
         if (typeof assistantState !== 'undefined') assistantState.latestApplyPayload = null;
-        if (typeof renderAssistantContextNote === 'function') renderAssistantContextNote();
-        if (typeof renderAssistantQuickActions === 'function') renderAssistantQuickActions();
+        if (typeof refreshAssistantSurface === 'function') refreshAssistantSurface();
         if (typeof renderAssistantApplyBox === 'function') renderAssistantApplyBox();
 
       } catch(e) {
@@ -1059,8 +1425,7 @@
         history.pushState({}, '', finalUrl);
         window.scrollTo(0, 0);
         if (typeof assistantState !== 'undefined') assistantState.latestApplyPayload = null;
-        if (typeof renderAssistantContextNote === 'function') renderAssistantContextNote();
-        if (typeof renderAssistantQuickActions === 'function') renderAssistantQuickActions();
+        if (typeof refreshAssistantSurface === 'function') refreshAssistantSurface();
         if (typeof renderAssistantApplyBox === 'function') renderAssistantApplyBox();
       } catch(err) {
         location.href = action;
@@ -1072,8 +1437,6 @@
     // Back / forward
     window.addEventListener('popstate', function() {
       navigate(location.href);
-      if (typeof renderAssistantContextNote === 'function') renderAssistantContextNote();
-      if (typeof renderAssistantQuickActions === 'function') renderAssistantQuickActions();
     });
   })();
 
