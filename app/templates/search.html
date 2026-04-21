@@ -415,7 +415,11 @@ function connectProgressSSE() {
       stepLabel.textContent = 'AI is building queries, searching web, and ranking results...';
     }
 
-    if (data.complete || (data.done >= data.total && data.total > 0)) {
+    // Only trust the server-sent `complete` flag. The client-side check
+    // `done >= total` fires early (counter increments per-item before the
+    // final dedup + DB commit), which would redirect to review with stale
+    // data and force a hard refresh.
+    if (data.complete) {
       evtSource.close();
       fill.style.width = '100%';
       const totalElapsed = searchStartTime ? Math.round((Date.now() - searchStartTime) / 1000) : 0;

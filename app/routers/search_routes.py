@@ -1051,12 +1051,30 @@ async def search_progress_sse(session_id: int, request: Request, db: DBSession =
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     async def event_stream():
-        while True:
-            progress = _search_progress.get(session_id, {"done": 0, "total": 0, "running": False, "current": ""})
-            data = json.dumps(progress)
-            yield f"data: {data}\n\n"
+        # Wait up to 3s for the background thread to register itself.
+        # Otherwise the initial snapshot (done=0, total=0, running=False) would
+        # satisfy the exit check below (0 >= 0) and the stream would close
+        # "complete" before the search even started, leaving the UI at 0/0.
+        for _ in range(30):
+            if session_id in _search_progress:
+                break
+            await asyncio.sleep(0.1)
 
-            if not progress.get("running") and progress.get("done", 0) >= progress.get("total", 1):
+        while True:
+            progress = _search_progress.get(session_id)
+            if progress is None:
+                # Thread never registered — treat as still starting, don't close.
+                yield f"data: {json.dumps({'done': 0, 'total': 0, 'running': True, 'current': ''})}\n\n"
+                await asyncio.sleep(0.5)
+                continue
+
+            yield f"data: {json.dumps(progress)}\n\n"
+
+            still_working = progress.get("running") or (
+                progress.get("total", 0) > 0
+                and progress.get("done", 0) < progress.get("total", 0)
+            )
+            if not still_working:
                 yield f"data: {json.dumps({**progress, 'complete': True})}\n\n"
                 break
             await asyncio.sleep(0.5)
