@@ -256,3 +256,60 @@ def test_item_sort_key_keeps_same_style_and_base_code_grouped_by_size():
     )
 
     assert [row["size"] for row in ordered] == ["6.5", "7.5", "8.5"]
+
+
+def test_brand_playbook_matches_american_rag_variants():
+    searcher = ImageSearcher()
+
+    urls = searcher.matching_brand_site_urls("American Rag Cie")
+
+    assert "americanrag.ae" in urls
+
+
+def test_assess_match_confidence_auto_approves_strong_official_match():
+    searcher = ImageSearcher({"brand_site_urls": {"on": ["on.com"]}})
+    item = {
+        "item_code": "3WE30133563-W-9",
+        "style_name": "Cloudvista 2 W",
+        "color_name": "Pelican / Ghost / Yellow",
+        "brand": "ON",
+        "item_group": "Footwear",
+    }
+    urls = [
+        "https://www.on.com/en-us/products/cloudvista-2/3WE30133563/pelican-ghost",
+        "https://example.com/random-shoe",
+    ]
+    scores = {
+        urls[0]: 0.89,
+        urls[1]: 0.54,
+    }
+
+    decision = searcher.assess_match_confidence(urls, scores, item)
+
+    assert decision["label"] == "high"
+    assert decision["auto_approve"] is True
+    assert decision["suggested_url"] == urls[0]
+
+
+def test_assess_match_confidence_sends_ambiguous_results_to_review():
+    searcher = ImageSearcher()
+    item = {
+        "item_code": "BG243810-BONE",
+        "style_name": "Wharfie Beanie",
+        "color_name": "bone",
+        "brand": "Butter Goods",
+        "item_group": "Beanie",
+    }
+    urls = [
+        "https://example.com/products/beanie-bone",
+        "https://marketplace.test/generic-butter-goods-beanie",
+    ]
+    scores = {
+        urls[0]: 0.66,
+        urls[1]: 0.61,
+    }
+
+    decision = searcher.assess_match_confidence(urls, scores, item)
+
+    assert decision["label"] in {"medium", "low"}
+    assert decision["auto_approve"] is False

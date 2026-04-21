@@ -272,10 +272,10 @@ def test_background_search_claims_distinct_approved_urls_for_distinct_item_codes
     ).order_by(models.UniqueItem.item_code.asc()).all()
 
     assert len(items) == 2
-    assert items[0].approved_url != items[1].approved_url
-    assert {items[0].approved_url, items[1].approved_url} == {url_a, url_b}
-    assert items[0].candidates[0] == items[0].approved_url
-    assert items[1].candidates[0] == items[1].approved_url
+    assert items[0].suggested_url != items[1].suggested_url
+    assert {items[0].suggested_url, items[1].suggested_url} == {url_a, url_b}
+    assert items[0].candidates[0] == items[0].suggested_url
+    assert items[1].candidates[0] == items[1].suggested_url
 
 
 def test_resolve_search_workers_autoscales_large_ai_batches():

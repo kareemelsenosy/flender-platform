@@ -108,9 +108,13 @@ class UniqueItem(Base):
     scores_json = Column(Text, default="{}")  # JSON dict {url: score}
     review_status = Column(String(20), default="pending")  # pending, approved, skipped
     approved_url = Column(Text)
+    suggested_url = Column(Text)
     pictures_url = Column(Text)  # original Dropbox folder link from "Pictures" column
     additional_urls_json = Column(Text, default="[]")  # extra images for folder download
     auto_selected = Column(Boolean, default=False)
+    search_confidence = Column(Float, default=0.0)
+    confidence_label = Column(String(20), default="low")
+    confidence_reason = Column(Text)
     comming_soon_qty = Column(String(50))  # "Comming Soon" column from Google Sheets (Dubai Reorder)
 
     session = relationship("Session", back_populates="unique_items")
@@ -174,7 +178,11 @@ class UniqueItem(Base):
             "scores": self.scores,
             "review_status": self.review_status,
             "approved_url": self.approved_url,
+            "suggested_url": self.suggested_url,
             "auto_selected": self.auto_selected,
+            "search_confidence": self.search_confidence,
+            "confidence_label": self.confidence_label,
+            "confidence_reason": self.confidence_reason,
         }
 
 
@@ -186,6 +194,7 @@ class SearchCache(Base):
     item_code = Column(String(500), nullable=False)
     color_code = Column(String(255), default="")
     brand = Column(String(255), default="")
+    search_version = Column(Integer, default=1)
     candidates_json = Column(Text, default="[]")
     scores_json = Column(Text, default="{}")
     searched_at = Column(DateTime, default=_utcnow)

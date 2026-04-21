@@ -93,8 +93,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
-    # One-time fix: items with search_status="done" but review_status="pending"
-    # should be "approved" (no-candidate items that were incorrectly set to pending)
+    # One-time fix for legacy sessions where an item already had an approved URL
+    # but was left in pending state. Keep genuinely pending review items untouched.
     try:
         from app.database import SessionLocal as _SL
         from app.models import UniqueItem
@@ -103,8 +103,9 @@ async def lifespan(app: FastAPI):
             from sqlalchemy import or_
             fixed = _fdb.query(UniqueItem).filter(
                 UniqueItem.review_status == "pending",
-                or_(UniqueItem.approved_url == None, UniqueItem.approved_url == ""),
-            ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)
+                UniqueItem.approved_url.isnot(None),
+                UniqueItem.approved_url != "",
+                ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)
             if fixed:
                 _fdb.commit()
                 logger.info(f"Fixed {fixed} pending items back to approved")

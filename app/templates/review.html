@@ -145,6 +145,7 @@
         <div class="sidebar-filters">
           <button class="active" onclick="filterItems('all')">All</button>
           <button onclick="filterItems('approved')">Approved</button>
+          <button onclick="filterItems('needsreview')">Needs Review</button>
           <button onclick="filterItems('edited')">Edited</button>
           <button onclick="filterItems('noimage')">No Image</button>
         </div>
@@ -199,6 +200,25 @@ function getConfidenceLabel(score) {
   if (score >= 0.7) return { label: 'HIGH', cls: 'confidence-high' };
   if (score >= 0.4) return { label: 'MED', cls: 'confidence-medium' };
   return { label: 'LOW', cls: 'confidence-poor' };
+}
+
+function getPrimaryUrl(entry) {
+  return entry?.approved_url || entry?.suggested_url || '';
+}
+
+function needsReview(entry) {
+  return !!getPrimaryUrl(entry) && entry?.status !== 'approved';
+}
+
+function getReviewBadge(entry) {
+  const primaryUrl = getPrimaryUrl(entry);
+  if (!primaryUrl) return { badge: 'NO IMG', badgeCls: 'badge-red' };
+  if (entry?.status === 'approved') {
+    if (entry?.auto_selected) return { badge: 'AUTO', badgeCls: 'badge-gray' };
+    return { badge: 'EDITED', badgeCls: 'badge-green' };
+  }
+  const label = String(entry?.confidence_label || 'low').toUpperCase();
+  return { badge: `REVIEW ${label}`, badgeCls: label === 'HIGH' ? 'badge-green' : (label === 'MEDIUM' ? 'badge-gray' : 'badge-red') };
 }
 
 function normalizeSearchItemCode(item) {
@@ -261,6 +281,10 @@ async function loadState() {
         candidates: entry.candidates || [],
         scores: entry.scores || {},
         additional_urls: entry.additional_urls || [],
+        suggested_url: entry.suggested_url || '',
+        search_confidence: entry.search_confidence || 0,
+        confidence_label: entry.confidence_label || 'low',
+        confidence_reason: entry.confidence_reason || '',
         details_loaded: !!entry.details_loaded,
       };
     }
@@ -288,7 +312,7 @@ function approveGroup(key) {
   const entry = state[key];
   if (!entry) return;
   const grp = entry.item.group_key;
-  const url = entry.approved_url || '';
+  const url = getPrimaryUrl(entry);
   if (!grp) return;
 
   fetch(`/review/${SESSION_ID}/approve-group`, {
@@ -302,6 +326,7 @@ function approveGroup(key) {
     groupKeys.forEach(k => {
       if (state[k]) {
         state[k].approved_url = url;
+        state[k].suggested_url = url;
         state[k].status = 'approved';
         state[k].auto_selected = false;
       }
@@ -361,6 +386,10 @@ async function ensureEntryDetails(key) {
         candidates: data.candidates || [],
         scores: data.scores || {},
         additional_urls: data.additional_urls || [],
+        suggested_url: data.suggested_url || '',
+        search_confidence: data.search_confidence || 0,
+        confidence_label: data.confidence_label || 'low',
+        confidence_reason: data.confidence_reason || '',
         details_loaded: true,
       };
       return state[key];
@@ -387,16 +416,18 @@ function updateSidebar() {
   const container = document.getElementById('sidebar-items');
   const filtered = keys.filter(k => {
     if (filter === 'approved') return state[k].approved_url && state[k].status === 'approved';
+    if (filter === 'needsreview') return needsReview(state[k]);
     if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
-    if (filter === 'noimage') return !state[k].approved_url;
+    if (filter === 'noimage') return !getPrimaryUrl(state[k]);
     return true;
   });
 
   const approved = keys.filter(k => state[k].approved_url && state[k].status === 'approved').length;
+  const needs = keys.filter(k => needsReview(state[k])).length;
   const edited = keys.filter(k => !state[k].auto_selected && state[k].status === 'approved').length;
-  const noImg = keys.filter(k => !state[k].approved_url).length;
+  const noImg = keys.filter(k => !getPrimaryUrl(state[k])).length;
   document.getElementById('stats-bar').textContent =
-    `${approved} approved \u00b7 ${edited} edited \u00b7 ${noImg} no image \u00b7 ${keys.length} total`;
+    `${approved} approved \u00b7 ${needs} needs review \u00b7 ${edited} edited \u00b7 ${noImg} no image \u00b7 ${keys.length} total`;
 
   // Update group toggle button style
   const groupBtn = document.getElementById('group-toggle');
@@ -423,16 +454,18 @@ function updateSidebar() {
     container.innerHTML = groupEntries.map(({ grp, label, keys: gKeys, firstKey }) => {
       const firstItem = state[firstKey];
       const info = firstItem.item || {};
-      const thumbUrl = firstItem.approved_url;
+      const thumbUrl = getPrimaryUrl(firstItem);
       const isActive = gKeys.includes(currentKey);
       const safeKey = escapeAttr(firstKey);
       const count = gKeys.length;
 
       // Group status: all approved, mixed, or none
       const allApproved = gKeys.every(k => state[k].approved_url && state[k].status === 'approved');
-      const anyMissing = gKeys.some(k => !state[k].approved_url);
+      const anyMissing = gKeys.some(k => !getPrimaryUrl(state[k]));
+      const anyNeedsReview = gKeys.some(k => needsReview(state[k]));
       let badge, badgeCls;
       if (anyMissing) { badge = `${count} items`; badgeCls = 'badge-red'; }
+      else if (anyNeedsReview) { badge = `${count} review`; badgeCls = 'badge-gray'; }
       else if (allApproved) { badge = `${count} items`; badgeCls = 'badge-green'; }
       else { badge = `${count} items`; badgeCls = 'badge-gray'; }
 
@@ -455,16 +488,13 @@ function updateSidebar() {
     container.innerHTML = filtered.map(k => {
       const item = state[k];
       const info = item.item || {};
-      const thumbUrl = item.approved_url;
+      const thumbUrl = getPrimaryUrl(item);
       const isActive = k === currentKey;
       const safeKey = escapeAttr(k);
       const safeCode = escapeHtml(info.item_code || k);
       const safeBrand = escapeHtml(info.brand || '');
 
-      let badge, badgeCls;
-      if (!item.approved_url) { badge = 'NO IMG'; badgeCls = 'badge-red'; }
-      else if (item.auto_selected) { badge = 'AUTO'; badgeCls = 'badge-gray'; }
-      else { badge = 'EDITED'; badgeCls = 'badge-green'; }
+      const { badge, badgeCls } = getReviewBadge(item);
 
       const thumbHtml = !thumbUrl
         ? '<div class="thumb-placeholder">N/A</div>'
@@ -535,7 +565,7 @@ function renderMain(key) {
   const candidates = entry.candidates || [];
   const scores = entry.scores || {};
   const main = document.getElementById('review-main');
-  const selectedUrl = entry.approved_url || '';
+  const selectedUrl = getPrimaryUrl(entry);
   const itemCode = item.item_code || key;
   const brandLine = item.brand ? `${item.brand} · ` : '';
   const colorLine = item.color_name ? ` · ${item.color_name}` : '';
@@ -544,6 +574,9 @@ function renderMain(key) {
   const groupData = groups[item.group_key || ''] || {};
   const groupKeys = groupData.keys || [key];
   const canApplyGroup = groupKeys.length > 1 && selectedUrl;
+  const aiState = entry.status === 'approved' ? (entry.auto_selected ? 'AI auto-approved' : 'Manual approval') : 'Needs review';
+  const aiConfidence = getConfidenceLabel(entry.search_confidence || 0);
+  const confidenceNote = entry.confidence_reason || '';
 
   // If we have a selected image URL (not local), offer reverse image search to find the exact photo.
   // Otherwise fall back to text image search.
@@ -571,6 +604,10 @@ function renderMain(key) {
         </div>
         ${groupKeys.length > 1 ? `<div class="text-muted" style="font-size:0.72rem;margin-top:4px">Group: ${escapeHtml(groupData.label || item.group_label || item.item_code || key)} · ${groupKeys.length} linked items</div>` : ''}
         <div class="text-muted" style="font-size:0.72rem;margin-top:6px">Search query: ${escapeHtml(searchQuery)}</div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="score ${aiConfidence.cls}" style="position:static">${escapeHtml((entry.confidence_label || aiConfidence.label).toUpperCase())}</span>
+          <span class="text-muted" style="font-size:0.72rem">${escapeHtml(aiState)}${confidenceNote ? ` · ${escapeHtml(confidenceNote)}` : ''}</span>
+        </div>
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
         ${canApplyGroup ? `<button class="btn btn-primary btn-sm" id="apply-group-btn">Apply to Group (${groupKeys.length})</button>` : ''}
@@ -699,6 +736,7 @@ async function submitCustomUrl(key, itemId) {
   if (!state[key].scores) state[key].scores = {};
   state[key].details_loaded = true;
   state[key].approved_url = url;
+  state[key].suggested_url = url;
   state[key].status = 'approved';
   state[key].auto_selected = false;
   if (!state[key].candidates.includes(url)) state[key].candidates.unshift(url);
@@ -719,6 +757,7 @@ async function approveUrl(key, itemId, url) {
   }
   state[key].details_loaded = true;
   state[key].approved_url = url;
+  state[key].suggested_url = url;
   state[key].status = 'approved';
   state[key].auto_selected = false;
   updateSidebar();
@@ -776,8 +815,12 @@ async function doResearch(key, itemId) {
       state[key].candidates = data.candidates;
       state[key].scores = data.scores;
       state[key].approved_url = data.approved_url;
-      state[key].auto_selected = true;
-      state[key].status = 'approved';
+      state[key].suggested_url = data.suggested_url || '';
+      state[key].auto_selected = !!data.auto_selected;
+      state[key].status = data.status || 'pending';
+      state[key].search_confidence = data.search_confidence || 0;
+      state[key].confidence_label = data.confidence_label || 'low';
+      state[key].confidence_reason = data.confidence_reason || '';
       updateSidebar();
       renderMain(key);
     } else {
@@ -807,7 +850,7 @@ async function startDownloadImages() {
   detailEl.textContent = 'Fetching approved images and building ZIP file...';
 
   const startTime = Date.now();
-  const approvedCount = keys.filter(k => state[k].approved_url).length;
+  const approvedCount = keys.filter(k => state[k].approved_url && state[k].status === 'approved').length;
 
   let progress = 10;
   const interval = setInterval(() => {
@@ -875,8 +918,9 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const filteredItems = keys.filter(k => {
     if (filter === 'approved') return state[k].approved_url && state[k].status === 'approved';
+    if (filter === 'needsreview') return needsReview(state[k]);
     if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
-    if (filter === 'noimage') return !state[k].approved_url;
+    if (filter === 'noimage') return !getPrimaryUrl(state[k]);
     return true;
   });
   const filtered = groupMode
@@ -924,7 +968,7 @@ function autoAdvanceSelected(imgEl) {
   imgEl.style.opacity = '0.3';
 
   const candidates = entry.candidates || [];
-  const currentUrl = entry.approved_url;
+  const currentUrl = getPrimaryUrl(entry);
   const remaining = candidates.filter(u => u !== currentUrl && !isLocalFile(u));
 
   if (!remaining.length) {
@@ -1007,8 +1051,9 @@ window.getReviewAssistantContext = function() {
     visible_counts: {
       total: keys.length,
       approved: keys.filter(k => state[k]?.approved_url && state[k]?.status === 'approved').length,
+      needs_review: keys.filter(k => needsReview(state[k])).length,
       edited: keys.filter(k => !state[k]?.auto_selected && state[k]?.status === 'approved').length,
-      no_image: keys.filter(k => !state[k]?.approved_url).length,
+      no_image: keys.filter(k => !getPrimaryUrl(state[k])).length,
     },
     current_item: entry ? {
       item_code: item.item_code || currentKey,
@@ -1018,12 +1063,16 @@ window.getReviewAssistantContext = function() {
       item_group: item.item_group || '',
       barcode: item.barcode || '',
       approved_url: entry.approved_url || '',
+      suggested_url: entry.suggested_url || '',
       candidate_count: (entry.candidates || []).length,
       top_candidates: (entry.candidates || []).slice(0, 5),
       group_label: groupInfo.label || item.group_label || '',
       group_size: (groupInfo.keys || []).length || 1,
       auto_selected: !!entry.auto_selected,
       review_status: entry.status || '',
+      search_confidence: entry.search_confidence || 0,
+      confidence_label: entry.confidence_label || 'low',
+      confidence_reason: entry.confidence_reason || '',
     } : null,
   };
 };

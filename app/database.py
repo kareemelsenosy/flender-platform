@@ -73,9 +73,31 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN pictures_url TEXT"
                 ))
+            if "suggested_url" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN suggested_url TEXT"
+                ))
+            if "search_confidence" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN search_confidence FLOAT DEFAULT 0"
+                ))
+            if "confidence_label" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN confidence_label VARCHAR(20) DEFAULT 'low'"
+                ))
+            if "confidence_reason" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN confidence_reason TEXT"
+                ))
             if "comming_soon_qty" not in cols:
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN comming_soon_qty VARCHAR(50)"
+                ))
+        if "search_cache" in insp.get_table_names():
+            cache_cols = {c["name"] for c in insp.get_columns("search_cache")}
+            if "search_version" not in cache_cols:
+                conn.execute(text(
+                    "ALTER TABLE search_cache ADD COLUMN search_version INTEGER DEFAULT 1"
                 ))
         # Ensure email_verified column exists on users
         if "users" in insp.get_table_names():

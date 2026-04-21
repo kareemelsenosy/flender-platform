@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
-from app.core.searcher import ImageSearcher, split_and_normalize_domains
+from app.core.searcher import SEARCH_CACHE_VERSION, ImageSearcher, split_and_normalize_domains
 from app.services.file_safety import normalize_uploaded_name, unique_path
 from app.services.ai_service import (
     ai_available,
@@ -157,7 +157,11 @@ def _reset_items_for_search(db: DBSession, session_id: int) -> int:
         "search_status": "pending",
         "review_status": "pending",
         "approved_url": None,
+        "suggested_url": None,
         "auto_selected": False,
+        "search_confidence": 0.0,
+        "confidence_label": "low",
+        "confidence_reason": None,
         "candidates_json": "[]",
         "scores_json": "{}",
         "additional_urls_json": "[]",
@@ -216,7 +220,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             "google_api_key": GOOGLE_SEARCH_KEY,
             "google_cse_id": GOOGLE_CSE_ID,
         }
-        searcher = ImageSearcher(search_config) if search_mode in ("web", "both") else None
+        searcher = ImageSearcher(search_config)
 
         # Import local search if needed — validate path to prevent traversal (C4)
         local_search_fn = None
@@ -268,10 +272,12 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                         SearchCache.item_code == cache_item_code,
                         SearchCache.color_code == cache_color_code,
                         SearchCache.brand == cache_brand,
+                        SearchCache.search_version == SEARCH_CACHE_VERSION,
                     ).first()
 
                 if cached and cached.candidates:
-                    return cached.candidates, cached.scores, True
+                    decision = searcher.assess_match_confidence(cached.candidates, cached.scores, item_dict)
+                    return cached.candidates, cached.scores, True, decision
 
                 candidates = []
                 scores = {}
@@ -318,7 +324,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                         scores[file_url] = lr["score"]
 
                 # ── STEP 3: Web search with AI queries ────────────────────────
-                if searcher and (search_mode == "web" or (search_mode == "both" and len(candidates) < 3)):
+                if search_mode == "web" or (search_mode == "both" and len(candidates) < 3):
                     web_candidates, web_scores = searcher.search(
                         item_dict, ai_queries=ai_queries or None
                     )
@@ -330,7 +336,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 # ── STEP 4: AI retry if results are poor ─────────────────────
                 # If we got fewer than 2 results or all scores < 0.25, AI tries
                 # new queries based on what failed.
-                if use_ai and searcher and len(candidates) < 2:
+                if use_ai and search_mode != "local" and len(candidates) < 2:
                     retry_queries = ai_optimize_search_query(
                         item_dict,
                         brand_label,
@@ -371,12 +377,15 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                         scores = new_scores
 
                 # ── STEP 6: Save to cache — web search only ──────────────────
-                if searcher:
+                decision = searcher.assess_match_confidence(candidates, scores, item_dict)
+
+                if search_mode != "local":
                     try:
                         existing_cache = cache_db.query(SearchCache).filter(
                             SearchCache.item_code == cache_item_code,
                             SearchCache.color_code == cache_color_code,
                             SearchCache.brand == cache_brand,
+                            SearchCache.search_version == SEARCH_CACHE_VERSION,
                         ).first()
                         if existing_cache:
                             existing_cache.candidates = candidates
@@ -386,6 +395,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                                 item_code=cache_item_code,
                                 color_code=cache_color_code,
                                 brand=cache_brand,
+                                search_version=SEARCH_CACHE_VERSION,
                             )
                             new_cache.candidates = candidates
                             new_cache.scores = scores
@@ -394,7 +404,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     except Exception:
                         cache_db.rollback()
 
-                return candidates, scores, False
+                return candidates, scores, False, decision
             finally:
                 cache_db.close()
 
@@ -411,7 +421,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         # Collect all results first so we can dedup `approved_url` across
         # different base-item-codes once every search has completed. Different
         # item codes MUST NOT end up with the same picture.
-        completed_results: list[tuple[dict, list[str], dict[str, float]]] = []
+        completed_results: list[tuple[dict, list[str], dict[str, float], dict[str, object]]] = []
 
         with ThreadPoolExecutor(max_workers=max(1, min(workers, len(group_entries) or 1))) as executor:
             futures = {}
@@ -431,8 +441,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
                 grouped = futures[future]
                 try:
-                    candidates, scores, _from_cache = future.result()
-                    completed_results.append((grouped, candidates, scores))
+                    candidates, scores, _from_cache, decision = future.result()
+                    completed_results.append((grouped, candidates, scores, decision))
                 except Exception as e:
                     logger.error(f"Search error: {e}")
 
@@ -446,11 +456,11 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         # Dedup: give the highest-confidence group first pick of its best URL,
         # then later groups must pick a URL not yet claimed by another group.
         completed_results.sort(
-            key=lambda gr: max(gr[2].values()) if gr[2] else 0.0,
+            key=lambda gr: float((gr[3] or {}).get("score", 0.0) or 0.0),
             reverse=True,
         )
         claimed_urls: set[str] = set()
-        for grouped, candidates, scores in completed_results:
+        for grouped, candidates, scores, _decision in completed_results:
             sorted_urls = sorted(candidates, key=lambda u: scores.get(u, 0.0), reverse=True)
             chosen = ""
             for url in sorted_urls:
@@ -473,6 +483,18 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     seen.add(url)
                     final_candidates.append(url)
 
+            final_decision = searcher.assess_match_confidence(
+                final_candidates,
+                scores,
+                grouped["item_dict"],
+                prefer_first=True,
+            )
+            final_label = str(final_decision.get("label") or "low")
+            final_score = float(final_decision.get("score", 0.0) or 0.0)
+            final_reason = str(final_decision.get("reason") or "").strip() or None
+            final_suggested = str(final_decision.get("suggested_url") or chosen or "").strip() or None
+            auto_approve = bool(final_decision.get("auto_approve")) and bool(final_suggested)
+
             for source_item in grouped["items"]:
                 db_item = db.get(UniqueItem, source_item.id)
                 if not db_item:
@@ -480,9 +502,18 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 db_item.candidates = final_candidates
                 db_item.scores = scores
                 db_item.search_status = "done"
-                db_item.approved_url = chosen
-                db_item.review_status = "approved"
-                db_item.auto_selected = True
+                db_item.suggested_url = final_suggested
+                db_item.search_confidence = final_score
+                db_item.confidence_label = final_label
+                db_item.confidence_reason = final_reason
+                if auto_approve:
+                    db_item.approved_url = final_suggested
+                    db_item.review_status = "approved"
+                    db_item.auto_selected = True
+                else:
+                    db_item.approved_url = None
+                    db_item.review_status = "pending"
+                    db_item.auto_selected = False
         db.commit()
 
         # Update session status — only if this search generation is still current

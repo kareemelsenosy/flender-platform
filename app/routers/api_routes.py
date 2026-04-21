@@ -411,7 +411,6 @@ async def fix_pending_items(request: Request, db: DBSession = Depends(get_db)):
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     from app.models import UniqueItem, Session as SessionModel
-    from sqlalchemy import or_
     # Only fix items belonging to this user's sessions
     user_session_ids = [s.id for s in db.query(SessionModel.id).filter(SessionModel.user_id == uid).all()]
     if not user_session_ids:
@@ -419,7 +418,8 @@ async def fix_pending_items(request: Request, db: DBSession = Depends(get_db)):
     fixed = db.query(UniqueItem).filter(
         UniqueItem.session_id.in_(user_session_ids),
         UniqueItem.review_status == "pending",
-        or_(UniqueItem.approved_url == None, UniqueItem.approved_url == ""),
+        UniqueItem.approved_url.isnot(None),
+        UniqueItem.approved_url != "",
     ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)
     db.commit()
     return JSONResponse({"fixed": fixed})

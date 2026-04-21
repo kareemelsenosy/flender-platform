@@ -34,6 +34,7 @@ _HTTP = _make_http_session()
 
 MAX_CANDIDATES = 10
 REQUEST_TIMEOUT = 15
+SEARCH_CACHE_VERSION = 2
 
 _HEADERS = {
     "User-Agent": (
@@ -133,6 +134,43 @@ BRAND_DOMAINS: dict[str, str] = {
     "superdry": "superdry.com",
     "jack wolfskin": "jack-wolfskin.com",
     "mammut": "mammut.com",
+}
+
+BRAND_PLAYBOOKS: dict[str, dict[str, Any]] = {
+    "american rag": {
+        "preferred_domains": ["americanrag.ae"],
+        "blocked_domains": ["amazon.", "ebay.", "aliexpress.", "temu."],
+        "strict_query": True,
+    },
+    "adidas": {
+        "preferred_domains": ["adidas.com", "assets.adidas.com"],
+        "strict_query": True,
+    },
+    "on": {
+        "preferred_domains": ["on.com"],
+        "blocked_terms": ["bike", "bicycle", "mtb", "drink", "beverage", "dew", "can", "cans"],
+        "strict_query": True,
+    },
+    "butter goods": {
+        "preferred_domains": ["buttergoods.com"],
+        "strict_query": True,
+    },
+    "casablanca": {
+        "preferred_domains": ["casablancaparis.com"],
+        "strict_query": True,
+    },
+    "carhartt wip": {
+        "preferred_domains": ["carhartt-wip.com"],
+        "strict_query": True,
+    },
+    "golden goose": {
+        "preferred_domains": ["goldengoose.com"],
+        "strict_query": True,
+    },
+    "stone island": {
+        "preferred_domains": ["stoneisland.com"],
+        "strict_query": True,
+    },
 }
 
 _CDN_PATTERNS = [
@@ -351,6 +389,7 @@ class ImageSearcher:
         self.extra_site_urls: list[str] = split_and_normalize_domains(
             self.config.get("extra_site_urls", [])
         )
+        self.strict_match_mode = bool(self.config.get("strict_match_mode", True))
 
     def _brand_identity_keys(self, brand: str) -> set[str]:
         text = str(brand or "").strip().lower()
@@ -401,6 +440,41 @@ class ImageSearcher:
 
         return False
 
+    def _matching_brand_playbook(self, brand: str) -> dict[str, Any]:
+        merged: dict[str, Any] = {
+            "preferred_domains": [],
+            "blocked_domains": [],
+            "blocked_terms": [],
+            "strict_query": self.strict_match_mode,
+        }
+        brand_keys = self._brand_identity_keys(brand)
+        if not brand_keys:
+            return merged
+
+        for playbook_brand, playbook in BRAND_PLAYBOOKS.items():
+            playbook_keys = self._brand_identity_keys(playbook_brand)
+            if not playbook_keys:
+                continue
+            matched = bool(brand_keys & playbook_keys)
+            if not matched:
+                for a in brand_keys:
+                    for b in playbook_keys:
+                        if min(len(a), len(b)) >= 4 and (a in b or b in a):
+                            matched = True
+                            break
+                    if matched:
+                        break
+            if not matched:
+                continue
+            merged["preferred_domains"].extend(split_and_normalize_domains(playbook.get("preferred_domains", [])))
+            merged["blocked_domains"].extend(split_and_normalize_domains(playbook.get("blocked_domains", [])))
+            merged["blocked_terms"].extend([str(term).strip().lower() for term in playbook.get("blocked_terms", []) if str(term).strip()])
+            merged["strict_query"] = bool(playbook.get("strict_query", merged["strict_query"]))
+        merged["preferred_domains"] = _unique_preserve(merged["preferred_domains"])
+        merged["blocked_domains"] = _unique_preserve(merged["blocked_domains"])
+        merged["blocked_terms"] = _unique_preserve(merged["blocked_terms"])
+        return merged
+
     def matching_brand_configs(self, brand: str) -> list[tuple[str, list[str]]]:
         matches: list[tuple[str, list[str]]] = []
         for config_brand, config_urls in self.brand_site_urls.items():
@@ -412,6 +486,10 @@ class ImageSearcher:
         urls: list[str] = []
         for _config_brand, config_urls in self.matching_brand_configs(brand):
             urls.extend(config_urls)
+        urls.extend(self._matching_brand_playbook(brand).get("preferred_domains", []))
+        domain = BRAND_DOMAINS.get((brand or "").lower().strip())
+        if domain:
+            urls.append(domain)
         return _unique_preserve(urls)
 
     def _normalize_item_code(self, item_code: str, item_group: str | None, style_name: str | None) -> str:
@@ -462,11 +540,14 @@ class ImageSearcher:
         item_group = str(item.get("item_group") or "").strip() or None
         base_item_code = self._normalize_item_code(item_code, item_group, style_name)
         family, family_terms = self._infer_category_family(item_group, style_name)
+        playbook = self._matching_brand_playbook(brand)
         style_tokens = [
             token for token in _tokenize(style_name or "")
             if token not in family_terms and token not in _COLOR_WORDS and len(token) >= 3
         ]
         color_tokens = [token for token in _tokenize(color_name or "") if len(token) >= 3]
+        exact_query = _join_distinct_parts([brand, style_name, item_group or "", color_name or "", base_item_code or item_code or barcode or ""])
+        exact_query_tokens = [token for token in _tokenize(exact_query) if len(token) >= 3]
         return {
             "item_code": item_code,
             "base_item_code": base_item_code or item_code,
@@ -481,6 +562,12 @@ class ImageSearcher:
             "style_tokens": _unique_preserve(style_tokens),
             "color_tokens": _unique_preserve(color_tokens),
             "normalized_color_identity": self._normalized_color_identity(color_code, color_name),
+            "preferred_domains": _unique_preserve(self.extra_site_urls + self.matching_brand_site_urls(brand)),
+            "blocked_domains": playbook.get("blocked_domains", []),
+            "blocked_terms": set(playbook.get("blocked_terms", [])),
+            "strict_query": bool(playbook.get("strict_query", self.strict_match_mode)),
+            "exact_query": exact_query,
+            "exact_query_tokens": _unique_preserve(exact_query_tokens),
         }
 
     def cache_identity(self, item: dict) -> tuple[str, str, str]:
@@ -690,6 +777,134 @@ class ImageSearcher:
         )[:self.max_candidates]
         scores = {u: round(raw_scores[u], 2) for u in candidates}
         return candidates, scores
+
+    def assess_match_confidence(
+        self,
+        urls: list[str],
+        scores: dict[str, float] | None,
+        item: dict,
+        *,
+        prefer_first: bool = False,
+    ) -> dict[str, Any]:
+        ctx = self._build_item_context(item)
+        if not urls:
+            return {
+                "score": 0.0,
+                "label": "missing",
+                "auto_approve": False,
+                "reason": "No candidates found.",
+                "suggested_url": "",
+            }
+
+        ranked = list(urls)
+        if not prefer_first:
+            ranked = sorted(urls, key=lambda url: float((scores or {}).get(url, 0.0) or 0.0), reverse=True)
+        top_url = ranked[0]
+        top_score = float((scores or {}).get(top_url, 0.0) or 0.0)
+        second_score = float((scores or {}).get(ranked[1], 0.0) or 0.0) if len(ranked) > 1 else 0.0
+        gap = max(0.0, top_score - second_score)
+
+        lower = top_url.lower()
+        normalized = _slug(lower)
+        text_tokens = set(_tokenize(lower))
+        preferred_domain = any(domain and domain in lower for domain in ctx.get("preferred_domains", []))
+        blocked_domain = any(domain and domain in lower for domain in ctx.get("blocked_domains", []))
+        blocked_term = any(term in text_tokens for term in ctx.get("blocked_terms", set()))
+        local_file = top_url.startswith("file://")
+
+        full_code_slug = _slug(ctx.get("item_code") or "")
+        base_code_slug = _slug(ctx.get("base_item_code") or "")
+        code_match = bool(
+            (full_code_slug and full_code_slug in normalized) or
+            (base_code_slug and base_code_slug in normalized)
+        )
+
+        color_tokens = ctx.get("color_tokens") or []
+        color_match = any(token in text_tokens or token in normalized for token in color_tokens)
+        wrong_colors = bool(({token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)) and not color_match)
+
+        category_family = ctx.get("category_family")
+        category_match = True
+        if category_family:
+            family_terms = _CATEGORY_FAMILY_TERMS.get(category_family, set())
+            family_hits = {token for token in text_tokens if token in family_terms}
+            category_match = bool(family_hits) or not family_terms
+
+        exact_tokens = ctx.get("exact_query_tokens") or []
+        exact_matches = sum(1 for token in exact_tokens if token in text_tokens or token in normalized)
+        exact_ratio = (exact_matches / len(exact_tokens)) if exact_tokens else 0.0
+
+        confidence = top_score
+        if preferred_domain:
+            confidence += 0.08
+        if code_match:
+            confidence += 0.06
+        if color_match:
+            confidence += 0.05
+        if category_match:
+            confidence += 0.04
+        confidence += min(0.12, gap * 0.6)
+        if exact_ratio >= 0.75:
+            confidence += 0.08
+        elif ctx.get("strict_query") and exact_ratio < 0.5:
+            confidence -= 0.1
+        if wrong_colors:
+            confidence -= 0.18
+        if blocked_domain or blocked_term:
+            confidence -= 0.18
+        if local_file and top_score >= 0.85:
+            confidence += 0.08
+        confidence = min(max(confidence, 0.0), 1.0)
+
+        reasons: list[str] = []
+        if preferred_domain:
+            reasons.append("preferred domain")
+        if code_match:
+            reasons.append("code match")
+        if color_match:
+            reasons.append("color match")
+        if category_match:
+            reasons.append("category match")
+        if gap >= 0.12:
+            reasons.append("clear lead")
+        if wrong_colors:
+            reasons.append("possible wrong color")
+        if blocked_domain or blocked_term:
+            reasons.append("suspicious source")
+        if exact_ratio >= 0.75:
+            reasons.append("full-query match")
+
+        high_confidence = (
+            top_score >= 0.82
+            and gap >= 0.12
+            and not wrong_colors
+            and not blocked_domain
+            and not blocked_term
+            and (category_match or preferred_domain or code_match)
+            and (preferred_domain or code_match or exact_ratio >= 0.72 or local_file)
+        )
+        medium_confidence = (
+            top_score >= 0.6
+            and not blocked_domain
+            and not blocked_term
+            and not wrong_colors
+            and (gap >= 0.05 or preferred_domain or code_match or exact_ratio >= 0.58)
+        )
+
+        if high_confidence:
+            label = "high"
+        elif medium_confidence:
+            label = "medium"
+        else:
+            label = "low"
+
+        return {
+            "score": round(confidence, 2),
+            "label": label,
+            "auto_approve": label == "high",
+            "reason": ", ".join(reasons) if reasons else "Weak evidence.",
+            "suggested_url": top_url,
+        }
 
     def _score_hit(self, hit: dict[str, Any], ctx: dict[str, Any]) -> float:
         url = hit["url"]

@@ -283,8 +283,12 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
         UniqueItem.style_name,
         UniqueItem.item_group,
         UniqueItem.approved_url,
+        UniqueItem.suggested_url,
         UniqueItem.review_status,
         UniqueItem.auto_selected,
+        UniqueItem.search_confidence,
+        UniqueItem.confidence_label,
+        UniqueItem.confidence_reason,
     ).filter(
         UniqueItem.session_id == session_id
     ).all()
@@ -326,8 +330,12 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
                 "group_label": group_label,
             },
             "approved_url": item.approved_url,
+            "suggested_url": item.suggested_url,
             "status": item.review_status,
             "auto_selected": item.auto_selected,
+            "search_confidence": item.search_confidence or 0.0,
+            "confidence_label": item.confidence_label or "low",
+            "confidence_reason": item.confidence_reason or "",
             "details_loaded": False,
         }
         group_entry = groups.setdefault(group_key, {"label": group_label, "keys": []})
@@ -363,9 +371,13 @@ def review_item_detail(session_id: int, item_id: int, request: Request, db: DBSe
         "candidates": item.candidates,
         "scores": item.scores,
         "approved_url": item.approved_url,
+        "suggested_url": item.suggested_url,
         "additional_urls": item.additional_urls,
         "status": item.review_status,
         "auto_selected": item.auto_selected,
+        "search_confidence": item.search_confidence or 0.0,
+        "confidence_label": item.confidence_label or "low",
+        "confidence_reason": item.confidence_reason or "",
         "details_loaded": True,
     })
 
@@ -387,6 +399,7 @@ async def approve_item(session_id: int, request: Request, db: DBSession = Depend
         return JSONResponse({"error": "not found"}, status_code=404)
 
     item.approved_url = url
+    item.suggested_url = url
     item.review_status = "approved"
     item.auto_selected = False
     db.commit()
@@ -429,6 +442,7 @@ async def approve_group(session_id: int, request: Request, db: DBSession = Depen
         if current_group_key != group_key:
             continue
         item.approved_url = url
+        item.suggested_url = url
         item.review_status = "approved"
         item.auto_selected = False
         updated += 1
@@ -452,6 +466,8 @@ async def skip_item(session_id: int, request: Request, db: DBSession = Depends(g
         return JSONResponse({"error": "not found"}, status_code=404)
 
     item.review_status = "skipped"
+    item.approved_url = None
+    item.suggested_url = None
     db.commit()
 
     return JSONResponse({"ok": True})
@@ -480,6 +496,7 @@ async def set_custom_url(session_id: int, request: Request, db: DBSession = Depe
         item.candidates = candidates
 
     item.approved_url = custom_url
+    item.suggested_url = custom_url
     item.review_status = "approved"
     item.auto_selected = False
     db.commit()
@@ -615,11 +632,19 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     # Update item in DB
     item.candidates = candidates
     item.scores = scores
-    if candidates:
-        best = max(candidates, key=lambda u: scores.get(u, 0))
-        item.approved_url = best
+    decision = searcher.assess_match_confidence(candidates, scores, item_dict)
+    item.suggested_url = decision.get("suggested_url") or None
+    item.search_confidence = float(decision.get("score", 0.0) or 0.0)
+    item.confidence_label = str(decision.get("label") or "low")
+    item.confidence_reason = str(decision.get("reason") or "").strip() or None
+    if decision.get("auto_approve") and item.suggested_url:
+        item.approved_url = item.suggested_url
         item.auto_selected = True
-    item.review_status = "approved"
+        item.review_status = "approved"
+    else:
+        item.approved_url = None
+        item.auto_selected = False
+        item.review_status = "pending"
     db.commit()
 
     return JSONResponse({
@@ -627,6 +652,12 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
         "candidates": candidates,
         "scores": scores,
         "approved_url": item.approved_url,
+        "suggested_url": item.suggested_url,
+        "status": item.review_status,
+        "auto_selected": item.auto_selected,
+        "search_confidence": item.search_confidence,
+        "confidence_label": item.confidence_label,
+        "confidence_reason": item.confidence_reason,
     })
 
 
