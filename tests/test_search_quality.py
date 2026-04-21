@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.searcher import ImageSearcher, SearchHit
+from app.core.searcher import ImageSearcher, SearchHit, item_sort_key
 
 
 def test_cache_identity_normalizes_size_suffixed_footwear_codes():
@@ -173,3 +173,86 @@ def test_search_prefers_exact_google_style_query_results(monkeypatch):
 
     assert candidates[0] == exact.url
     assert scores[exact.url] > scores[generic.url]
+
+
+def test_search_prefers_quoted_phrase_hits_for_full_manual_query(monkeypatch):
+    searcher = ImageSearcher()
+
+    exact = SearchHit(
+        url="https://buttergoods.com/images/wharfie-beanie-bone-packshot.jpg",
+        page_url="https://buttergoods.com/products/wharfie-beanie-bone",
+        title="Butter Goods Wharfie Beanie Bone BG243810-BONE",
+        description="Official product image",
+    )
+    generic = SearchHit(
+        url="https://example.com/images/beanie.jpg",
+        page_url="https://example.com/products/beanie",
+        title="Butter Goods Beanie",
+        description="Generic listing",
+    )
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [exact] if query.startswith("\"Butter Goods") else [generic])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, scores = searcher.search({
+        "item_code": "BG243810-BONE",
+        "style_name": "Wharfie Beanie",
+        "color_name": "bone",
+        "brand": "Butter Goods",
+        "item_group": "Beanie",
+    })
+
+    assert candidates[0] == exact.url
+    assert scores[exact.url] > scores[generic.url]
+
+
+def test_item_sort_key_keeps_same_style_and_base_code_grouped_by_size():
+    rows = [
+        {
+            "brand": "adidas",
+            "style_name": "Wmns Gazelle Indoor",
+            "item_code": "HQ8718-8.5",
+            "item_group": "Footwear",
+            "color_name": "Red",
+            "color_code": "",
+            "size": "8.5",
+        },
+        {
+            "brand": "adidas",
+            "style_name": "Wmns Gazelle Indoor",
+            "item_code": "HQ8718-6.5",
+            "item_group": "Footwear",
+            "color_name": "Red",
+            "color_code": "",
+            "size": "6.5",
+        },
+        {
+            "brand": "adidas",
+            "style_name": "Wmns Gazelle Indoor",
+            "item_code": "HQ8718-7.5",
+            "item_group": "Footwear",
+            "color_name": "Red",
+            "color_code": "",
+            "size": "7.5",
+        },
+    ]
+
+    ordered = sorted(
+        rows,
+        key=lambda row: item_sort_key(
+            brand=row["brand"],
+            style_name=row["style_name"],
+            item_code=row["item_code"],
+            item_group=row["item_group"],
+            color_name=row["color_name"],
+            color_code=row["color_code"],
+            size=row["size"],
+        ),
+    )
+
+    assert [row["size"] for row in ordered] == ["6.5", "7.5", "8.5"]

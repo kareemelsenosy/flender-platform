@@ -21,6 +21,27 @@ logger = logging.getLogger(__name__)
 _AI_IMAGE_MAX_CANDIDATES = 6
 _AI_IMAGE_MAX_DIM = 768
 _AI_IMAGE_FETCH_TIMEOUT = 8
+_SEARCH_PERFECTION_RULES = """Non-negotiable match rules:
+- The visible product type must be exact. Shorts are not t-shirts. Shoes are not sandals, bikes, drinks, or accessories.
+- The visible color must match exactly or be an obvious close synonym. If the candidate is clearly a different color, reject it.
+- If item codes differ, do NOT treat the same image as valid unless they share the same normalized base code and only vary by size.
+- When the full exact query already identifies the product, keep that full phrasing as the first search query instead of shortening it too early.
+- Prefer official product pages and clean packshots over marketplaces, logos, banners, thumbnails, or lifestyle/editorial images.
+"""
+
+
+def _join_distinct_prompt_parts(parts: list[str]) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        key = " ".join(text.lower().split())
+        if key not in seen:
+            seen.add(key)
+            out.append(text)
+    return " ".join(out).strip()
 
 
 def _make_http_session() -> requests.Session:
@@ -356,8 +377,11 @@ def ai_optimize_search_query(
     if search_instructions.strip():
         instructions_block = f"\nSpecial instructions from user:\n{search_instructions.strip()}\n"
 
+    exact_query = _join_distinct_prompt_parts([brand, style_name, item_group, color_name, item_code or barcode])
+
     prompt = f"""Generate 2-3 optimized image search queries to find a product photo for this fashion item.
 The image MUST match the exact color specified. Color accuracy is critical.
+{_SEARCH_PERFECTION_RULES}
 
 Brand: {brand}
 SKU/Code: {item_code}
@@ -365,14 +389,17 @@ Product Name: {style_name}
 Color: {color_name}
 Barcode: {barcode}
 Category: {item_group}
+Preferred full exact query: {exact_query}
 {f'Previous failed queries: {json.dumps(failed_queries)}' if failed_queries else ''}{instructions_block}
 
 Rules:
+- Query 1 should be the full exact query or a quoted version of it whenever it is strong enough
 - ALWAYS include the color name in at least 2 of the queries
 - Include the brand name in every query
 - Use the SKU/code in at least one query
 - If the category is known, include it to avoid wrong product types
-- Try different formats: "brand code color", "brand product-name color", "brand barcode"
+- Do NOT repeat words already present in the style name (example: avoid "Wharfie Beanie Beanie")
+- Try different formats: full exact query, "brand code color", "brand product-name color", "brand barcode"
 
 Return ONLY a JSON array of search query strings:
 ["query 1", "query 2", "query 3"]"""
@@ -402,9 +429,12 @@ def ai_build_search_queries(item: dict, brand: str, search_instructions: str = "
     barcode = item.get("barcode", "")
     item_group = item.get("item_group", "")
 
+    exact_query = _join_distinct_prompt_parts([brand, style_name, item_group, color_name, item_code or barcode])
+
     prompt = f"""You are helping search for product images for a fashion B2B platform.
 Build the best search queries for this product based on the user's instructions.
 The image MUST match the exact color specified. Color accuracy is critical.
+{_SEARCH_PERFECTION_RULES}
 
 Brand: {brand}
 SKU/Code: {item_code}
@@ -412,15 +442,18 @@ Product Name: {style_name}
 Color: {color_name}
 Barcode: {barcode}
 Category: {item_group}
+Preferred full exact query: {exact_query}
 
 User instructions:
 {search_instructions.strip()}
 
 Rules:
+- Query 1 should preserve the full exact query or a quoted version of it whenever possible
 - ALWAYS include the color "{color_name}" in at least 2 of the queries
 - Include the brand name in every query
 - Follow user instructions about URLs, naming patterns, and search strategies
 - If instructions mention a specific website, include "site:domain.com" in one query
+- Do NOT repeat words already present in the style name (example: avoid "Wharfie Beanie Beanie")
 
 Return ONLY a JSON array of 2-3 search query strings:
 ["query 1", "query 2", "query 3"]"""
@@ -479,6 +512,7 @@ def _ai_rank_urls_with_vision(
     item_group = item.get("item_group", "")
     listed = "\n".join(f"{image['index']}. {image['url']}" for image in prepared)
     prompt = f"""You are visually checking candidate product images for a fashion B2B platform.
+{_SEARCH_PERFECTION_RULES}
 
 Product to match:
 - Brand: {brand}
@@ -498,6 +532,7 @@ Ranking rules:
 2. Exact visible color match is critical. Wrong color should be rejected.
 3. Prefer clean product photos and official packshots when multiple candidates are otherwise similar.
 4. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
+5. If a candidate looks like the same photo reused for a clearly different item family, discard it.
 
 Return ONLY valid JSON in this format:
 {{
@@ -562,6 +597,7 @@ def _ai_rank_urls_text_only(urls: list[str], item: dict, brand: str) -> list[str
     numbered = "\n".join(f"{i+1}. {u}" for i, u in enumerate(urls))
 
     prompt = f"""You are a product image quality judge for a fashion B2B platform.
+{_SEARCH_PERFECTION_RULES}
 
 Given these image URLs found by web search, rank them from BEST to WORST for this product.
 
@@ -579,11 +615,12 @@ Image URLs:
 Ranking criteria (most important first):
 1. COLOR MATCH IS CRITICAL — The color is "{color_name}". URLs containing this color name or a matching color code should rank highest. URLs showing a DIFFERENT color (e.g., "black" when we need "white") must be EXCLUDED entirely.
 2. URL contains the exact item code/SKU → strongest signal
-3. URL is from the brand's official domain or a known fashion CDN
-4. URL path suggests a product image (/product/, /products/, /p/, /catalog/, /item/, scene7, cloudfront, akamaized, shopify, cloudinary)
-5. URL does NOT look like a logo, banner, thumbnail, or avatar
-6. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
-7. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
+3. URLs matching the full exact query wording most closely should rank highest.
+4. URL is from the brand's official domain or a known fashion CDN
+5. URL path suggests a product image (/product/, /products/, /p/, /catalog/, /item/, scene7, cloudfront, akamaized, shopify, cloudinary)
+6. URL does NOT look like a logo, banner, thumbnail, or avatar
+7. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
+8. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
 
 Return ONLY a JSON array of the URL numbers in order from best to worst:
 [3, 1, 5, 2, 4]
@@ -591,6 +628,7 @@ Return ONLY a JSON array of the URL numbers in order from best to worst:
 IMPORTANT:
 - EXCLUDE any URL that clearly shows the WRONG color (different from "{color_name}")
 - EXCLUDE logos, banners, irrelevant images, or wrong product types entirely
+- If one result matches the full exact query clearly better than the others, put it first
 - Only include numbers for URLs that are likely the correct product in the correct color"""
 
     text = _call_ai(prompt, max_tokens=1024)
@@ -660,6 +698,8 @@ User message:
 {message.strip()}
 
 Important rules:
+- Search quality must follow these rules:
+{_SEARCH_PERFECTION_RULES}
 - Be concrete and operational. Give actions the user can take in this website.
 - If the request is about image search, prioritize exact SKU, exact color, exact product family, official brand domains, and grouping when appropriate.
 - If the request is about review, mention whether applying one image to a whole product/color group is a good idea.

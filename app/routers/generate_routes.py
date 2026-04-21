@@ -292,6 +292,21 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "comming_soon_qty": item.comming_soon_qty if item.comming_soon_qty is not None else "",
             })
 
+    # Final export order should mirror the cleaner sample sheets:
+    # brand -> style -> base item code -> color -> numeric size.
+    item_dicts = sorted(
+        item_dicts,
+        key=lambda it: item_sort_key(
+            brand=it.get("brand"),
+            style_name=it.get("style_name"),
+            item_code=it.get("item_code"),
+            item_group=it.get("item_group"),
+            color_name=it.get("color_name"),
+            color_code=it.get("color_code"),
+            size=it.get("size"),
+        ),
+    )
+
     brand = (items[0].brand or "") if items else ""
     currency = sess.config.get("currency", "")
 

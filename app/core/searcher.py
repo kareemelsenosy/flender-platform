@@ -261,6 +261,20 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
 
+def _join_distinct_parts(parts: list[str]) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        key = _slug(text)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return " ".join(out).strip()
+
+
 def _tokenize(value: str) -> list[str]:
     text = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
     return [token for token in text.split() if token and token not in _STOP_TOKENS]
@@ -479,14 +493,13 @@ class ImageSearcher:
 
     def build_manual_search_query(self, item: dict) -> str:
         ctx = self._build_item_context(item)
-        parts = [
+        return _join_distinct_parts([
             ctx["brand"],
             ctx["style_name"],
             ctx["item_group"],
             ctx["color_name"],
             ctx["base_item_code"],
-        ]
-        return " ".join(part for part in parts if part).strip()
+        ])
 
     def _build_exact_query(self, ctx: dict[str, Any]) -> str:
         parts = [
@@ -498,18 +511,24 @@ class ImageSearcher:
         ]
         if not ctx["style_name"] and ctx["barcode"]:
             parts.append(ctx["barcode"])
-        return " ".join(part for part in parts if part).strip()
+        return _join_distinct_parts(parts)
+
+    def _build_phrase_query(self, ctx: dict[str, Any]) -> str:
+        exact = self._build_exact_query(ctx)
+        if not exact:
+            return ""
+        return f"\"{exact}\""
 
     def _build_text_query(self, ctx: dict[str, Any], include_category: bool = True, prefer_base_code: bool = True) -> str:
         item_code = ctx["base_item_code"] if prefer_base_code else ctx["item_code"]
         parts = [ctx["brand"], item_code, ctx["style_name"], ctx["color_name"]]
         if include_category:
             parts.append(ctx["item_group"])
-        return " ".join(part for part in parts if part).strip()
+        return _join_distinct_parts(parts)
 
     def _build_code_query(self, ctx: dict[str, Any]) -> str:
         parts = [ctx["brand"], ctx["base_item_code"], ctx["item_group"], "product image"]
-        return " ".join(part for part in parts if part).strip()
+        return _join_distinct_parts(parts)
 
     def _coerce_hits(self, raw_hits: list[Any]) -> list[SearchHit]:
         hits: list[SearchHit] = []
@@ -572,6 +591,7 @@ class ImageSearcher:
         brand = ctx["brand"]
         broad_query = self._build_text_query(ctx)
         exact_query = self._build_exact_query(ctx)
+        phrase_query = self._build_phrase_query(ctx)
 
         source_results: dict[str, list[SearchHit]] = {}
         lock = threading.Lock()
@@ -599,6 +619,8 @@ class ImageSearcher:
                 )
                 if exact_query and exact_query != broad_query:
                     tasks[f"extra_{ei}_exact"] = lambda dom=d, q=exact_query: self._bing_site_search(dom, q)
+                if phrase_query:
+                    tasks[f"extra_{ei}_phrase"] = lambda dom=d, q=phrase_query: self._bing_site_search(dom, q)
 
         if site_urls:
             seen_domains = set(self.extra_site_urls)
@@ -613,6 +635,10 @@ class ImageSearcher:
                     tasks[f"brand_site_{site_idx}_exact"] = lambda dom=site_url, q=exact_query: self._bing_site_search(
                         dom, q
                     )
+                if phrase_query:
+                    tasks[f"brand_site_{site_idx}_phrase"] = lambda dom=site_url, q=phrase_query: self._bing_site_search(
+                        dom, q
+                    )
                 if ctx["style_name"] and ctx["style_name"].lower() != item_code.lower():
                     tasks[f"brand_site_{site_idx}_style"] = lambda dom=site_url: self._bing_site_search(
                         dom, self._build_text_query(ctx, prefer_base_code=False)
@@ -622,14 +648,20 @@ class ImageSearcher:
             tasks["google"] = lambda q=broad_query: self._google_search(q)
             if exact_query and exact_query != broad_query:
                 tasks["google_exact"] = lambda q=exact_query: self._google_search(q)
+            if phrase_query:
+                tasks["google_phrase"] = lambda q=phrase_query: self._google_search(q)
 
         tasks["bing"] = lambda q=broad_query: self._bing_search(q)
         if exact_query and exact_query != broad_query:
             tasks["bing_exact"] = lambda q=exact_query: self._bing_search(q)
+        if phrase_query:
+            tasks["bing_phrase"] = lambda q=phrase_query: self._bing_search(q)
         tasks["bing_code_only"] = lambda: self._bing_raw(self._build_code_query(ctx)) if item_code else []
         tasks["google_scrape"] = lambda q=broad_query: self._google_images_scrape(q)
         if exact_query and exact_query != broad_query:
             tasks["google_scrape_exact"] = lambda q=exact_query: self._google_images_scrape(q)
+        if phrase_query:
+            tasks["google_scrape_phrase"] = lambda q=phrase_query: self._google_images_scrape(q)
         tasks["ddg"] = lambda q=broad_query: self._duckduckgo_search(q)
         tasks["yahoo"] = lambda q=broad_query: self._yahoo_images_scrape(q)
 
@@ -716,6 +748,10 @@ class ImageSearcher:
             other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)
             if other_colors and not color_matches:
                 score -= 0.1
+            if style_tokens:
+                style_matches = sum(1 for token in style_tokens if token in text_tokens or token in normalized_text)
+                if style_matches >= max(1, min(2, len(style_tokens))) and color_matches:
+                    score += 0.12
 
         # Boost for user-specified priority domains (highest priority)
         for extra_d in self.extra_site_urls:
@@ -778,16 +814,24 @@ class ImageSearcher:
             score += 0.35
         if any(name.startswith("brand_site") and "exact" in name for name in source_names):
             score += 0.14
+        if any(name.startswith("brand_site") and "phrase" in name for name in source_names):
+            score += 0.2
         if any(name.startswith("brand_site") and "style" in name for name in source_names):
             score += 0.2
         if any(name.startswith("extra_") for name in source_names):
             score += 0.45
         if any(name.startswith("extra_") and "exact" in name for name in source_names):
             score += 0.16
+        if any(name.startswith("extra_") and "phrase" in name for name in source_names):
+            score += 0.22
         if "google_exact" in source_names or "google_scrape_exact" in source_names:
             score += 0.18
+        if "google_phrase" in source_names or "google_scrape_phrase" in source_names:
+            score += 0.24
         if "bing_exact" in source_names:
             score += 0.1
+        if "bing_phrase" in source_names:
+            score += 0.14
 
         best_position = min(positions) if positions else 99
         score += max(0.0, 0.06 - (best_position + 1) * 0.01)
