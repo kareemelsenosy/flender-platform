@@ -62,7 +62,7 @@ def test_brand_config_matching_handles_suffix_variants_without_searching_other_b
     assert "americanrag.ae" in called_domains
     assert "on.com" not in called_domains
     assert candidates[0] == official.url
-    assert scores[official.url] > scores[generic.url]
+    assert generic.url not in scores or scores[official.url] > scores[generic.url]
 
 
 def test_review_research_uses_session_priority_domains_and_brand_defaults(

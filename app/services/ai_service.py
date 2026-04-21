@@ -39,7 +39,9 @@ _SEARCH_PERFECTION_RULES = """Non-negotiable match rules:
 - The visible color must match exactly or be an obvious close synonym. If the candidate is clearly a different color, reject it.
 - If item codes differ, do NOT treat the same image as valid unless they share the same normalized base code and only vary by size.
 - When the full exact query already identifies the product, keep that full phrasing as the first search query instead of shortening it too early.
+- Prefer Google/Bing exact-query product hits when they match the item cleanly.
 - Prefer official product pages and clean packshots over marketplaces, logos, banners, thumbnails, close-up detail shots, outsole/bottom-only shots, or lifestyle/editorial images.
+- For footwear, prefer a clean side/front packshot showing the whole shoe or pair on a plain background. Reject close crops, outsole shots, and on-foot/editorial photos if a clean packshot exists.
 """
 
 
@@ -514,7 +516,7 @@ def _should_use_vision_ranking(
     top_1 = top_scores[0] if top_scores else 0.0
     top_2 = top_scores[1] if len(top_scores) > 1 else 0.0
     if strict_visual_category and len(urls) <= _AI_IMAGE_MAX_CANDIDATES:
-        if top_1 >= 0.96 and (top_1 - top_2) >= 0.22:
+        if top_1 >= 0.98 and (top_1 - top_2) >= 0.28 and not visual_ambiguity:
             return False
         return True
     if top_1 >= 0.86 and (top_1 - top_2) >= 0.18:
@@ -564,9 +566,10 @@ Ranking rules:
 1. Exact visible product type must match. Shorts are not t-shirts. Shoes are not bikes or drinks.
 2. Exact visible color match is critical. Wrong color should be rejected.
 3. Prefer clean product photos and official packshots when multiple candidates are otherwise similar.
-4. Prefer a full product view on a plain or clean background over detail crops, outsole/bottom shots, or on-foot/model/lifestyle images.
-5. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
-6. If a candidate looks like the same photo reused for a clearly different item family, discard it.
+4. Prefer the same kind of hero product image that a strict Google/Bing query would show first: full product visible, clean framing, plain background, no distracting styling.
+5. For footwear, prefer a side/front product packshot of the whole shoe or pair. Reject close detail crops, outsole/bottom shots, or on-foot/model/lifestyle images if a clean packshot exists.
+6. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
+7. If a candidate looks like the same photo reused for a clearly different item family, discard it.
 
 Return ONLY valid JSON in this format:
 {{
@@ -650,12 +653,13 @@ Ranking criteria (most important first):
 1. COLOR MATCH IS CRITICAL — The color is "{color_name}". URLs containing this color name or a matching color code should rank highest. URLs showing a DIFFERENT color (e.g., "black" when we need "white") must be EXCLUDED entirely.
 2. URL contains the exact item code/SKU → strongest signal
 3. URLs matching the full exact query wording most closely should rank highest.
-4. URL is from the brand's official domain or a known fashion CDN
-5. URL path suggests a product image (/product/, /products/, /p/, /catalog/, /item/, scene7, cloudfront, akamaized, shopify, cloudinary)
-6. Prefer clean packshots / full product views. De-prioritize close-up detail images, outsole/bottom shots, and on-foot/model/lifestyle shots.
-7. URL does NOT look like a logo, banner, thumbnail, or avatar
-8. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
-9. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
+4. Prefer URLs/results that look like the exact Google/Bing result a user would click first for the full query.
+5. URL is from the brand's official domain or a known fashion CDN
+6. URL path suggests a product image (/product/, /products/, /p/, /catalog/, /item/, scene7, cloudfront, akamaized, shopify, cloudinary)
+7. Prefer clean packshots / full product views. De-prioritize close-up detail images, outsole/bottom shots, and on-foot/model/lifestyle shots.
+8. URL does NOT look like a logo, banner, thumbnail, or avatar
+9. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
+10. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
 
 Return ONLY a JSON array of the URL numbers in order from best to worst:
 [3, 1, 5, 2, 4]
@@ -664,6 +668,7 @@ IMPORTANT:
 - EXCLUDE any URL that clearly shows the WRONG color (different from "{color_name}")
 - EXCLUDE logos, banners, irrelevant images, or wrong product types entirely
 - EXCLUDE close-up detail shots, outsole/bottom views, or on-foot/model/editorial images if a clean product packshot exists
+- For footwear, prefer the clean full-shoe or pair packshot a user would expect from Google/Bing exact search results
 - If one result matches the full exact query clearly better than the others, put it first
 - Only include numbers for URLs that are likely the correct product in the correct color"""
 

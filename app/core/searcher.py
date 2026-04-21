@@ -34,7 +34,7 @@ def _make_http_session() -> requests.Session:
 _HTTP = _make_http_session()
 
 MAX_CANDIDATES = 10
-STRICT_MAX_CANDIDATES = 4
+STRICT_MAX_CANDIDATES = 3
 REQUEST_TIMEOUT = 15
 SEARCH_CACHE_VERSION = 3
 
@@ -243,6 +243,11 @@ _OUTSOLE_SHOT_TERMS = {
 }
 _LIFESTYLE_SHOT_TERMS = {
     "lifestyle", "editorial", "lookbook", "campaign", "worn", "model",
+}
+_STRICT_PREVIEW_SHOT_TERMS = {
+    "closeup", "close-up", "detail", "macro", "texture", "sole", "outsole",
+    "bottom", "underside", "heel", "on-foot", "worn", "model",
+    "editorial", "campaign", "lookbook", "lifestyle",
 }
 _GENERIC_BRAND_TOKENS = {
     "co", "company", "cie", "inc", "ltd", "llc", "group", "official", "brand",
@@ -703,6 +708,104 @@ class ImageSearcher:
                     entry["description"] = hit.description
         return list(combined.values())
 
+    def _strict_hit_priority_pool(self, hit: dict[str, Any]) -> int:
+        source_names = set(hit.get("source_names") or set())
+        if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & source_names:
+            return 0
+        if {"bing_exact", "bing_phrase"} & source_names:
+            return 1
+        if any(
+            (name.startswith("brand_site") or name.startswith("extra_")) and ("exact" in name or "phrase" in name)
+            for name in source_names
+        ):
+            return 2
+        if {"google", "google_scrape"} & source_names:
+            return 3
+        if {"bing", "ddg", "yahoo"} & source_names:
+            return 4
+        return 5
+
+    def _strict_hit_looks_like_variant(self, hit: dict[str, Any]) -> bool:
+        text = " ".join([
+            str(hit.get("url") or ""),
+            str(hit.get("page_url") or ""),
+            str(hit.get("title") or ""),
+            str(hit.get("description") or ""),
+        ]).lower()
+        text_tokens = set(_tokenize(text))
+        return any(term in text_tokens for term in _STRICT_PREVIEW_SHOT_TERMS) or "on-foot" in text or "on foot" in text
+
+    def _strict_candidate_pool(
+        self,
+        hits: list[dict[str, Any]],
+        ctx: dict[str, Any],
+        raw_scores: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        if not hits:
+            return hits
+
+        filtered_hits = list(hits)
+        strict_color_hits = [
+            hit for hit in filtered_hits
+            if not self._is_obvious_wrong_color_hit(hit, ctx)
+        ]
+        if strict_color_hits:
+            filtered_hits = strict_color_hits
+
+        for tier in range(5):
+            pool = [hit for hit in filtered_hits if self._strict_hit_priority_pool(hit) == tier]
+            if not pool:
+                continue
+            ordered_pool = sorted(pool, key=lambda hit: raw_scores.get(hit["url"], 0.0), reverse=True)
+            full_code_slug = _slug(ctx.get("item_code") or "")
+            base_code_slug = _slug(ctx.get("base_item_code") or "")
+            if full_code_slug or base_code_slug:
+                code_hits = []
+                for hit in ordered_pool:
+                    text = " ".join([
+                        str(hit.get("url") or ""),
+                        str(hit.get("page_url") or ""),
+                        str(hit.get("title") or ""),
+                        str(hit.get("description") or ""),
+                    ]).lower()
+                    normalized = _slug(text)
+                    if (
+                        (full_code_slug and full_code_slug in normalized)
+                        or (base_code_slug and base_code_slug in normalized)
+                    ):
+                        code_hits.append(hit)
+                if code_hits:
+                    ordered_pool = code_hits
+                elif tier in (0, 1):
+                    continue
+
+            top_pool_score = raw_scores.get(ordered_pool[0]["url"], 0.0)
+            if top_pool_score < 0.72:
+                continue
+
+            clean_pool = [hit for hit in ordered_pool if not self._strict_hit_looks_like_variant(hit)]
+            if clean_pool:
+                top_clean_score = raw_scores.get(clean_pool[0]["url"], 0.0)
+                if top_clean_score >= 0.55:
+                    return [
+                        hit for hit in clean_pool
+                        if raw_scores.get(hit["url"], 0.0) >= max(0.55, top_clean_score - 0.16)
+                    ]
+            return [
+                hit for hit in ordered_pool
+                if raw_scores.get(hit["url"], 0.0) >= max(0.68, top_pool_score - 0.16)
+            ]
+
+        global_clean_hits = [hit for hit in filtered_hits if not self._strict_hit_looks_like_variant(hit)]
+        if global_clean_hits:
+            ordered_clean_hits = sorted(global_clean_hits, key=lambda hit: raw_scores.get(hit["url"], 0.0), reverse=True)
+            top_clean_score = raw_scores.get(ordered_clean_hits[0]["url"], 0.0)
+            return [
+                hit for hit in ordered_clean_hits
+                if raw_scores.get(hit["url"], 0.0) >= max(0.55, top_clean_score - 0.16)
+            ]
+        return filtered_hits
+
     def search(self, item: dict, ai_queries: list[str] | None = None) -> tuple[list[str], dict[str, float]]:
         """
         Search for product images — all sources fire in parallel (no sequential waits).
@@ -801,47 +904,12 @@ class ImageSearcher:
                     pass
 
         combined_hits = self._aggregate_hits(source_results)
-        if ctx.get("strict_query"):
-            google_priority_hits = [
-                hit for hit in combined_hits
-                if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & set(hit.get("source_names") or set())
-            ]
-            bing_priority_hits = [
-                hit for hit in combined_hits
-                if {"bing_exact", "bing_phrase"} & set(hit.get("source_names") or set())
-            ]
-            official_priority_hits = [
-                hit for hit in combined_hits
-                if any(
-                    name.startswith("brand_site") or name.startswith("extra_")
-                    for name in (hit.get("source_names") or set())
-                )
-            ]
-            if google_priority_hits:
-                combined_hits = google_priority_hits + [
-                    hit for hit in combined_hits
-                    if hit not in google_priority_hits
-                ]
-            elif bing_priority_hits:
-                combined_hits = bing_priority_hits + [
-                    hit for hit in combined_hits
-                    if hit not in bing_priority_hits
-                ]
-            elif official_priority_hits:
-                combined_hits = official_priority_hits + [
-                    hit for hit in combined_hits
-                    if hit not in official_priority_hits
-                ]
-
-            strict_color_hits = [
-                hit for hit in combined_hits
-                if not self._is_obvious_wrong_color_hit(hit, ctx)
-            ]
-            if strict_color_hits:
-                combined_hits = strict_color_hits
         raw_scores = {}
         for hit in combined_hits:
             raw_scores[hit["url"]] = self._score_hit(hit, ctx)
+        if ctx.get("strict_query"):
+            combined_hits = self._strict_candidate_pool(combined_hits, ctx, raw_scores)
+            raw_scores = {hit["url"]: raw_scores[hit["url"]] for hit in combined_hits}
 
         ranked_urls = sorted(
             [hit["url"] for hit in combined_hits],
@@ -851,7 +919,7 @@ class ImageSearcher:
         max_candidates = STRICT_MAX_CANDIDATES if ctx.get("strict_query") else self.max_candidates
         if ctx.get("strict_query") and ranked_urls:
             top_score = raw_scores[ranked_urls[0]]
-            keep_threshold = max(0.55, top_score - 0.22)
+            keep_threshold = max(0.68, top_score - 0.14)
             filtered_ranked_urls = [url for url in ranked_urls if raw_scores[url] >= keep_threshold]
             ranked_urls = filtered_ranked_urls or ranked_urls
         candidates = ranked_urls[:max_candidates]
@@ -1030,6 +1098,14 @@ class ImageSearcher:
             if style_matches == 0 and base_code_slug not in normalized_text:
                 score -= 0.08
 
+        exact_tokens = ctx.get("exact_query_tokens") or []
+        exact_matches = sum(1 for token in exact_tokens if token in text_tokens or token in normalized_text)
+        exact_ratio = (exact_matches / len(exact_tokens)) if exact_tokens else 0.0
+        if exact_ratio >= 0.8:
+            score += 0.18
+        elif exact_ratio >= 0.6:
+            score += 0.08
+
         color_code = ctx.get("color_code") or ""
         color_code_slug = _slug(color_code)
         if color_code_slug and color_code_slug in normalized_text:
@@ -1085,20 +1161,20 @@ class ImageSearcher:
         if "mm.bing.net" in url.lower() or "th.bing.com" in url.lower():
             score -= 0.12
         if any(term in text_tokens for term in _PREFERRED_PRODUCT_SHOT_TERMS):
-            score += 0.08
+            score += 0.12
         if any(term in text_tokens for term in _DETAIL_SHOT_TERMS) or "close-up" in lower:
-            score -= 0.14
+            score -= 0.22 if ctx.get("strict_query") else 0.14
         if any(term in text_tokens for term in _OUTSOLE_SHOT_TERMS):
-            score -= 0.18
+            score -= 0.28 if ctx.get("strict_query") else 0.18
         if any(term in text_tokens for term in _LIFESTYLE_SHOT_TERMS) or "on-foot" in lower or "on foot" in lower:
-            score -= 0.16
+            score -= 0.24 if ctx.get("strict_query") else 0.16
 
         category_family = ctx.get("category_family")
         if category_family:
             family_terms = _CATEGORY_FAMILY_TERMS.get(category_family, set())
             family_hits = {token for token in text_tokens if token in family_terms}
             if family_hits:
-                score += 0.35
+                score += 0.42
             conflicting_hits = set()
             for other_family, other_terms in _CATEGORY_FAMILY_TERMS.items():
                 if other_family == category_family:
@@ -1107,10 +1183,10 @@ class ImageSearcher:
                 if matched:
                     conflicting_hits |= matched
             if conflicting_hits and not family_hits:
-                score -= 0.65 if ctx.get("strict_query") else 0.45
+                score -= 0.9 if ctx.get("strict_query") else 0.45
             negative_terms = _NEGATIVE_HINT_TERMS.get(category_family, set())
             if any(token in text_tokens for token in negative_terms):
-                score -= 0.4
+                score -= 0.55 if ctx.get("strict_query") else 0.4
 
         if any(token in text_tokens for token in _LOW_QUALITY_TERMS):
             score -= 0.25
@@ -1130,13 +1206,20 @@ class ImageSearcher:
         if any(name.startswith("extra_") and "phrase" in name for name in source_names):
             score += 0.22
         if "google_exact" in source_names or "google_scrape_exact" in source_names:
-            score += 0.26
+            score += 0.34
         if "google_phrase" in source_names or "google_scrape_phrase" in source_names:
-            score += 0.32
+            score += 0.38
         if "bing_exact" in source_names:
-            score += 0.16
+            score += 0.26
         if "bing_phrase" in source_names:
-            score += 0.2
+            score += 0.3
+        if ctx.get("strict_query") and (
+            {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase", "bing_exact", "bing_phrase"} & set(source_names)
+        ):
+            if exact_ratio < 0.45:
+                score -= 0.24
+            if not full_code_slug or full_code_slug not in normalized_text:
+                score -= 0.12
 
         best_position = min(positions) if positions else 99
         score += max(0.0, 0.06 - (best_position + 1) * 0.01)

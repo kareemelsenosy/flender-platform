@@ -67,7 +67,7 @@ def test_ai_rank_urls_skips_vision_when_metadata_already_has_clear_winner(monkey
         },
         "ON",
         scores={
-            urls[0]: 0.97,
+            urls[0]: 0.99,
             urls[1]: 0.36,
         },
     )

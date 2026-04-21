@@ -98,7 +98,7 @@ def test_search_penalizes_wrong_garment_type_even_when_code_matches(monkeypatch)
     })
 
     assert candidates[0] == correct_shorts.url
-    assert scores[correct_shorts.url] > scores[wrong_tshirt.url]
+    assert wrong_tshirt.url not in scores or scores[correct_shorts.url] > scores[wrong_tshirt.url]
 
 
 def test_search_collapses_same_image_resize_variants(monkeypatch):
@@ -208,7 +208,7 @@ def test_search_prefers_quoted_phrase_hits_for_full_manual_query(monkeypatch):
     })
 
     assert candidates[0] == exact.url
-    assert scores[exact.url] > scores[generic.url]
+    assert generic.url not in scores or scores[exact.url] > scores[generic.url]
 
 
 def test_search_filters_obvious_wrong_color_variants_in_strict_mode(monkeypatch):
@@ -297,9 +297,9 @@ def test_search_prefers_clean_packshot_over_detail_or_outsole_views(monkeypatch)
     })
 
     assert candidates[0] == packshot.url
-    assert candidates.index(packshot.url) < candidates.index(detail.url)
-    assert candidates.index(packshot.url) < candidates.index(outsole.url)
-    assert candidates.index(packshot.url) < candidates.index(on_foot.url)
+    assert detail.url not in candidates
+    assert outsole.url not in candidates
+    assert on_foot.url not in candidates
 
 
 def test_strict_search_caps_candidates_to_few_high_quality_options(monkeypatch):
@@ -331,7 +331,7 @@ def test_strict_search_caps_candidates_to_few_high_quality_options(monkeypatch):
         "item_group": "Loafers",
     })
 
-    assert len(candidates) <= 4
+    assert len(candidates) <= 3
 
 
 def test_strict_search_prefers_google_exact_pool_before_broad_matches(monkeypatch):
@@ -372,6 +372,98 @@ def test_strict_search_prefers_google_exact_pool_before_broad_matches(monkeypatc
 
     assert candidates[0] == google_exact.url
     assert broad_wrong.url not in candidates
+
+
+def test_strict_search_uses_google_or_bing_exact_pool_before_broad_sources(monkeypatch):
+    searcher = ImageSearcher()
+
+    google_exact = SearchHit(
+        url="https://aurelien.com/images/yacht-loafers-chocolate-clean.jpg",
+        page_url="https://aurelien.com/products/yacht-loafers-chocolate",
+        title="Aurélien Lady Chocolate Yacht Loafers YLWCHT-3800",
+        description="Official clean packshot",
+    )
+    bing_exact = SearchHit(
+        url="https://aurelien.com/images/yacht-loafers-chocolate-bing-clean.jpg",
+        page_url="https://aurelien.com/products/yacht-loafers-chocolate",
+        title="Aurélien Lady Chocolate Yacht Loafers YLWCHT-3800",
+        description="Official clean Bing packshot",
+    )
+    broad_good = SearchHit(
+        url="https://example.com/images/yacht-loafers-chocolate-marketplace.jpg",
+        page_url="https://example.com/products/yacht-loafers-chocolate",
+        title="Aurélien Lady Chocolate Yacht Loafers",
+        description="Marketplace listing",
+    )
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(
+        searcher,
+        "_bing_search",
+        lambda query: [bing_exact] if query.startswith("\"Aurélien Lady Chocolate Yacht Loafers") else [broad_good],
+    )
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(
+        searcher,
+        "_google_images_scrape",
+        lambda query: [google_exact] if query.startswith("\"Aurélien Lady Chocolate Yacht Loafers") else [broad_good],
+    )
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [broad_good])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [broad_good])
+
+    candidates, _scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Chocolate Yacht Loafers",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Loafers",
+    })
+
+    assert candidates
+    assert candidates[0] == google_exact.url
+    assert broad_good.url not in candidates
+
+
+def test_strict_search_falls_back_to_bing_exact_pool_when_google_exact_missing(monkeypatch):
+    searcher = ImageSearcher()
+
+    bing_exact = SearchHit(
+        url="https://aurelien.com/images/yacht-loafers-chocolate-bing-clean.jpg",
+        page_url="https://aurelien.com/products/yacht-loafers-chocolate",
+        title="Aurélien Lady Chocolate Yacht Loafers YLWCHT-3800",
+        description="Official clean Bing packshot",
+    )
+    broad_good = SearchHit(
+        url="https://example.com/images/yacht-loafers-chocolate-marketplace.jpg",
+        page_url="https://example.com/products/yacht-loafers-chocolate",
+        title="Aurélien Lady Chocolate Yacht Loafers",
+        description="Marketplace listing",
+    )
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(
+        searcher,
+        "_bing_search",
+        lambda query: [bing_exact] if query.startswith("\"Aurélien Lady Chocolate Yacht Loafers") else [broad_good],
+    )
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [broad_good])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [broad_good])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [broad_good])
+
+    candidates, _scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Chocolate Yacht Loafers",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Loafers",
+    })
+
+    assert candidates
+    assert candidates[0] == bing_exact.url
+    assert broad_good.url not in candidates
 
 
 def test_item_sort_key_keeps_same_style_and_base_code_grouped_by_size():
