@@ -788,6 +788,77 @@ class ImageSearcher:
             return 4
         return 5
 
+    def _hit_matches_color_cluster(self, hit: dict[str, Any], cluster: set[str]) -> bool:
+        """True when the hit's text contains at least one token from the
+        given color cluster — or contains no color words at all (so we don't
+        drop neutral packshots that simply omit color text)."""
+        text = " ".join([
+            str(hit.get("url") or ""),
+            str(hit.get("title") or ""),
+            str(hit.get("description") or ""),
+        ]).lower()
+        text_tokens = set(_tokenize(text))
+        if not (text_tokens & _COLOR_WORDS):
+            return True  # no color mention → let it through, AI will pick
+        return bool(text_tokens & cluster)
+
+    def _dominant_color_cluster(
+        self,
+        hits: list[dict[str, Any]],
+        ctx: dict[str, Any],
+        raw_scores: dict[str, float],
+        top_k: int = 12,
+    ) -> set[str] | None:
+        """Tally the color words that appear most frequently across the top-K
+        scored hits, weighted by each hit's score.
+
+        Returns the dominant color cluster (expanded via equivalence classes)
+        only when:
+          - The item has a color signal to validate against.
+          - The item's color family is clearly the most-common one in results
+            (it wins the popularity vote).
+
+        Returns ``None`` when the color distribution is too mixed to call,
+        so callers keep using normal logic.
+        """
+        color_tokens = ctx.get("color_tokens") or []
+        if not color_tokens:
+            return None
+
+        # Work on the top-K hits by score so noise from long-tail results
+        # doesn't skew the tally.
+        top_hits = sorted(hits, key=lambda h: raw_scores.get(h["url"], 0.0), reverse=True)[:top_k]
+
+        # Count each color token weighted by the hit's score.
+        tally: dict[str, float] = {}
+        for hit in top_hits:
+            text = " ".join([
+                str(hit.get("url") or ""),
+                str(hit.get("title") or ""),
+                str(hit.get("description") or ""),
+            ]).lower()
+            hit_score = max(0.1, raw_scores.get(hit["url"], 0.1))
+            for token in _tokenize(text):
+                if token in _COLOR_WORDS:
+                    tally[token] = tally.get(token, 0.0) + hit_score
+
+        if not tally:
+            return None
+
+        # Expand the item's acceptable tokens (chocolate → {brown, mocha, …})
+        acceptable = _expand_color_tokens(color_tokens)
+
+        # Sum tally within the item's color family vs. every other family.
+        family_score = sum(v for k, v in tally.items() if k in acceptable)
+        other_score = sum(v for k, v in tally.items() if k not in acceptable)
+
+        # The item's color family must clearly dominate the results — if the
+        # opposition is stronger, we can't call it and return None.
+        if family_score <= 0.05 or other_score > family_score * 1.2:
+            return None
+
+        return acceptable
+
     def _strict_hit_looks_like_variant(self, hit: dict[str, Any]) -> bool:
         text = " ".join([
             str(hit.get("url") or ""),
@@ -814,6 +885,19 @@ class ImageSearcher:
         ]
         if strict_color_hits:
             filtered_hits = strict_color_hits
+
+        # Dominant-color pass: tally how many hits each color family captures
+        # across the top results (score-weighted).  When the item's own color
+        # clearly dominates, use the validated expanded set to re-filter and
+        # drop stragglers that the initial pass missed.
+        dominant_cluster = self._dominant_color_cluster(hits, ctx, raw_scores)
+        if dominant_cluster:
+            dominant_hits = [
+                hit for hit in filtered_hits
+                if self._hit_matches_color_cluster(hit, dominant_cluster)
+            ]
+            if dominant_hits:
+                filtered_hits = dominant_hits
 
         # Consensus-first: when the same URL shows up on BOTH Google and Bing
         # that's the strongest "what a human manually googling would see" signal.

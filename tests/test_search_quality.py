@@ -795,3 +795,58 @@ def test_color_equivalence_still_rejects_unrelated_colors():
     })
     assert searcher._is_obvious_wrong_color_hit(wrong_black, ctx) is True
     assert searcher._is_obvious_wrong_color_hit(right_brown, ctx) is False
+
+
+def test_dominant_color_cluster_picks_item_color_when_it_dominates(monkeypatch):
+    """When most top results contain 'brown' (≈ 'chocolate'), the dominant
+    cluster includes the item's color family and the search returns only
+    those matching hits, dropping the black outlier."""
+    searcher = ImageSearcher()
+
+    chocolate_a = SearchHit(
+        url="https://brand.example/loafer-chocolate-1.jpg",
+        page_url="https://brand.example/loafer-chocolate",
+        title="Aurélien Yacht Loafer YLWCHT-3800 chocolate",
+        description="Chocolate leather loafer",
+    )
+    brown_b = SearchHit(
+        url="https://brand.example/loafer-brown-2.jpg",
+        page_url="https://brand.example/loafer-brown",
+        title="Aurélien Yacht Loafer YLWCHT-3800 brown",
+        description="Brown leather loafer",
+    )
+    mocha_c = SearchHit(
+        url="https://brand.example/loafer-mocha-3.jpg",
+        page_url="https://brand.example/loafer-mocha",
+        title="Aurélien Yacht Loafer YLWCHT-3800 mocha",
+        description="Mocha leather loafer",
+    )
+    black_outlier = SearchHit(
+        url="https://brand.example/loafer-black-4.jpg",
+        page_url="https://brand.example/loafer-black",
+        title="Aurélien Yacht Loafer YLWCHT-3800 black",
+        description="Black leather loafer",
+    )
+
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(
+        searcher, "_bing_search",
+        lambda query: [chocolate_a, brown_b, mocha_c, black_outlier],
+    )
+    monkeypatch.setattr(
+        searcher, "_google_images_scrape",
+        lambda query: [chocolate_a, brown_b, mocha_c],
+    )
+
+    candidates, scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Yacht Loafer",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    })
+
+    # Chocolate/brown/mocha are all in the same equivalence class — should survive
+    assert chocolate_a.url in candidates or brown_b.url in candidates
+    # Black is a completely different color family — should be filtered out
+    assert black_outlier.url not in candidates
