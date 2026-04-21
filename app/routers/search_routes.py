@@ -23,6 +23,8 @@ from app.services.file_safety import normalize_uploaded_name, unique_path
 from app.services.ai_service import (
     ai_available,
     ai_build_search_queries,
+    ai_describe_context_image,
+    ai_describe_context_text,
     compose_search_instructions,
     ai_optimize_search_query,
     ai_rank_urls,
@@ -355,6 +357,11 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
         group_entries = list(grouped_items.values())
 
+        # Collect all results first so we can dedup `approved_url` across
+        # different base-item-codes once every search has completed. Different
+        # item codes MUST NOT end up with the same picture.
+        completed_results: list[tuple[dict, list[str], dict[str, float]]] = []
+
         with ThreadPoolExecutor(max_workers=max(1, min(workers, len(group_entries) or 1))) as executor:
             futures = {}
             for grouped in group_entries:
@@ -371,30 +378,60 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 except Exception:
                     pass
 
+                grouped = futures[future]
                 try:
                     candidates, scores, _from_cache = future.result()
-                    grouped = futures[future]
-                    best = max(candidates, key=lambda u: scores.get(u, 0)) if candidates else ""
-                    for source_item in grouped["items"]:
-                        db_item = db.get(UniqueItem, source_item.id)
-                        if not db_item:
-                            continue
-                        db_item.candidates = candidates
-                        db_item.scores = scores
-                        db_item.search_status = "done"
-                        db_item.approved_url = best
-                        db_item.review_status = "approved"
-                        db_item.auto_selected = True
-                    db.commit()
+                    completed_results.append((grouped, candidates, scores))
                 except Exception as e:
                     logger.error(f"Search error: {e}")
 
-                grouped = futures[future]
                 _search_progress[session_id]["done"] += len(grouped["items"])
                 label = grouped["label"]
                 if len(grouped["items"]) > 1:
                     label = f"{label} (+{len(grouped['items']) - 1})"
                 _search_progress[session_id]["current"] = label
+
+        # Dedup: give the highest-confidence group first pick of its best URL,
+        # then later groups must pick a URL not yet claimed by another group.
+        completed_results.sort(
+            key=lambda gr: max(gr[2].values()) if gr[2] else 0.0,
+            reverse=True,
+        )
+        claimed_urls: set[str] = set()
+        for grouped, candidates, scores in completed_results:
+            sorted_urls = sorted(candidates, key=lambda u: scores.get(u, 0.0), reverse=True)
+            chosen = ""
+            for url in sorted_urls:
+                if url and url not in claimed_urls:
+                    chosen = url
+                    break
+            if chosen:
+                claimed_urls.add(chosen)
+
+            # Reorder candidates so the item's own chosen URL is first, then
+            # any URLs no other group has claimed, then already-claimed URLs
+            # (still useful as manual overrides in the review UI).
+            free = [u for u in sorted_urls if u == chosen or u not in claimed_urls]
+            taken = [u for u in sorted_urls if u != chosen and u in claimed_urls]
+            reordered = [u for u in ([chosen] if chosen else []) + free + taken]
+            seen: set[str] = set()
+            final_candidates: list[str] = []
+            for url in reordered:
+                if url and url not in seen:
+                    seen.add(url)
+                    final_candidates.append(url)
+
+            for source_item in grouped["items"]:
+                db_item = db.get(UniqueItem, source_item.id)
+                if not db_item:
+                    continue
+                db_item.candidates = final_candidates
+                db_item.scores = scores
+                db_item.search_status = "done"
+                db_item.approved_url = chosen
+                db_item.review_status = "approved"
+                db_item.auto_selected = True
+        db.commit()
 
         # Update session status — only if this search generation is still current
         # (guards against a remap happening mid-search that bumped search_gen)
@@ -606,6 +643,156 @@ async def upload_images_for_search(
 
     logger.info(f"Session {session_id}: uploaded {image_count} images to {img_dir}")
     return JSONResponse({"ok": True, "folder_path": str(img_dir), "image_count": image_count})
+
+
+_CONTEXT_TEXT_EXTS = {".txt", ".md", ".csv", ".tsv", ".json", ".html", ".htm"}
+_CONTEXT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+_CONTEXT_SPREADSHEET_EXTS = {".xlsx", ".xls"}
+_MAX_CONTEXT_FILE = 20 * 1024 * 1024  # 20 MB
+
+
+def _extract_spreadsheet_text(content: bytes, ext: str) -> str:
+    """Read rows from an xlsx/xls file and return a compact text preview."""
+    try:
+        if ext == ".xlsx":
+            from openpyxl import load_workbook  # type: ignore
+
+            wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            try:
+                parts: list[str] = []
+                for ws in wb.worksheets[:4]:
+                    rows: list[str] = []
+                    for row in ws.iter_rows(values_only=True):
+                        values = [str(cell or "").replace("\n", " ").strip() for cell in row[:40]]
+                        if not any(values):
+                            continue
+                        rows.append(",".join(value.replace(",", ";") for value in values))
+                        if len(rows) >= 80:
+                            break
+                    if rows:
+                        parts.append(f"# Sheet: {ws.title}\n" + "\n".join(rows))
+                return "\n\n".join(parts)
+            finally:
+                wb.close()
+
+        import pandas as pd
+        xls = pd.ExcelFile(io.BytesIO(content))
+        parts: list[str] = []
+        for sheet_name in xls.sheet_names[:4]:
+            df = xls.parse(sheet_name, nrows=80)
+            parts.append(f"# Sheet: {sheet_name}\n{df.to_csv(index=False)}")
+        return "\n\n".join(parts)
+    except Exception as exc:
+        logger.warning(f"context-file: spreadsheet extract failed: {exc}")
+        return ""
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader  # type: ignore
+        except Exception:
+            return ""
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        chunks: list[str] = []
+        for page in reader.pages[:15]:
+            try:
+                chunks.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n".join(chunks)
+    except Exception as exc:
+        logger.warning(f"context-file: pdf extract failed: {exc}")
+        return ""
+
+
+def _mime_for_ext(ext: str) -> str:
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }.get(ext, "image/jpeg")
+
+
+@router.post("/search/{session_id}/describe-context")
+async def describe_context_file(
+    session_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: DBSession = Depends(get_db),
+):
+    """Accept a user-supplied reference file (image/pdf/xlsx/txt) that explains
+    what items we're searching for. Returns an AI summary the caller can paste
+    into the AI Search Instructions textarea."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    if not ai_available():
+        return JSONResponse({"error": "AI service not configured"}, status_code=503)
+
+    content = await file.read()
+    if not content:
+        return JSONResponse({"error": "Empty file"}, status_code=400)
+    if len(content) > _MAX_CONTEXT_FILE:
+        return JSONResponse({"error": "File exceeds 20 MB limit"}, status_code=413)
+
+    _display_name, safe_name = normalize_uploaded_name(file.filename or "context", default="context")
+    ext = os.path.splitext(safe_name)[1].lower()
+
+    summary: str | None = None
+    source_kind = "unknown"
+
+    try:
+        if ext in _CONTEXT_IMAGE_EXTS:
+            source_kind = "image"
+            summary = ai_describe_context_image(content, mime_type=_mime_for_ext(ext))
+        elif ext == ".pdf":
+            source_kind = "pdf"
+            text = _extract_pdf_text(content)
+            if text.strip():
+                summary = ai_describe_context_text(text, filename=file.filename or "context.pdf")
+            else:
+                return JSONResponse({
+                    "error": "Could not read text from this PDF. Try converting it to an image or text file first.",
+                }, status_code=415)
+        elif ext in _CONTEXT_SPREADSHEET_EXTS:
+            source_kind = "spreadsheet"
+            text = _extract_spreadsheet_text(content, ext)
+            if text.strip():
+                summary = ai_describe_context_text(text, filename=file.filename or "context.xlsx")
+        elif ext in _CONTEXT_TEXT_EXTS or not ext:
+            source_kind = "text"
+            try:
+                text = content.decode("utf-8", errors="replace")
+            except Exception:
+                text = ""
+            if text.strip():
+                summary = ai_describe_context_text(text, filename=file.filename or "context.txt")
+        else:
+            return JSONResponse({
+                "error": f"Unsupported file type '{ext}'. Use an image, PDF, spreadsheet, or text file.",
+            }, status_code=415)
+    except Exception as exc:
+        logger.exception(f"describe-context failed for session {session_id}: {exc}")
+        return JSONResponse({"error": "Failed to analyze the file."}, status_code=500)
+
+    summary = (summary or "").strip()
+    if not summary:
+        return JSONResponse({"error": "AI did not return a description. Try a different file."}, status_code=502)
+
+    logger.info(f"Session {session_id}: generated context summary from {source_kind} ({len(summary)} chars)")
+    return JSONResponse({"ok": True, "description": summary, "source": source_kind, "filename": file.filename})
 
 
 # ── Per-session routes ────────────────────────────────────────────────────────

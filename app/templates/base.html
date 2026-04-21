@@ -1245,8 +1245,10 @@
     const cache = {};
     const bar = document.getElementById('nav-progress');
     let barTimer = null;
-    // Skip only non-GET endpoints or external URLs
-    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip'];
+    // Skip only non-GET endpoints or external URLs.
+    // /review uses its own full-page layout (no .main-content shell) and reacts
+    // poorly to document.write swaps — always do a normal browser nav for it.
+    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip', '/review'];
 
     function canInstantNav(href) {
       try {
@@ -1295,6 +1297,10 @@
     }
 
     async function navigate(href) {
+      if (!canInstantNav(href)) {
+        location.href = href;
+        return;
+      }
       const url = new URL(href, location.origin);
       const key = url.pathname + url.search;
       showBar();

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id, get_current_user_id_db
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
-from app.core.searcher import ImageSearcher, split_and_normalize_domains
+from app.core.searcher import ImageSearcher, item_sort_key, split_and_normalize_domains
 from app.database import get_db
 from app.templates_config import templates
 from app.models import BrandSearchConfig, Session, UniqueItem
@@ -287,7 +287,19 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
         UniqueItem.auto_selected,
     ).filter(
         UniqueItem.session_id == session_id
-    ).order_by(UniqueItem.id.asc()).all()
+    ).all()
+    # Sort so similar styles sit under each other (brand -> style -> base code -> color)
+    items = sorted(
+        items,
+        key=lambda it: item_sort_key(
+            brand=it.brand,
+            style_name=it.style_name,
+            item_code=it.item_code,
+            item_group=it.item_group,
+            color_name=it.color_name,
+            color_code=it.color_code,
+        ),
+    )
     state = {}
     # Build group info: item_group -> list of item keys
     groups = {}

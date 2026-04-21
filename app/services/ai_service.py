@@ -705,3 +705,45 @@ Return ONLY valid JSON in this format:
 def ai_available() -> bool:
     """Check if any AI service is configured."""
     return bool(GEMINI_API_KEY or CLAUDE_API_KEY)
+
+
+_CONTEXT_PROMPT = (
+    "You are helping an image-search tool find the correct product photos for a wholesale order sheet. "
+    "The user has uploaded a reference file that describes the items we're searching for.\n\n"
+    "Write a short, high-signal brief (4-8 bullet points, <= 120 words total) that the image searcher can use.\n"
+    "Focus on:\n"
+    "- What category of product these are (e.g., men's basketball sneakers, wool beanies, leather handbags)\n"
+    "- Gender/age target if present\n"
+    "- Brands/style families mentioned\n"
+    "- Distinguishing visual features (colorways, materials, logos, silhouettes)\n"
+    "- Any disambiguation hints (e.g., 'not the slim-fit variant', 'current season only')\n\n"
+    "Do NOT invent details that aren't in the source. Write plain bullet points with a leading '- '. "
+    "Skip headings and introductions."
+)
+
+
+def ai_describe_context_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> str | None:
+    """Use vision AI to describe a product-context image the user uploaded."""
+    if not ai_available() or not image_bytes:
+        return None
+    payload = [{
+        "index": 1,
+        "url": "user-uploaded context image",
+        "data": image_bytes,
+        "mime_type": mime_type or "image/jpeg",
+    }]
+    return _call_ai_vision(_CONTEXT_PROMPT, payload, max_tokens=600)
+
+
+def ai_describe_context_text(text: str, filename: str = "") -> str | None:
+    """Summarize a text-based context file (txt/csv/xlsx-extracted) for the image searcher."""
+    if not ai_available() or not (text or "").strip():
+        return None
+    snippet = text.strip()
+    if len(snippet) > 8000:
+        snippet = snippet[:8000] + "\n[... truncated ...]"
+    prompt = (
+        _CONTEXT_PROMPT
+        + f"\n\nSource file: {filename or 'uploaded document'}\n---\n{snippet}\n---"
+    )
+    return _call_ai(prompt, max_tokens=600)

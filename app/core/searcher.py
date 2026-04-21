@@ -200,6 +200,53 @@ _TRANSIENT_QUERY_PARAMS = {
 }
 _SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
 _TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
+_SIZE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d+)?)")
+
+
+def normalize_base_item_code(item_code: str | None, item_group: str | None = None, style_name: str | None = None) -> str:
+    code = str(item_code or "").strip()
+    if not code:
+        return ""
+    text = " ".join(filter(None, [item_group, style_name])).lower()
+    footwear_hint = any(term in text for term in _CATEGORY_FAMILY_TERMS.get("footwear", set()))
+    m = _SIZE_SUFFIX_RE.match(code)
+    if m:
+        return m.group(1)
+    if footwear_hint:
+        m = _TRAILING_SIZE_TOKEN_RE.match(code)
+        if m:
+            return m.group(1)
+    return code
+
+
+def item_sort_key(
+    *,
+    brand: str | None,
+    style_name: str | None,
+    item_code: str | None,
+    item_group: str | None,
+    color_name: str | None,
+    color_code: str | None,
+    size: str | None = None,
+) -> tuple:
+    """Sort key mirroring the sample xlsx layout:
+    Brand -> Style Name -> Base Item Code (size suffix stripped) -> Color -> Size -> Raw code.
+    Keeps identical styles adjacent and their colors/sizes in a stable order.
+    """
+    base_code = normalize_base_item_code(item_code, item_group, style_name)
+    color_label = (color_name or color_code or "").strip()
+    size_str = str(size or "").strip()
+    size_match = _SIZE_NUMERIC_RE.search(size_str)
+    size_num = float(size_match.group(1)) if size_match else float("inf")
+    return (
+        (brand or "").strip().lower(),
+        (style_name or item_group or "").strip().lower(),
+        base_code.lower(),
+        color_label.lower(),
+        size_num,
+        size_str.lower(),
+        (item_code or "").strip().lower(),
+    )
 
 
 @dataclass
@@ -441,6 +488,18 @@ class ImageSearcher:
         ]
         return " ".join(part for part in parts if part).strip()
 
+    def _build_exact_query(self, ctx: dict[str, Any]) -> str:
+        parts = [
+            ctx["brand"],
+            ctx["style_name"],
+            ctx["item_group"],
+            ctx["color_name"],
+            ctx["base_item_code"],
+        ]
+        if not ctx["style_name"] and ctx["barcode"]:
+            parts.append(ctx["barcode"])
+        return " ".join(part for part in parts if part).strip()
+
     def _build_text_query(self, ctx: dict[str, Any], include_category: bool = True, prefer_base_code: bool = True) -> str:
         item_code = ctx["base_item_code"] if prefer_base_code else ctx["item_code"]
         parts = [ctx["brand"], item_code, ctx["style_name"], ctx["color_name"]]
@@ -511,6 +570,8 @@ class ImageSearcher:
         ctx = self._build_item_context(item)
         item_code = ctx["item_code"]
         brand = ctx["brand"]
+        broad_query = self._build_text_query(ctx)
+        exact_query = self._build_exact_query(ctx)
 
         source_results: dict[str, list[SearchHit]] = {}
         lock = threading.Lock()
@@ -534,8 +595,10 @@ class ImageSearcher:
             d = normalize_search_domain(extra_domain)
             if d:
                 tasks[f"extra_{ei}"] = lambda dom=d: self._bing_site_search(
-                    dom, self._build_text_query(ctx)
+                    dom, broad_query
                 )
+                if exact_query and exact_query != broad_query:
+                    tasks[f"extra_{ei}_exact"] = lambda dom=d, q=exact_query: self._bing_site_search(dom, q)
 
         if site_urls:
             seen_domains = set(self.extra_site_urls)
@@ -544,21 +607,31 @@ class ImageSearcher:
                     continue
                 seen_domains.add(site_url)
                 tasks[f"brand_site_{site_idx}"] = lambda dom=site_url: self._bing_site_search(
-                    dom, self._build_text_query(ctx)
+                    dom, broad_query
                 )
+                if exact_query and exact_query != broad_query:
+                    tasks[f"brand_site_{site_idx}_exact"] = lambda dom=site_url, q=exact_query: self._bing_site_search(
+                        dom, q
+                    )
                 if ctx["style_name"] and ctx["style_name"].lower() != item_code.lower():
                     tasks[f"brand_site_{site_idx}_style"] = lambda dom=site_url: self._bing_site_search(
                         dom, self._build_text_query(ctx, prefer_base_code=False)
                     )
 
         if self.google_api_key and self.google_cse_id:
-            tasks["google"] = lambda: self._google_search(self._build_text_query(ctx))
+            tasks["google"] = lambda q=broad_query: self._google_search(q)
+            if exact_query and exact_query != broad_query:
+                tasks["google_exact"] = lambda q=exact_query: self._google_search(q)
 
-        tasks["bing"] = lambda: self._bing_search(self._build_text_query(ctx))
+        tasks["bing"] = lambda q=broad_query: self._bing_search(q)
+        if exact_query and exact_query != broad_query:
+            tasks["bing_exact"] = lambda q=exact_query: self._bing_search(q)
         tasks["bing_code_only"] = lambda: self._bing_raw(self._build_code_query(ctx)) if item_code else []
-        tasks["google_scrape"] = lambda: self._google_images_scrape(self._build_text_query(ctx))
-        tasks["ddg"] = lambda: self._duckduckgo_search(self._build_text_query(ctx))
-        tasks["yahoo"] = lambda: self._yahoo_images_scrape(self._build_text_query(ctx))
+        tasks["google_scrape"] = lambda q=broad_query: self._google_images_scrape(q)
+        if exact_query and exact_query != broad_query:
+            tasks["google_scrape_exact"] = lambda q=exact_query: self._google_images_scrape(q)
+        tasks["ddg"] = lambda q=broad_query: self._duckduckgo_search(q)
+        tasks["yahoo"] = lambda q=broad_query: self._yahoo_images_scrape(q)
 
         # Fire all sources at the same time
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -703,10 +776,18 @@ class ImageSearcher:
 
         if any(name.startswith("brand_site") and "style" not in name for name in source_names):
             score += 0.35
+        if any(name.startswith("brand_site") and "exact" in name for name in source_names):
+            score += 0.14
         if any(name.startswith("brand_site") and "style" in name for name in source_names):
             score += 0.2
         if any(name.startswith("extra_") for name in source_names):
             score += 0.45
+        if any(name.startswith("extra_") and "exact" in name for name in source_names):
+            score += 0.16
+        if "google_exact" in source_names or "google_scrape_exact" in source_names:
+            score += 0.18
+        if "bing_exact" in source_names:
+            score += 0.1
 
         best_position = min(positions) if positions else 99
         score += max(0.0, 0.06 - (best_position + 1) * 0.01)

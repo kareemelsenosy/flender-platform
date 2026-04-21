@@ -169,3 +169,109 @@ def test_search_page_prefills_matching_settings_defaults(client, login_as, db_se
     assert resp.status_code == 200
     assert "americanrag.ae" in resp.text
     assert "Search the official American Rag domain first." in resp.text
+
+
+def test_describe_context_endpoint_summarizes_uploaded_text_file(
+    client,
+    login_as,
+    db_session,
+    test_app,
+    monkeypatch,
+):
+    user = login_as()
+    models = test_app["models"]
+
+    session = models.Session(
+        user_id=user["id"],
+        name="offer - all brands.xlsx",
+        source_type="excel_upload",
+        status="mapping",
+        total_items=1,
+    )
+    db_session.add(session)
+    db_session.commit()
+
+    monkeypatch.setattr(test_app["search_routes"], "ai_available", lambda: True)
+    monkeypatch.setattr(
+        test_app["search_routes"],
+        "ai_describe_context_text",
+        lambda text, filename="": "- Footwear assortment\n- Prioritize exact color matches\n- Mostly sneakers and sandals",
+    )
+
+    resp = client.post(
+        f"/search/{session.id}/describe-context",
+        files={"file": ("context.txt", b"These are mostly shoes, sandals, and sneakers. Exact color matters.", "text/plain")},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["source"] == "text"
+    assert "Footwear assortment" in data["description"]
+
+
+def test_background_search_claims_distinct_approved_urls_for_distinct_item_codes(
+    login_as,
+    db_session,
+    test_app,
+    monkeypatch,
+):
+    user = login_as()
+    models = test_app["models"]
+
+    session = models.Session(
+        user_id=user["id"],
+        name="Jobber Stock.xlsx",
+        source_type="excel_upload",
+        status="searching",
+        total_items=2,
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    item_a = models.UniqueItem(
+        session_id=session.id,
+        item_code="SKU-A",
+        brand="Example Brand",
+        style_name="Runner",
+        color_name="Black",
+        item_group="Footwear",
+    )
+    item_b = models.UniqueItem(
+        session_id=session.id,
+        item_code="SKU-B",
+        brand="Example Brand",
+        style_name="Runner",
+        color_name="Black",
+        item_group="Footwear",
+    )
+    db_session.add_all([item_a, item_b])
+    db_session.commit()
+
+    url_a = "https://example.com/images/shared-top.jpg"
+    url_b = "https://example.com/images/alternate.jpg"
+
+    def fake_search(self, item_dict, ai_queries=None):
+        if item_dict["item_code"] == "SKU-A":
+            return [url_a, url_b], {url_a: 0.91, url_b: 0.87}
+        return [url_a, url_b], {url_a: 0.96, url_b: 0.71}
+
+    monkeypatch.setattr(test_app["search_routes"], "ai_available", lambda: False)
+    monkeypatch.setattr(test_app["search_routes"].ImageSearcher, "search", fake_search)
+
+    test_app["search_routes"]._run_search_background(
+        session.id,
+        {"search_mode": "web"},
+        user_id=user["id"],
+    )
+
+    db_session.expire_all()
+    items = db_session.query(models.UniqueItem).filter(
+        models.UniqueItem.session_id == session.id,
+    ).order_by(models.UniqueItem.item_code.asc()).all()
+
+    assert len(items) == 2
+    assert items[0].approved_url != items[1].approved_url
+    assert {items[0].approved_url, items[1].approved_url} == {url_a, url_b}
+    assert items[0].candidates[0] == items[0].approved_url
+    assert items[1].candidates[0] == items[1].approved_url

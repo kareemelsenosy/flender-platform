@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.config import OUTPUT_DIR
 from app.core.generator import OrderSheetGenerator
+from app.core.searcher import item_sort_key
 from app.database import get_db
 from app.templates_config import templates
 from app.models import GeneratedFile, Session, UniqueItem
@@ -242,11 +243,22 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         if session_id in _progress:
             return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
 
-    # Get approved items — ordered by id to preserve original Google Sheet row order
+    # Approved items — grouped so similar styles are adjacent (brand -> style -> base code -> color)
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.review_status == "approved",
-    ).order_by(UniqueItem.id).all()
+    ).all()
+    items = sorted(
+        items,
+        key=lambda it: item_sort_key(
+            brand=it.brand,
+            style_name=it.style_name,
+            item_code=it.item_code,
+            item_group=it.item_group,
+            color_name=it.color_name,
+            color_code=it.color_code,
+        ),
+    )
 
     if not items:
         return JSONResponse({"error": "No approved items"}, status_code=400)

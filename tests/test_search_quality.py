@@ -133,3 +133,43 @@ def test_search_collapses_same_image_resize_variants(monkeypatch):
     })
 
     assert len(candidates) == 1
+
+
+def test_search_prefers_exact_google_style_query_results(monkeypatch):
+    searcher = ImageSearcher()
+
+    exact = SearchHit(
+        url="https://buttergoods.com/images/wharfie-beanie-bone.jpg",
+        page_url="https://buttergoods.com/products/wharfie-beanie-bone",
+        title="Butter Goods Wharfie Beanie Bone BG243810-BONE",
+        description="Official product image",
+    )
+    generic = SearchHit(
+        url="https://example.com/images/wharfie-beanie-black.jpg",
+        page_url="https://example.com/products/wharfie-beanie-black",
+        title="Butter Goods Wharfie Beanie Black",
+        description="Marketplace image",
+    )
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(
+        searcher,
+        "_google_images_scrape",
+        lambda query: [exact] if query.startswith("Butter Goods Wharfie Beanie") else [generic],
+    )
+
+    candidates, scores = searcher.search({
+        "item_code": "BG243810-BONE",
+        "style_name": "Wharfie Beanie",
+        "color_name": "bone",
+        "brand": "Butter Goods",
+        "item_group": "Beanie",
+    })
+
+    assert candidates[0] == exact.url
+    assert scores[exact.url] > scores[generic.url]

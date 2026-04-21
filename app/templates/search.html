@@ -95,6 +95,23 @@
 - Search brand website by full SKU code
 - Product images end with _1.jpg on this brand
 - Use the style name in Italian for valentino.com">{{ default_search_notes or '' }}</textarea>
+      <div style="margin-top:10px;padding:12px;border:1px dashed var(--gray-300);border-radius:12px;background:var(--gray-50)">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div style="min-width:220px;flex:1">
+            <div style="font-weight:700;color:var(--black);margin-bottom:4px">Add a reference file for AI</div>
+            <div class="text-muted text-sm" style="line-height:1.5">
+              Upload a screenshot, PDF, text file, or Excel sheet that explains what these products are.
+              AI will summarize it and append the important search hints here.
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="file" id="context-file-input" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.txt,.md,.csv,.tsv,.json,.html,.htm,.xlsx,.xls" style="display:none" onchange="handleContextFiles(this.files)">
+            <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('context-file-input').click()">Upload Context File</button>
+          </div>
+        </div>
+        <div id="context-file-status" class="text-sm text-muted" style="margin-top:10px">No context files added yet.</div>
+        <div id="context-file-results" style="display:flex;flex-direction:column;gap:8px;margin-top:10px"></div>
+      </div>
       <small class="text-muted">AI uses these instructions to build smarter search queries for every item.</small>
     </div>
 
@@ -134,6 +151,7 @@ const sessionId = {{ session.id }};
 let searchStartTime = null;
 let _pendingFiles = null;
 let _uploadedFolderPath = '';
+let _contextFiles = [];
 
 function fmtTime(sec) {
   if (!sec || sec <= 0) return '';
@@ -181,6 +199,68 @@ function handleFileSelect(files) {
   const statusEl = document.getElementById('upload-status');
   statusEl.innerHTML = `<span style="color:var(--black);font-weight:600">✓ ${count} file(s) selected</span> <span style="color:var(--gray-400)">(${totalMB} MB)</span> — will upload when search starts`;
   document.getElementById('upload-drop-zone').style.borderColor = 'var(--black)';
+}
+
+function renderContextFileResults() {
+  const statusEl = document.getElementById('context-file-status');
+  const listEl = document.getElementById('context-file-results');
+  if (!statusEl || !listEl) return;
+  listEl.innerHTML = '';
+  if (!_contextFiles.length) {
+    statusEl.textContent = 'No context files added yet.';
+    return;
+  }
+  statusEl.innerHTML = `<span style="color:var(--black);font-weight:600">✓ ${_contextFiles.length} context file${_contextFiles.length !== 1 ? 's' : ''} added</span>`;
+  _contextFiles.forEach(file => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:10px 12px;border:1px solid var(--gray-200);border-radius:10px;background:white';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:0.78rem;font-weight:700;color:var(--black);margin-bottom:4px';
+    title.textContent = `${file.filename} · ${file.source}`;
+    const body = document.createElement('div');
+    body.style.cssText = 'font-size:0.76rem;line-height:1.5;color:var(--gray-500);white-space:pre-wrap';
+    body.textContent = file.description;
+    row.appendChild(title);
+    row.appendChild(body);
+    listEl.appendChild(row);
+  });
+}
+
+async function handleContextFiles(files) {
+  if (!files || !files.length) return;
+  const statusEl = document.getElementById('context-file-status');
+  const searchNotesEl = document.getElementById('search-notes');
+  for (const file of Array.from(files)) {
+    statusEl.textContent = `Analyzing ${file.name} with AI...`;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const resp = await fetch(`/search/${sessionId}/describe-context`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showAlert(data.error || `Failed to analyze ${file.name}.`, 'AI Context Upload');
+        continue;
+      }
+      const block = `[Reference file: ${data.filename}]\n${String(data.description || '').trim()}`;
+      const current = searchNotesEl.value.trim();
+      searchNotesEl.value = current ? `${current}\n\n${block}` : block;
+      _contextFiles.push({
+        filename: data.filename || file.name,
+        source: data.source || 'context',
+        description: String(data.description || '').trim(),
+      });
+      renderContextFileResults();
+    } catch (err) {
+      showAlert(`Failed to analyze ${file.name}. ${err?.message || ''}`.trim(), 'AI Context Upload');
+    }
+  }
+  statusEl.textContent = _contextFiles.length
+    ? `✓ Added ${_contextFiles.length} context file${_contextFiles.length !== 1 ? 's' : ''}.`
+    : 'No context files added yet.';
+  document.getElementById('context-file-input').value = '';
 }
 
 function _uploadImages() {
@@ -357,6 +437,7 @@ window.getSearchAssistantContext = function() {
     priority_domains: document.getElementById('brand-urls').value.trim()
       .split(/[\n,;]+/).map(u => u.trim()).filter(Boolean),
     search_notes: document.getElementById('search-notes').value.trim(),
+    context_file_count: _contextFiles.length,
     local_folder_ready: Boolean(_uploadedFolderPath || (_pendingFiles && _pendingFiles.length)),
     group_mode_available: false,
   };
