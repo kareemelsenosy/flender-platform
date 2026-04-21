@@ -193,6 +193,27 @@ _COLOR_WORDS = {
     "chocolate",
     "pelican", "ghost", "salt", "lakers", "natural", "oxide", "wax", "dog",
 }
+# Equivalence classes: if any token in a class is in the item's color_tokens,
+# every other token in the class counts as a match for that item. Specific
+# labels (black/white/red/...) stay outside all classes so they remain
+# reject-able.
+_COLOR_EQUIVALENCE_CLASSES: tuple[frozenset[str], ...] = (
+    frozenset({"brown", "chocolate", "mocha", "espresso", "cognac", "coffee"}),
+    frozenset({"grey", "gray", "stone", "charcoal", "slate"}),
+    frozenset({"cream", "beige", "ivory", "bone", "natural", "ecru", "sand"}),
+    frozenset({"tan", "khaki", "camel", "biscuit"}),
+    frozenset({"olive", "military"}),
+)
+
+
+def _expand_color_tokens(tokens: list[str] | set[str]) -> set[str]:
+    """Broaden a token set with its equivalence-class siblings so that e.g.
+    ``{"chocolate"}`` also matches pages labelled "brown"."""
+    expanded = {str(t).lower() for t in tokens if t}
+    for cls in _COLOR_EQUIVALENCE_CLASSES:
+        if expanded & cls:
+            expanded |= cls
+    return expanded
 _CATEGORY_FAMILY_TERMS: dict[str, set[str]] = {
     "footwear": {
         "footwear", "shoe", "shoes", "sneaker", "sneakers", "trainer", "trainers",
@@ -260,6 +281,27 @@ _TRANSIENT_QUERY_PARAMS = {
 _SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
 _TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
 _SIZE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d+)?)")
+
+# Search source families — lets us tell "Google result" from "Bing result" from "brand site result"
+_GOOGLE_SOURCE_NAMES = frozenset({
+    "google",
+    "google_exact",
+    "google_phrase",
+    "google_scrape",
+    "google_scrape_exact",
+    "google_scrape_phrase",
+})
+_BING_SOURCE_NAMES = frozenset({"bing", "bing_exact", "bing_phrase"})
+# "Top-N visible" window — matches the first results a user would see on the SERP.
+_TOP_SERP_WINDOW = 5
+
+
+def _best_position_in_family(hit: dict, family: frozenset) -> int | None:
+    """Return the earliest (lowest-index) position for the URL within a source family,
+    e.g. anywhere in Google or anywhere in Bing. ``None`` if the URL never appeared there."""
+    src_pos = hit.get("source_positions") or {}
+    positions = [pos for name, pos in src_pos.items() if name in family]
+    return min(positions) if positions else None
 _VARIANT_FAMILY_CODE_RE = re.compile(r"(?i)^(.+?)-(\d{4})$")
 
 
@@ -663,10 +705,13 @@ class ImageSearcher:
         ]).lower()
         normalized = _slug(text)
         text_tokens = set(_tokenize(text))
-        color_matches = {token for token in color_tokens if token in text_tokens or token in normalized}
+        # Expand with equivalence classes so "chocolate" also accepts "brown"
+        # pages, "stone" accepts "grey" pages, etc.
+        acceptable = _expand_color_tokens(color_tokens)
+        color_matches = {token for token in acceptable if token in text_tokens or token in normalized}
         if color_matches:
             return False
-        other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)
+        other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - acceptable
         return bool(other_colors)
 
     def _coerce_hits(self, raw_hits: list[Any]) -> list[SearchHit]:
@@ -704,6 +749,7 @@ class ImageSearcher:
                     "description": "",
                     "source_names": set(),
                     "positions": [],
+                    "source_positions": {},
                 })
                 if (
                     ("mm.bing.net" in entry["url"].lower() or "th.bing.com" in entry["url"].lower())
@@ -712,6 +758,11 @@ class ImageSearcher:
                     entry["url"] = hit.url
                 entry["source_names"].add(source_name)
                 entry["positions"].append(index)
+                # Keep the best (earliest) position per source so we can reason about
+                # "top-5 in Google" vs "top-5 in Bing" independently.
+                prev_pos = entry["source_positions"].get(source_name)
+                if prev_pos is None or index < prev_pos:
+                    entry["source_positions"][source_name] = index
                 if hit.page_url and not entry["page_url"]:
                     entry["page_url"] = hit.page_url
                 if hit.title and not entry["title"]:
@@ -763,6 +814,35 @@ class ImageSearcher:
         ]
         if strict_color_hits:
             filtered_hits = strict_color_hits
+
+        # Consensus-first: when the same URL shows up on BOTH Google and Bing
+        # that's the strongest "what a human manually googling would see" signal.
+        # Prefer top-5-in-both, then any-in-both, over single-engine hits.
+        consensus_top = [
+            hit for hit in filtered_hits
+            if (
+                (gb := _best_position_in_family(hit, _GOOGLE_SOURCE_NAMES)) is not None
+                and (bb := _best_position_in_family(hit, _BING_SOURCE_NAMES)) is not None
+                and gb < _TOP_SERP_WINDOW
+                and bb < _TOP_SERP_WINDOW
+            )
+        ]
+        if len(consensus_top) >= 2:
+            top_consensus_score = max(
+                raw_scores.get(hit["url"], 0.0) for hit in consensus_top
+            )
+            # Only trust the consensus pool if its best member is actually strong.
+            # Otherwise fall through to the normal tiered logic below.
+            if top_consensus_score >= 0.68:
+                ordered_consensus = sorted(
+                    consensus_top,
+                    key=lambda hit: raw_scores.get(hit["url"], 0.0),
+                    reverse=True,
+                )
+                return [
+                    hit for hit in ordered_consensus
+                    if raw_scores.get(hit["url"], 0.0) >= max(0.6, top_consensus_score - 0.16)
+                ]
 
         for tier in range(5):
             pool = [hit for hit in filtered_hits if self._strict_hit_priority_pool(hit) == tier]
@@ -1244,8 +1324,38 @@ class ImageSearcher:
             ):
                 score -= 0.12
 
+        # --- First-visible-result / cross-source consensus boosts ------------
+        # We want URLs that (a) appear near the top of Google's SERP, (b) appear
+        # near the top of Bing's SERP, and (c) ideally appear on BOTH engines.
+        # That's the "what a human would see first when manually googling" signal.
+        google_best = _best_position_in_family(hit, _GOOGLE_SOURCE_NAMES)
+        bing_best = _best_position_in_family(hit, _BING_SOURCE_NAMES)
+        strict = bool(ctx.get("strict_query"))
+
+        if google_best is not None:
+            # Position 0 → +0.18 (strict) / +0.10 (loose). Decays per rank.
+            per_step = 0.03 if strict else 0.02
+            top_boost = max(0.0, (0.18 if strict else 0.10) - google_best * per_step)
+            score += top_boost
+        if bing_best is not None:
+            per_step = 0.03 if strict else 0.02
+            top_boost = max(0.0, (0.16 if strict else 0.09) - bing_best * per_step)
+            score += top_boost
+
+        if google_best is not None and bing_best is not None:
+            # Consensus: URL appears on both Google and Bing. This is the strongest
+            # "both search engines agree" signal we can derive without clicking through.
+            score += 0.28 if strict else 0.18
+            if google_best < _TOP_SERP_WINDOW and bing_best < _TOP_SERP_WINDOW:
+                # Top-5 in both — treat as a near-perfect consensus hit.
+                score += 0.15 if strict else 0.10
+            elif google_best < (_TOP_SERP_WINDOW * 2) and bing_best < (_TOP_SERP_WINDOW * 2):
+                score += 0.06 if strict else 0.04
+
+        # Legacy fallback boost for non-search-engine positions (brand sites etc.)
         best_position = min(positions) if positions else 99
-        score += max(0.0, 0.06 - (best_position + 1) * 0.01)
+        if google_best is None and bing_best is None:
+            score += max(0.0, 0.06 - (best_position + 1) * 0.01)
 
         source_count = len(source_names)
         if source_count >= 2:

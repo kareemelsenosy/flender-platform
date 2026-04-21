@@ -646,3 +646,152 @@ def test_assess_match_confidence_sends_ambiguous_results_to_review():
 
     assert decision["label"] in {"medium", "low"}
     assert decision["auto_approve"] is False
+
+
+# ── Cross-engine consensus + first-visible ranking ──────────────────────────
+
+def _stub_all_search_methods(searcher, monkeypatch):
+    """Reset every search source to an empty list. Tests then override just
+    the specific methods they care about."""
+    for name in (
+        "_bing_search", "_bing_raw", "_bing_site_search",
+        "_google_search", "_google_images_scrape",
+        "_duckduckgo_search", "_yahoo_images_scrape",
+    ):
+        if name == "_bing_site_search":
+            monkeypatch.setattr(searcher, name, lambda domain, query: [])
+        else:
+            monkeypatch.setattr(searcher, name, lambda query=None: [])
+
+
+def test_search_prefers_url_that_appears_on_both_google_and_bing(monkeypatch):
+    """A consensus hit (top-5 on Google AND top-5 on Bing) should beat a URL
+    that only shows up on one engine, even when the one-engine URL has
+    equally strong keyword hits."""
+    searcher = ImageSearcher()
+
+    consensus = SearchHit(
+        url="https://brand.example/images/wharfie-beanie-bone.jpg",
+        page_url="https://brand.example/products/wharfie-beanie-bone",
+        title="Butter Goods Wharfie Beanie BG243810-BONE bone",
+        description="Wool beanie",
+    )
+    bing_only = SearchHit(
+        url="https://otherstore.example/images/wharfie-beanie-bone-alt.jpg",
+        page_url="https://otherstore.example/wharfie-beanie-bone",
+        title="Butter Goods Wharfie Beanie BG243810-BONE bone",
+        description="Wool beanie",
+    )
+
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [consensus, bing_only])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [consensus])
+
+    candidates, scores = searcher.search({
+        "item_code": "BG243810-BONE",
+        "style_name": "Wharfie Beanie",
+        "color_name": "bone",
+        "brand": "Butter Goods",
+        "item_group": "Beanie",
+    })
+
+    assert candidates[0] == consensus.url
+    assert scores[consensus.url] > scores.get(bing_only.url, 0.0)
+
+
+def test_search_rewards_top_serp_position_over_deep_ranked(monkeypatch):
+    """A URL at position 0 on Google and Bing should outrank a URL that's only
+    20th on Bing, all else equal."""
+    searcher = ImageSearcher()
+
+    front_page = SearchHit(
+        url="https://brand.example/hero.jpg",
+        page_url="https://brand.example/hero",
+        title="Butter Goods Wharfie Beanie BG243810-BONE bone",
+        description="Wool beanie",
+    )
+    deep_rank_filler = [
+        SearchHit(
+            url=f"https://filler.example/img-{i}.jpg",
+            page_url="https://filler.example",
+            title="random",
+            description="",
+        )
+        for i in range(20)
+    ]
+    buried = SearchHit(
+        url="https://buried.example/hero.jpg",
+        page_url="https://buried.example/hero",
+        title="Butter Goods Wharfie Beanie BG243810-BONE bone",
+        description="Wool beanie",
+    )
+
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [front_page, *deep_rank_filler, buried])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [front_page])
+
+    candidates, scores = searcher.search({
+        "item_code": "BG243810-BONE",
+        "style_name": "Wharfie Beanie",
+        "color_name": "bone",
+        "brand": "Butter Goods",
+        "item_group": "Beanie",
+    })
+
+    assert candidates[0] == front_page.url
+    if buried.url in scores:
+        assert scores[front_page.url] > scores[buried.url]
+
+
+def test_color_equivalence_accepts_brown_page_for_chocolate_item(monkeypatch):
+    """When the item's color is 'chocolate', a vendor page described as
+    'brown' should not be filtered out as a wrong-color variant — these are
+    sibling shades in the same equivalence class."""
+    searcher = ImageSearcher()
+
+    hit = SearchHit(
+        url="https://brand.example/images/loafer-brown.jpg",
+        page_url="https://brand.example/products/yacht-loafer-brown",
+        title="Aurélien Lady Yacht Loafer YLWCHT-3800 brown",
+        description="Leather loafer",
+    )
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [hit])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [hit])
+
+    candidates, _ = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Yacht Loafer",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    })
+
+    assert hit.url in candidates
+
+
+def test_color_equivalence_still_rejects_unrelated_colors():
+    """Equivalence classes should broaden within a family but NOT blur across
+    families — a 'black' page is still wrong for a 'chocolate' item."""
+    searcher = ImageSearcher()
+    wrong_black = {
+        "url": "https://brand.example/images/loafer-black.jpg",
+        "page_url": "https://brand.example/products/yacht-loafer-black",
+        "title": "Aurélien Yacht Loafer BLACK",
+        "description": "",
+    }
+    right_brown = {
+        "url": "https://brand.example/images/loafer-brown.jpg",
+        "page_url": "https://brand.example/products/yacht-loafer-brown",
+        "title": "Aurélien Yacht Loafer brown",
+        "description": "",
+    }
+    ctx = searcher._build_item_context({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Yacht Loafer",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    })
+    assert searcher._is_obvious_wrong_color_hit(wrong_black, ctx) is True
+    assert searcher._is_obvious_wrong_color_hit(right_brown, ctx) is False
