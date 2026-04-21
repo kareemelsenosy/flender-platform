@@ -621,6 +621,7 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     if ai_available() and candidates:
         web_urls = [u for u in candidates if not u.startswith("file://")]
         if web_urls:
+            ai_primary_mode = bool(searcher and searcher.should_force_ai_primary(item_dict))
             ranked = ai_rank_urls(
                 web_urls,
                 item_dict,
@@ -631,8 +632,12 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
             new_scores = {}
             for i, url in enumerate(ranked):
                 base = scores.get(url, 0.5)
-                bonus = max(0.0, 0.1 - i * 0.02)
-                new_scores[url] = min(round(base + bonus, 2), 1.0)
+                if ai_primary_mode:
+                    ai_target = max(0.45, 0.97 - i * 0.09)
+                    new_scores[url] = min(round((base * 0.4) + (ai_target * 0.6), 2), 1.0)
+                else:
+                    bonus = max(0.0, 0.1 - i * 0.02)
+                    new_scores[url] = min(round(base + bonus, 2), 1.0)
             candidates = ranked
             scores = new_scores
 

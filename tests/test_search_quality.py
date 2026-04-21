@@ -350,6 +350,27 @@ def test_related_item_code_normalizes_near_duplicate_variant_suffixes():
     assert related_a == related_b
 
 
+def test_cache_identity_uses_related_family_code_for_near_duplicate_variants():
+    searcher = ImageSearcher()
+
+    item_a = {
+        "item_code": "CITYLOAFER2LGRY-4300",
+        "style_name": "City Loafer M",
+        "color_name": "LIGHT GREY",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    }
+    item_b = {
+        "item_code": "CITYLOAFER2LGRY-4200",
+        "style_name": "City Loafer M",
+        "color_name": "LIGHT GREY",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    }
+
+    assert searcher.cache_identity(item_a) == searcher.cache_identity(item_b)
+
+
 def test_search_prefers_related_family_code_hit_for_near_duplicate_variant_skus(monkeypatch):
     searcher = ImageSearcher({"brand_site_urls": {"aurélien": ["aurelien.com"]}})
 

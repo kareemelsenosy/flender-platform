@@ -150,4 +150,46 @@ def test_ai_rank_urls_uses_vision_for_detail_or_lifestyle_ambiguity(monkeypatch)
     )
 
     assert vision_called["value"] is True
-    assert ranked == [urls[1], urls[0], urls[2]]
+    assert ranked == [urls[1], urls[0]]
+
+
+def test_ai_rank_urls_drops_unwanted_footwear_presentations_after_vision(monkeypatch):
+    urls = [
+        "https://aurelien.com/images/city-loafer-packshot.jpg",
+        "https://aurelien.com/images/city-loafer-detail-closeup.jpg",
+        "https://aurelien.com/images/city-loafer-outsole.jpg",
+        "https://aurelien.com/images/city-loafer-on-foot.jpg",
+    ]
+
+    monkeypatch.setattr(ai_service, "_prepare_images_for_ai", lambda candidates: [
+        {"index": 1, "url": candidates[0], "mime_type": "image/jpeg", "data": b"1"},
+        {"index": 2, "url": candidates[1], "mime_type": "image/jpeg", "data": b"2"},
+        {"index": 3, "url": candidates[2], "mime_type": "image/jpeg", "data": b"3"},
+        {"index": 4, "url": candidates[3], "mime_type": "image/jpeg", "data": b"4"},
+    ])
+    monkeypatch.setattr(
+        ai_service,
+        "_call_ai_vision",
+        lambda prompt, images, max_tokens=1024: '{"ranked":[1],"discarded":[2,3,4],"notes":"candidate 1 is the correct clean packshot"}',
+    )
+    monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1024: None)
+
+    ranked = ai_service.ai_rank_urls(
+        urls,
+        {
+            "item_code": "CITYLOAFER2LGRY-4300",
+            "style_name": "City Loafer M",
+            "color_name": "LIGHT GREY",
+            "item_group": "Footwear",
+        },
+        "Aurélien",
+        scores={
+            urls[0]: 0.78,
+            urls[1]: 0.75,
+            urls[2]: 0.72,
+            urls[3]: 0.7,
+        },
+        prefer_vision=True,
+    )
+
+    assert ranked == [urls[0]]

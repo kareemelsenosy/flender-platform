@@ -598,10 +598,15 @@ class ImageSearcher:
     def cache_identity(self, item: dict) -> tuple[str, str, str]:
         ctx = self._build_item_context(item)
         return (
-            ctx["base_item_code"] or ctx["item_code"],
+            ctx.get("related_item_code") or ctx["base_item_code"] or ctx["item_code"],
             ctx["normalized_color_identity"],
             (ctx["brand"] or "").lower().strip(),
         )
+
+    def should_force_ai_primary(self, item: dict) -> bool:
+        ctx = self._build_item_context(item)
+        family = ctx.get("category_family")
+        return bool(ctx.get("strict_query")) or family in {"footwear", "bag", "hat"}
 
     def build_manual_search_query(self, item: dict) -> str:
         ctx = self._build_item_context(item)

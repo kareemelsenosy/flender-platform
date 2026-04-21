@@ -34,6 +34,25 @@ _VISUAL_STRICT_CATEGORY_TERMS = {
     "boot", "boots", "loafer", "loafers", "slipper", "slippers",
     "bag", "bags", "backpack", "backpacks", "cap", "caps", "hat", "hats",
 }
+
+
+def _looks_like_unwanted_presentation(url: str) -> bool:
+    text = str(url or "").lower()
+    return (
+        any(term in text for term in _VISUAL_DETAIL_TERMS)
+        or any(term in text for term in _VISUAL_LIFESTYLE_TERMS)
+        or "outsole" in text
+        or "on-foot" in text
+        or "on foot" in text
+    )
+
+
+def _is_strict_visual_category(item: dict) -> bool:
+    category_text = " ".join([
+        str(item.get("item_group") or ""),
+        str(item.get("style_name") or ""),
+    ]).lower()
+    return any(term in category_text for term in _VISUAL_STRICT_CATEGORY_TERMS)
 _SEARCH_PERFECTION_RULES = """Non-negotiable match rules:
 - The visible product type must be exact. Shorts are not t-shirts. Shoes are not sandals, bikes, drinks, or accessories.
 - The visible color must match exactly or be an obvious close synonym. If the candidate is clearly a different color, reject it.
@@ -503,11 +522,7 @@ def _should_use_vision_ranking(
     if visual_ambiguity:
         return True
 
-    category_text = " ".join([
-        str(item.get("item_group") or ""),
-        str(item.get("style_name") or ""),
-    ]).lower()
-    strict_visual_category = any(term in category_text for term in _VISUAL_STRICT_CATEGORY_TERMS)
+    strict_visual_category = _is_strict_visual_category(item)
 
     if not scores:
         return strict_visual_category or len(urls) <= _AI_IMAGE_MAX_CANDIDATES
@@ -612,6 +627,11 @@ Only use candidate numbers from the attached images."""
         if image["index"] in discarded_indices and image["url"] not in seen
     ]
     remainder = [url for url in urls if url not in ranked_urls and url not in middle_urls and url not in trailing_urls]
+    strict_visual_category = _is_strict_visual_category(item)
+    if strict_visual_category:
+        middle_urls = [url for url in middle_urls if not _looks_like_unwanted_presentation(url)]
+        remainder = [url for url in remainder if not _looks_like_unwanted_presentation(url)]
+        trailing_urls = []
     final = ranked_urls + middle_urls + remainder + trailing_urls
     return final if final else None
 

@@ -370,21 +370,27 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     web_urls = [u for u in candidates if not u.startswith("file://")]
                     local_urls = [u for u in candidates if u.startswith("file://")]
                     if web_urls:
+                        ai_primary_mode = bool(searcher and searcher.should_force_ai_primary(item_dict))
                         ranked_web = ai_rank_urls(
                             web_urls,
                             item_dict,
                             brand_label,
                             scores=scores,
+                            prefer_vision=ai_primary_mode,
                         )
                         # Rebuild candidates: local first, then AI-ranked web
                         reranked = local_urls + ranked_web
-                        # Carry over scores, default 0.5 for AI-promoted URLs
+                        # In strict/vision-heavy categories we let AI order drive the
+                        # final score more strongly so clean packshots win decisively.
                         new_scores = {}
                         for i, url in enumerate(reranked):
                             base = scores.get(url, 0.5)
-                            # Boost top-ranked URLs slightly
-                            position_bonus = max(0.0, 0.1 - i * 0.02)
-                            new_scores[url] = min(round(base + position_bonus, 2), 1.0)
+                            if ai_primary_mode and not url.startswith("file://"):
+                                ai_target = max(0.45, 0.97 - i * 0.09)
+                                new_scores[url] = min(round((base * 0.4) + (ai_target * 0.6), 2), 1.0)
+                            else:
+                                position_bonus = max(0.0, 0.1 - i * 0.02)
+                                new_scores[url] = min(round(base + position_bonus, 2), 1.0)
                         candidates = reranked
                         scores = new_scores
 
