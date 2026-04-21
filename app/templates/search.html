@@ -142,6 +142,7 @@
       </div>
     </div>
 
+    <p class="text-sm text-muted text-center mt-3" id="worker-text" style="display:none"></p>
     <p class="text-sm text-muted text-center mt-4" id="current-item">Initializing...</p>
   </div>
 </div>
@@ -338,6 +339,7 @@ function connectProgressSSE() {
   const totalEl   = document.getElementById('total-count');
   const currentEl = document.getElementById('current-item');
   const etaEl     = document.getElementById('eta-text');
+  const workerEl  = document.getElementById('worker-text');
   const stepLabel = document.getElementById('ai-step-label');
 
   const evtSource = new EventSource(`/search/${sessionId}/progress`);
@@ -349,6 +351,11 @@ function connectProgressSSE() {
     doneEl.textContent = data.done;
     totalEl.textContent = data.total;
     if (data.current) currentEl.textContent = `Searching: ${data.current}`;
+    if (data.workers) {
+      const groups = data.groups_total ? ` across ${data.groups_total} search groups` : '';
+      workerEl.style.display = 'block';
+      workerEl.textContent = `Running with ${data.workers} parallel workers${groups}.`;
+    }
 
     // Use server-side started_at for accurate ETA (survives page navigation)
     if (data.started_at && !searchStartTime) {

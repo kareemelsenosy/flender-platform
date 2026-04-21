@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.core.searcher import ImageSearcher, SearchHit, split_and_normalize_domains
+from app.routers import search_routes
 
 
 def test_split_and_normalize_domains_handles_commas_newlines_and_schemes():
@@ -275,3 +276,23 @@ def test_background_search_claims_distinct_approved_urls_for_distinct_item_codes
     assert {items[0].approved_url, items[1].approved_url} == {url_a, url_b}
     assert items[0].candidates[0] == items[0].approved_url
     assert items[1].candidates[0] == items[1].approved_url
+
+
+def test_resolve_search_workers_autoscales_large_ai_batches():
+    workers = search_routes._resolve_search_workers(
+        {},
+        total_groups=12000,
+        search_mode="web",
+        use_ai=True,
+    )
+    assert workers == 16
+
+
+def test_resolve_search_workers_honors_safe_manual_override():
+    workers = search_routes._resolve_search_workers(
+        {"search_workers": 99},
+        total_groups=500,
+        search_mode="web",
+        use_ai=True,
+    )
+    assert workers == search_routes._MAX_WORKERS

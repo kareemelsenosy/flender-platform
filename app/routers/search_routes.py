@@ -42,8 +42,43 @@ logger = logging.getLogger(__name__)
 # Track active searches: session_id -> {"done": int, "total": int, "running": bool}
 _search_progress: dict[int, dict] = {}
 
-# I/O-bound search — 10 workers to avoid HTTP pool exhaustion on large batches
+# I/O-bound search — use safe auto-scaling for large batches without exhausting upstream pools
 _DEFAULT_WORKERS = 10
+_MAX_WORKERS = 18
+
+
+def _resolve_search_workers(
+    config: dict,
+    *,
+    total_groups: int,
+    search_mode: str,
+    use_ai: bool,
+) -> int:
+    try:
+        requested = int(config.get("search_workers", 0) or 0)
+    except Exception:
+        requested = 0
+
+    if requested > 0:
+        return max(1, min(requested, _MAX_WORKERS, max(1, total_groups or 1)))
+
+    target = _DEFAULT_WORKERS
+    if search_mode == "local":
+        if total_groups >= 8000:
+            target = 18
+        elif total_groups >= 3000:
+            target = 16
+        elif total_groups >= 1000:
+            target = 12
+    else:
+        if total_groups >= 8000:
+            target = 16 if use_ai else 18
+        elif total_groups >= 3000:
+            target = 14 if use_ai else 16
+        elif total_groups >= 1000:
+            target = 12 if use_ai else 14
+
+    return max(1, min(target, _MAX_WORKERS, max(1, total_groups or 1)))
 
 
 def _validate_local_folder(local_folder: str, user_id: int | None) -> str:
@@ -142,7 +177,16 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
         total = len(items)
         import time as _time_mod
-        _search_progress[session_id] = {"done": 0, "total": total, "running": True, "current": "", "started_at": _time_mod.time()}
+        _search_progress[session_id] = {
+            "done": 0,
+            "total": total,
+            "running": True,
+            "current": "",
+            "started_at": _time_mod.time(),
+            "workers": 0,
+            "groups_total": 0,
+            "groups_done": 0,
+        }
 
         search_mode = config.get("search_mode", "web")  # web, local, both
         local_folder = config.get("local_folder", "")
@@ -173,7 +217,6 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             "google_cse_id": GOOGLE_CSE_ID,
         }
         searcher = ImageSearcher(search_config) if search_mode in ("web", "both") else None
-        workers = int(config.get("search_workers", _DEFAULT_WORKERS))
 
         # Import local search if needed — validate path to prevent traversal (C4)
         local_search_fn = None
@@ -356,6 +399,14 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 cache_db.close()
 
         group_entries = list(grouped_items.values())
+        workers = _resolve_search_workers(
+            config,
+            total_groups=len(group_entries),
+            search_mode=search_mode,
+            use_ai=use_ai,
+        )
+        _search_progress[session_id]["workers"] = workers
+        _search_progress[session_id]["groups_total"] = len(group_entries)
 
         # Collect all results first so we can dedup `approved_url` across
         # different base-item-codes once every search has completed. Different
@@ -386,6 +437,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                     logger.error(f"Search error: {e}")
 
                 _search_progress[session_id]["done"] += len(grouped["items"])
+                _search_progress[session_id]["groups_done"] = len(completed_results)
                 label = grouped["label"]
                 if len(grouped["items"]) > 1:
                     label = f"{label} (+{len(grouped['items']) - 1})"
@@ -494,6 +546,10 @@ async def start_batch_search(request: Request, db: DBSession = Depends(get_db)):
     local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
     brand_urls = split_and_normalize_domains(data.get("brand_urls", []))
     search_notes = str(data.get("search_notes", "") or "").strip()
+    try:
+        search_workers = int(data.get("search_workers", 0) or 0)
+    except Exception:
+        search_workers = 0
 
     if not session_ids:
         return JSONResponse({"error": "No session IDs provided"}, status_code=400)
@@ -514,6 +570,10 @@ async def start_batch_search(request: Request, db: DBSession = Depends(get_db)):
         config["local_folder"] = local_folder
         config["search_notes"] = search_notes
         config["extra_brand_urls"] = brand_urls
+        if search_workers > 0:
+            config["search_workers"] = search_workers
+        else:
+            config.pop("search_workers", None)
         config["search_gen"] = config.get("search_gen", 0) + 1
         reset_count = _reset_items_for_search(db, sid)
         sess.config = config
@@ -856,6 +916,10 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
     brand_urls = split_and_normalize_domains(data.get("brand_urls", []))  # Additional brand URLs for this search
     search_notes = str(data.get("search_notes", "") or "").strip()
+    try:
+        search_workers = int(data.get("search_workers", 0) or 0)
+    except Exception:
+        search_workers = 0
     if search_mode == "local" and not local_folder:
         return JSONResponse({"error": "Upload an image folder before starting local search"}, status_code=400)
 
@@ -865,6 +929,10 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     config["local_folder"] = local_folder
     config["extra_brand_urls"] = brand_urls
     config["search_notes"] = search_notes
+    if search_workers > 0:
+        config["search_workers"] = search_workers
+    else:
+        config.pop("search_workers", None)
     # Bump search generation so any stale background threads won't overwrite status
     config["search_gen"] = config.get("search_gen", 0) + 1
     reset_count = _reset_items_for_search(db, session_id)
