@@ -47,6 +47,14 @@ _DEFAULT_WORKERS = 10
 _MAX_WORKERS = 18
 
 
+def _parse_sample_limit(value) -> int:
+    try:
+        limit = int(value or 0)
+    except Exception:
+        return 0
+    return max(limit, 0)
+
+
 def _resolve_search_workers(
     config: dict,
     *,
@@ -177,7 +185,11 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         items = db.query(UniqueItem).filter(
             UniqueItem.session_id == session_id,
             UniqueItem.search_status == "pending",
-        ).all()
+        ).order_by(UniqueItem.id.asc()).all()
+
+        sample_limit = _parse_sample_limit(config.get("sample_limit", 0))
+        if sample_limit > 0:
+            items = items[:sample_limit]
 
         total = len(items)
         import time as _time_mod
@@ -522,7 +534,10 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         current_gen = (sess.config or {}).get("search_gen", 0) if sess else -1
         if sess and current_gen == search_gen:
             sess.status = "reviewing"
-            sess.searched_items = total
+            sess.searched_items = db.query(UniqueItem).filter(
+                UniqueItem.session_id == session_id,
+                UniqueItem.search_status == "done",
+            ).count()
             db.commit()
 
         _search_progress[session_id]["running"] = False
@@ -898,8 +913,18 @@ def search_page(session_id: int, request: Request, db: DBSession = Depends(get_d
     if not sess:
         return RedirectResponse("/", status_code=302)
 
-    # If already done searching, go to review
-    if sess.status in ("reviewing", "completed"):
+    pending_count = db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+        UniqueItem.search_status == "pending",
+    ).count()
+    done_count = db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+        UniqueItem.search_status == "done",
+    ).count()
+
+    # If fully done searching, go to review. If some items are still pending,
+    # keep Step 3 accessible so users can test a subset first, then continue.
+    if sess.status in ("reviewing", "completed") and pending_count == 0:
         return RedirectResponse(f"/review/{session_id}", status_code=302)
 
     # Check if search is already running
@@ -909,14 +934,11 @@ def search_page(session_id: int, request: Request, db: DBSession = Depends(get_d
     # If session says "searching" but no active background thread,
     # the search finished (or crashed) — check if items were searched
     if sess.status == "searching" and not is_running:
-        searched = db.query(UniqueItem).filter(
-            UniqueItem.session_id == session_id,
-            UniqueItem.search_status == "done",
-        ).count()
-        if searched > 0:
+        if done_count > 0:
             sess.status = "reviewing"
             db.commit()
-            return RedirectResponse(f"/review/{session_id}", status_code=302)
+            if pending_count == 0:
+                return RedirectResponse(f"/review/{session_id}", status_code=302)
 
     defaults = _session_search_defaults(db, uid, session_id)
     config = dict(sess.config or {})
@@ -927,7 +949,10 @@ def search_page(session_id: int, request: Request, db: DBSession = Depends(get_d
         "current_search_mode": config.get("search_mode", "web"),
         "default_brand_urls": split_and_normalize_domains(config.get("extra_brand_urls", [])) or defaults["brand_urls"],
         "default_search_notes": str(config.get("search_notes", "") or "").strip() or defaults["search_notes"],
+        "default_sample_limit": _parse_sample_limit(config.get("sample_limit", 50)) or 50,
         "matched_brand_labels": defaults["matched_brand_labels"],
+        "pending_search_count": pending_count,
+        "searched_item_count": done_count,
     })
 
 
@@ -947,6 +972,7 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     local_folder = _validate_local_folder(data.get("local_folder", ""), uid)
     brand_urls = split_and_normalize_domains(data.get("brand_urls", []))  # Additional brand URLs for this search
     search_notes = str(data.get("search_notes", "") or "").strip()
+    sample_limit = _parse_sample_limit(data.get("sample_limit", 0))
     try:
         search_workers = int(data.get("search_workers", 0) or 0)
     except Exception:
@@ -954,21 +980,35 @@ async def start_search(session_id: int, request: Request, db: DBSession = Depend
     if search_mode == "local" and not local_folder:
         return JSONResponse({"error": "Upload an image folder before starting local search"}, status_code=400)
 
+    pending_count = db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+        UniqueItem.search_status == "pending",
+    ).count()
+    done_count = db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+        UniqueItem.search_status == "done",
+    ).count()
+    continuing_partial = pending_count > 0 and done_count > 0 and sess.status in ("reviewing", "completed")
+
     # Update session config with search settings
     config = dict(sess.config or {})
     config["search_mode"] = search_mode
     config["local_folder"] = local_folder
     config["extra_brand_urls"] = brand_urls
     config["search_notes"] = search_notes
+    if sample_limit > 0:
+        config["sample_limit"] = sample_limit
+    else:
+        config.pop("sample_limit", None)
     if search_workers > 0:
         config["search_workers"] = search_workers
     else:
         config.pop("search_workers", None)
     # Bump search generation so any stale background threads won't overwrite status
     config["search_gen"] = config.get("search_gen", 0) + 1
-    reset_count = _reset_items_for_search(db, session_id)
+    reset_count = pending_count if continuing_partial else _reset_items_for_search(db, session_id)
     sess.config = config
-    sess.searched_items = 0
+    sess.searched_items = done_count if continuing_partial else 0
     sess.status = "searching" if reset_count > 0 else "reviewing"
     db.commit()
 

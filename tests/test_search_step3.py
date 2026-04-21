@@ -296,3 +296,176 @@ def test_resolve_search_workers_honors_safe_manual_override():
         use_ai=True,
     )
     assert workers == search_routes._MAX_WORKERS
+
+
+def test_background_search_respects_sample_limit(
+    login_as,
+    db_session,
+    test_app,
+    monkeypatch,
+):
+    user = login_as()
+    models = test_app["models"]
+
+    session = models.Session(
+        user_id=user["id"],
+        name="Huge Sheet.xlsx",
+        source_type="excel_upload",
+        status="searching",
+        total_items=3,
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    items = [
+        models.UniqueItem(
+            session_id=session.id,
+            item_code=f"SKU-{i}",
+            brand="Test Brand",
+            style_name="Runner",
+            color_name="Black",
+            item_group="Footwear",
+        )
+        for i in range(1, 4)
+    ]
+    db_session.add_all(items)
+    db_session.commit()
+
+    monkeypatch.setattr(test_app["search_routes"], "ai_available", lambda: False)
+
+    def fake_search(self, item_dict, ai_queries=None):
+        url = f"https://example.com/{item_dict['item_code'].lower()}.jpg"
+        return [url], {url: 0.96}
+
+    monkeypatch.setattr(test_app["search_routes"].ImageSearcher, "search", fake_search)
+
+    test_app["search_routes"]._run_search_background(
+        session.id,
+        {"search_mode": "web", "sample_limit": 2},
+        user_id=user["id"],
+    )
+
+    db_session.expire_all()
+    refreshed = db_session.query(models.UniqueItem).filter(
+        models.UniqueItem.session_id == session.id,
+    ).order_by(models.UniqueItem.id.asc()).all()
+    refreshed_session = db_session.get(models.Session, session.id)
+
+    assert [item.search_status for item in refreshed] == ["done", "done", "pending"]
+    assert refreshed_session.searched_items == 2
+    assert refreshed_session.status == "reviewing"
+
+
+def test_search_page_renders_when_partial_search_has_pending_items(
+    client,
+    login_as,
+    db_session,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+
+    session = models.Session(
+        user_id=user["id"],
+        name="Huge Sheet.xlsx",
+        source_type="excel_upload",
+        status="reviewing",
+        total_items=2,
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    db_session.add_all([
+        models.UniqueItem(
+            session_id=session.id,
+            item_code="DONE-1",
+            brand="Test Brand",
+            search_status="done",
+            review_status="approved",
+            approved_url="https://example.com/done.jpg",
+        ),
+        models.UniqueItem(
+            session_id=session.id,
+            item_code="PENDING-1",
+            brand="Test Brand",
+            search_status="pending",
+            review_status="pending",
+        ),
+    ])
+    db_session.commit()
+
+    resp = client.get(f"/search/{session.id}")
+
+    assert resp.status_code == 200
+    assert "Run a test search first" in resp.text
+    assert "1 items already searched, 1 still pending." in resp.text
+
+
+def test_start_search_continues_pending_items_without_resetting_completed_sample(
+    client,
+    login_as,
+    db_session,
+    test_app,
+    monkeypatch,
+):
+    user = login_as()
+    models = test_app["models"]
+
+    session = models.Session(
+        user_id=user["id"],
+        name="Huge Sheet.xlsx",
+        source_type="excel_upload",
+        status="reviewing",
+        total_items=2,
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    done_item = models.UniqueItem(
+        session_id=session.id,
+        item_code="DONE-1",
+        brand="Test Brand",
+        search_status="done",
+        review_status="approved",
+        approved_url="https://example.com/done.jpg",
+    )
+    pending_item = models.UniqueItem(
+        session_id=session.id,
+        item_code="PENDING-1",
+        brand="Test Brand",
+        search_status="pending",
+        review_status="pending",
+    )
+    db_session.add_all([done_item, pending_item])
+    db_session.commit()
+
+    started = {"count": 0}
+
+    class DummyThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            started["count"] += 1
+
+    monkeypatch.setattr(test_app["search_routes"].threading, "Thread", DummyThread)
+
+    resp = client.post(
+        f"/search/{session.id}/start",
+        json={"search_mode": "web", "sample_limit": 0},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert started["count"] == 1
+
+    db_session.expire_all()
+    refreshed_done = db_session.get(models.UniqueItem, done_item.id)
+    refreshed_pending = db_session.get(models.UniqueItem, pending_item.id)
+    refreshed_session = db_session.get(models.Session, session.id)
+
+    assert refreshed_done.search_status == "done"
+    assert refreshed_done.approved_url == "https://example.com/done.jpg"
+    assert refreshed_pending.search_status == "pending"
+    assert refreshed_session.searched_items == 1
+    assert refreshed_session.status == "searching"

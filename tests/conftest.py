@@ -78,6 +78,8 @@ def _clear_database(test_app):
 
 
 def _clear_runtime_state(test_app):
+    auth_routes = importlib.import_module("app.routers.auth_routes")
+    auth_routes._login_attempts.clear()
     test_app["search_routes"]._search_progress.clear()
     test_app["generate_routes"]._progress.clear()
     test_app["generate_routes"]._completed_exports.clear()

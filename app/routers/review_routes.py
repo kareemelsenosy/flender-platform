@@ -259,8 +259,14 @@ def review_page(session_id: int, request: Request, db: DBSession = Depends(get_d
     if not sess:
         return RedirectResponse("/", status_code=302)
 
+    pending_search_count = db.query(UniqueItem).filter(
+        UniqueItem.session_id == session_id,
+        UniqueItem.search_status == "pending",
+    ).count()
+
     return templates.TemplateResponse(request, "review.html", {
         "session": sess,
+        "pending_search_count": pending_search_count,
     })
 
 

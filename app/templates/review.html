@@ -129,6 +129,9 @@
     </a>
     <div class="flex gap-2 items-center">
       <button onclick="startDownloadImages()" class="btn btn-sm btn-outline" style="background:rgba(255,255,255,0.1);color:white;border-color:rgba(255,255,255,0.2)">Download All Images</button>
+      {% if pending_search_count %}
+      <a href="/search/{{ session.id }}" class="btn btn-sm btn-outline" style="background:rgba(255,255,255,0.1);color:white;border-color:rgba(255,255,255,0.2)">Continue Search ({{ pending_search_count }} left)</a>
+      {% endif %}
       <a href="/generate/{{ session.id }}" class="btn btn-sm" style="background:white;color:var(--black)">Export Excel</a>
       {% if session.source_type != 'google_sheets' %}
       <a href="/mapping/{{ session.id }}" class="btn btn-sm btn-outline" style="background:rgba(255,255,255,0.1);color:white;border-color:rgba(255,255,255,0.2)">Edit Mapping</a>
@@ -152,6 +155,9 @@
         <div class="stats-bar" id="stats-bar">Loading...</div>
         <div class="flex gap-2" style="margin-top:10px">
           <a href="/generate/{{ session.id }}" class="btn btn-primary btn-sm" style="flex:1">Export Excel</a>
+          {% if pending_search_count %}
+          <a href="/search/{{ session.id }}" class="btn btn-outline btn-sm" style="white-space:nowrap">Search {{ pending_search_count }} Left</a>
+          {% endif %}
           <button class="btn btn-outline btn-sm" id="group-toggle" onclick="toggleGroupMode()" style="white-space:nowrap">Group</button>
         </div>
       </div>

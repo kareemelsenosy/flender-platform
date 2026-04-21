@@ -86,6 +86,31 @@
     </div>
 
     <div class="form-group">
+      <label>Search Scope</label>
+      <div style="padding:14px 16px;border:1px solid var(--gray-200);border-radius:12px;background:var(--gray-50)">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+          <input type="checkbox" id="sample-toggle" style="margin-top:3px">
+          <div style="flex:1">
+            <div style="font-weight:700;color:var(--black)">Run a test search first</div>
+            <div class="text-muted text-sm" style="line-height:1.5;margin-top:4px">
+              Search only the first few pending items so we can validate image quality before running the whole sheet.
+            </div>
+          </div>
+        </label>
+        <div id="sample-limit-wrap" style="display:none;margin-top:12px">
+          <label for="sample-limit" class="text-sm text-muted" style="display:block;margin-bottom:6px">Number of items to test</label>
+          <input id="sample-limit" type="number" min="1" step="1" value="{{ default_sample_limit }}" style="max-width:180px">
+          <small class="text-muted" style="display:block;margin-top:6px">The rest will stay pending so you can continue with the full search later.</small>
+        </div>
+        {% if searched_item_count and pending_search_count %}
+        <small class="text-muted" style="display:block;margin-top:10px">{{ searched_item_count }} items already searched, {{ pending_search_count }} still pending.</small>
+        {% elif pending_search_count %}
+        <small class="text-muted" style="display:block;margin-top:10px">{{ pending_search_count }} pending items ready for search.</small>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="form-group">
       <label>
         AI Search Instructions
         <span class="badge badge-gray" style="margin-left:6px;font-size:0.65rem">AI</span>
@@ -149,6 +174,8 @@
 
 <script>
 const sessionId = {{ session.id }};
+const pendingSearchCount = {{ pending_search_count }};
+const searchedItemCount = {{ searched_item_count }};
 let searchStartTime = null;
 let _pendingFiles = null;
 let _uploadedFolderPath = '';
@@ -189,6 +216,19 @@ document.querySelectorAll('input[name="search_mode"]').forEach(radio => {
       (mode === 'local' || mode === 'both') ? 'block' : 'none';
   });
 });
+
+const sampleToggle = document.getElementById('sample-toggle');
+const sampleLimitWrap = document.getElementById('sample-limit-wrap');
+
+function syncSampleLimitUI() {
+  if (!sampleToggle || !sampleLimitWrap) return;
+  sampleLimitWrap.style.display = sampleToggle.checked ? 'block' : 'none';
+}
+
+if (sampleToggle) {
+  sampleToggle.addEventListener('change', syncSampleLimitUI);
+  syncSampleLimitUI();
+}
 
 function handleFileSelect(files) {
   if (!files || !files.length) return;
@@ -399,6 +439,9 @@ async function startSearch() {
   const brandUrls = document.getElementById('brand-urls').value.trim()
     .split(/[\n,;]+/).map(u => u.trim()).filter(u => u);
   const searchNotes = document.getElementById('search-notes').value.trim();
+  const sampleLimit = sampleToggle && sampleToggle.checked
+    ? Math.max(1, parseInt(document.getElementById('sample-limit').value || '50', 10) || 50)
+    : 0;
 
   // Upload images first if local/both mode
   if (mode === 'local' || mode === 'both') {
@@ -414,7 +457,13 @@ async function startSearch() {
   const resp = await fetch(`/search/${sessionId}/start`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ search_mode: mode, local_folder: localFolder, brand_urls: brandUrls, search_notes: searchNotes }),
+    body: JSON.stringify({
+      search_mode: mode,
+      local_folder: localFolder,
+      brand_urls: brandUrls,
+      search_notes: searchNotes,
+      sample_limit: sampleLimit,
+    }),
   });
 
   const data = await resp.json();
@@ -441,6 +490,11 @@ window.getSearchAssistantContext = function() {
     type: 'search',
     session_id: sessionId,
     search_mode: modeEl ? modeEl.value : 'web',
+    pending_item_count: pendingSearchCount,
+    searched_item_count: searchedItemCount,
+    sample_limit: sampleToggle && sampleToggle.checked
+      ? parseInt(document.getElementById('sample-limit').value || '0', 10) || 0
+      : 0,
     priority_domains: document.getElementById('brand-urls').value.trim()
       .split(/[\n,;]+/).map(u => u.trim()).filter(Boolean),
     search_notes: document.getElementById('search-notes').value.trim(),
