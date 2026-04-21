@@ -36,7 +36,7 @@ _HTTP = _make_http_session()
 MAX_CANDIDATES = 10
 STRICT_MAX_CANDIDATES = 5
 REQUEST_TIMEOUT = 15
-SEARCH_CACHE_VERSION = 4
+SEARCH_CACHE_VERSION = 5
 
 _HEADERS = {
     "User-Agent": (
@@ -761,18 +761,12 @@ class ImageSearcher:
         )
 
     def should_force_ai_primary(self, item: dict) -> bool:
-        ctx = self._build_item_context(item)
-        family = ctx.get("category_family")
-        if ctx.get("strict_query"):
-            return True
-        if family in {"footwear", "bag", "hat"}:
-            return True
-        # Any item that has a specified color name should go through AI vision
-        # so color match and clean-packshot selection are enforced by sight,
-        # not just text heuristics.
-        if (ctx.get("color_name") or "").strip():
-            return True
-        return False
+        # Route every item through AI vision ranking. Text heuristics can't
+        # reliably judge color match, clean-packshot vs lifestyle/detail shot,
+        # or same-product-different-color reuse — the vision model can.
+        # Keeping quality consistent across colored and uncolored items, all
+        # categories, and all brands is worth the API call.
+        return True
 
     def build_manual_search_query(self, item: dict) -> str:
         ctx = self._build_item_context(item)
