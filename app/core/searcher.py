@@ -763,7 +763,16 @@ class ImageSearcher:
     def should_force_ai_primary(self, item: dict) -> bool:
         ctx = self._build_item_context(item)
         family = ctx.get("category_family")
-        return bool(ctx.get("strict_query")) or family in {"footwear", "bag", "hat"}
+        if ctx.get("strict_query"):
+            return True
+        if family in {"footwear", "bag", "hat"}:
+            return True
+        # Any item that has a specified color name should go through AI vision
+        # so color match and clean-packshot selection are enforced by sight,
+        # not just text heuristics.
+        if (ctx.get("color_name") or "").strip():
+            return True
+        return False
 
     def build_manual_search_query(self, item: dict) -> str:
         ctx = self._build_item_context(item)

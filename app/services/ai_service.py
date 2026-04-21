@@ -575,16 +575,28 @@ Product to match:
 Attached below are candidate images in order. Their source URLs are:
 {listed}
 
-Judge the ACTUAL visible product in each image, not only the URL text.
+Judge the ACTUAL visible product in each image, not only the URL text. You are the final quality gate — a wrong pick ships to a customer.
 
-Ranking rules:
-1. Exact visible product type must match. Shorts are not t-shirts. Shoes are not bikes or drinks.
-2. Exact visible color match is critical. Wrong color should be rejected.
-3. Prefer clean product photos and official packshots when multiple candidates are otherwise similar.
-4. Prefer the same kind of hero product image that a strict Google/Bing query would show first: full product visible, clean framing, plain background, no distracting styling.
-5. For footwear, prefer a side/front product packshot of the whole shoe or pair. Reject close detail crops, outsole/bottom shots, or on-foot/model/lifestyle images if a clean packshot exists.
-6. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
-7. If a candidate looks like the same photo reused for a clearly different item family, discard it.
+HARD REJECT RULES (put in "discarded", never in "ranked"):
+A. Wrong dominant color. The product's dominant color MUST be in the same family as "{color_name}". Examples that must be discarded:
+   - "Light Grey" / "Grey" item but image shows beige, tan, cream, brown, or khaki.
+   - "Grey" item but image shows black, navy, or dark brown.
+   - "Black" item but image shows charcoal grey or navy.
+   - "White" / "Cream" / "Off-white" item but image shows beige or yellow.
+   Be strict: if you are not confident the color matches, discard.
+B. Wrong product type (shorts vs t-shirt, sandal vs loafer, bag vs shoe, etc.).
+C. Close-up detail crop that does not show the WHOLE product (e.g., only the heel, only a logo patch, only a sleeve, only the outsole).
+D. On-model / lifestyle / editorial / lookbook / campaign shot where the product is styled on a person and not shown as a clean packshot, UNLESS every other candidate is also a model shot.
+E. Image is a logo, banner, swatch, thumbnail, or clearly a different item family.
+
+PREFER (rank these highest):
+1. Clean studio packshot: full product visible, plain/white background, no person, no heavy styling — the kind of hero image a strict Google/Bing product search shows first.
+2. For footwear: side or 3/4 side view of the whole shoe or pair on plain background.
+3. For tops / t-shirts / sweaters: flat-lay or ghost-mannequin front view of the full garment on plain background. Prefer over any on-model shot when one exists.
+4. For bags: front or 3/4 view of the whole bag on plain background.
+5. Color match must be EXACT to the naked eye, not just "close".
+6. If multiple candidates show the same product and color, rank the clearest/best-framed one first.
+7. If a candidate looks like the same photo reused for a different item family, discard it.
 
 Return ONLY valid JSON in this format:
 {{
