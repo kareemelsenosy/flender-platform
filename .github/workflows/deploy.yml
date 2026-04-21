@@ -42,12 +42,36 @@ jobs:
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: CLAUDE_API_KEY
           script: |
             cd ${{ secrets.DEPLOY_PATH }}
+            python3 - <<'PY'
+            import os
+            from pathlib import Path
+
+            env_path = Path(".env")
+            lines = env_path.read_text().splitlines() if env_path.exists() else []
+            claude_key = os.environ.get("CLAUDE_API_KEY", "").strip()
+
+            if claude_key:
+                updated = []
+                replaced = False
+                for line in lines:
+                    if line.startswith("CLAUDE_API_KEY="):
+                        updated.append(f"CLAUDE_API_KEY={claude_key}")
+                        replaced = True
+                    else:
+                        updated.append(line)
+                if not replaced:
+                    updated.append(f"CLAUDE_API_KEY={claude_key}")
+                env_path.write_text("\n".join(updated).rstrip() + "\n")
+            PY
             docker compose pull
             docker compose build --no-cache
             docker compose up -d
