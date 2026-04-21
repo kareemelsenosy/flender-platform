@@ -9,6 +9,7 @@ import json
 import re
 import threading
 import urllib.parse
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -34,7 +35,7 @@ _HTTP = _make_http_session()
 
 MAX_CANDIDATES = 10
 REQUEST_TIMEOUT = 15
-SEARCH_CACHE_VERSION = 2
+SEARCH_CACHE_VERSION = 3
 
 _HEADERS = {
     "User-Agent": (
@@ -188,6 +189,7 @@ _COLOR_WORDS = {
     "black", "white", "blue", "navy", "green", "red", "pink", "purple", "orange",
     "yellow", "grey", "gray", "beige", "brown", "tan", "khaki", "olive", "cream",
     "silver", "gold", "multi", "multicolor", "violet", "indigo", "aqua", "turquoise",
+    "chocolate",
     "pelican", "ghost", "salt", "lakers", "natural", "oxide", "wax", "dog",
 }
 _CATEGORY_FAMILY_TERMS: dict[str, set[str]] = {
@@ -227,6 +229,19 @@ _LOW_QUALITY_TERMS = {
     "logo", "logos", "banner", "banners", "icon", "icons", "avatar", "avatars",
     "wallpaper", "wallpapers", "illustration", "illustrations", "vector", "vectors",
     "mockup", "mockups", "template", "templates", "clipart", "poster", "posters",
+}
+_PREFERRED_PRODUCT_SHOT_TERMS = {
+    "packshot", "product", "pair", "pairs", "profile", "side", "lateral",
+    "front", "catalog", "studio",
+}
+_DETAIL_SHOT_TERMS = {
+    "detail", "details", "closeup", "zoom", "macro", "crop", "cropped", "texture",
+}
+_OUTSOLE_SHOT_TERMS = {
+    "sole", "outsole", "bottom", "underside", "heel",
+}
+_LIFESTYLE_SHOT_TERMS = {
+    "lifestyle", "editorial", "lookbook", "campaign", "worn", "model",
 }
 _GENERIC_BRAND_TOKENS = {
     "co", "company", "cie", "inc", "ltd", "llc", "group", "official", "brand",
@@ -296,7 +311,8 @@ class SearchHit:
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+    normalized = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", normalized.lower())
 
 
 def _join_distinct_parts(parts: list[str]) -> str:
@@ -617,6 +633,24 @@ class ImageSearcher:
         parts = [ctx["brand"], ctx["base_item_code"], ctx["item_group"], "product image"]
         return _join_distinct_parts(parts)
 
+    def _is_obvious_wrong_color_hit(self, hit: dict[str, Any], ctx: dict[str, Any]) -> bool:
+        color_tokens = ctx.get("color_tokens") or []
+        if not color_tokens:
+            return False
+        text = " ".join([
+            str(hit.get("url") or ""),
+            str(hit.get("page_url") or ""),
+            str(hit.get("title") or ""),
+            str(hit.get("description") or ""),
+        ]).lower()
+        normalized = _slug(text)
+        text_tokens = set(_tokenize(text))
+        color_matches = {token for token in color_tokens if token in text_tokens or token in normalized}
+        if color_matches:
+            return False
+        other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)
+        return bool(other_colors)
+
     def _coerce_hits(self, raw_hits: list[Any]) -> list[SearchHit]:
         hits: list[SearchHit] = []
         for raw in raw_hits or []:
@@ -766,6 +800,23 @@ class ImageSearcher:
                     pass
 
         combined_hits = self._aggregate_hits(source_results)
+        if ctx.get("strict_query"):
+            google_priority_hits = [
+                hit for hit in combined_hits
+                if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & set(hit.get("source_names") or set())
+            ]
+            if google_priority_hits:
+                combined_hits = google_priority_hits + [
+                    hit for hit in combined_hits
+                    if hit not in google_priority_hits
+                ]
+
+            strict_color_hits = [
+                hit for hit in combined_hits
+                if not self._is_obvious_wrong_color_hit(hit, ctx)
+            ]
+            if strict_color_hits:
+                combined_hits = strict_color_hits
         raw_scores = {}
         for hit in combined_hits:
             raw_scores[hit["url"]] = self._score_hit(hit, ctx)
@@ -962,7 +1013,9 @@ class ImageSearcher:
                 score += min(0.18, len(color_matches) * 0.06)
             other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)
             if other_colors and not color_matches:
-                score -= 0.1
+                score -= 0.18 if ctx.get("strict_query") else 0.1
+            elif other_colors and color_matches:
+                score -= min(0.08, len(other_colors) * 0.03)
             if style_tokens:
                 style_matches = sum(1 for token in style_tokens if token in text_tokens or token in normalized_text)
                 if style_matches >= max(1, min(2, len(style_tokens))) and color_matches:
@@ -1002,6 +1055,14 @@ class ImageSearcher:
             score += 0.10
         if "mm.bing.net" in url.lower() or "th.bing.com" in url.lower():
             score -= 0.12
+        if any(term in text_tokens for term in _PREFERRED_PRODUCT_SHOT_TERMS):
+            score += 0.08
+        if any(term in text_tokens for term in _DETAIL_SHOT_TERMS) or "close-up" in lower:
+            score -= 0.14
+        if any(term in text_tokens for term in _OUTSOLE_SHOT_TERMS):
+            score -= 0.18
+        if any(term in text_tokens for term in _LIFESTYLE_SHOT_TERMS) or "on-foot" in lower or "on foot" in lower:
+            score -= 0.16
 
         category_family = ctx.get("category_family")
         if category_family:
@@ -1017,7 +1078,7 @@ class ImageSearcher:
                 if matched:
                     conflicting_hits |= matched
             if conflicting_hits and not family_hits:
-                score -= 0.45
+                score -= 0.65 if ctx.get("strict_query") else 0.45
             negative_terms = _NEGATIVE_HINT_TERMS.get(category_family, set())
             if any(token in text_tokens for token in negative_terms):
                 score -= 0.4
@@ -1040,13 +1101,13 @@ class ImageSearcher:
         if any(name.startswith("extra_") and "phrase" in name for name in source_names):
             score += 0.22
         if "google_exact" in source_names or "google_scrape_exact" in source_names:
-            score += 0.18
+            score += 0.26
         if "google_phrase" in source_names or "google_scrape_phrase" in source_names:
-            score += 0.24
+            score += 0.32
         if "bing_exact" in source_names:
-            score += 0.1
+            score += 0.16
         if "bing_phrase" in source_names:
-            score += 0.14
+            score += 0.2
 
         best_position = min(positions) if positions else 99
         score += max(0.0, 0.06 - (best_position + 1) * 0.01)

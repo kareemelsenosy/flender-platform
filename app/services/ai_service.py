@@ -21,12 +21,25 @@ logger = logging.getLogger(__name__)
 _AI_IMAGE_MAX_CANDIDATES = 6
 _AI_IMAGE_MAX_DIM = 768
 _AI_IMAGE_FETCH_TIMEOUT = 8
+_VISUAL_DETAIL_TERMS = {
+    "detail", "details", "closeup", "close-up", "zoom", "macro", "texture",
+    "crop", "cropped", "sole", "outsole", "bottom", "underside", "heel",
+}
+_VISUAL_LIFESTYLE_TERMS = {
+    "lifestyle", "editorial", "lookbook", "campaign", "worn", "model",
+    "on-foot", "on foot", "on-model", "on model",
+}
+_VISUAL_STRICT_CATEGORY_TERMS = {
+    "footwear", "shoe", "shoes", "sneaker", "sneakers", "trainer", "trainers",
+    "boot", "boots", "loafer", "loafers", "slipper", "slippers",
+    "bag", "bags", "backpack", "backpacks", "cap", "caps", "hat", "hats",
+}
 _SEARCH_PERFECTION_RULES = """Non-negotiable match rules:
 - The visible product type must be exact. Shorts are not t-shirts. Shoes are not sandals, bikes, drinks, or accessories.
 - The visible color must match exactly or be an obvious close synonym. If the candidate is clearly a different color, reject it.
 - If item codes differ, do NOT treat the same image as valid unless they share the same normalized base code and only vary by size.
 - When the full exact query already identifies the product, keep that full phrasing as the first search query instead of shortening it too early.
-- Prefer official product pages and clean packshots over marketplaces, logos, banners, thumbnails, or lifestyle/editorial images.
+- Prefer official product pages and clean packshots over marketplaces, logos, banners, thumbnails, close-up detail shots, outsole/bottom-only shots, or lifestyle/editorial images.
 """
 
 
@@ -470,6 +483,7 @@ Return ONLY a JSON array of 2-3 search query strings:
 
 def _should_use_vision_ranking(
     urls: list[str],
+    item: dict,
     scores: dict[str, float] | None = None,
     *,
     prefer_vision: bool = False,
@@ -478,12 +492,31 @@ def _should_use_vision_ranking(
         return False
     if prefer_vision:
         return True
+
+    joined = " ".join(str(url or "").lower() for url in urls[:4])
+    visual_ambiguity = (
+        any(term in joined for term in _VISUAL_DETAIL_TERMS)
+        or any(term in joined for term in _VISUAL_LIFESTYLE_TERMS)
+    )
+    if visual_ambiguity:
+        return True
+
+    category_text = " ".join([
+        str(item.get("item_group") or ""),
+        str(item.get("style_name") or ""),
+    ]).lower()
+    strict_visual_category = any(term in category_text for term in _VISUAL_STRICT_CATEGORY_TERMS)
+
     if not scores:
-        return len(urls) <= _AI_IMAGE_MAX_CANDIDATES
+        return strict_visual_category or len(urls) <= _AI_IMAGE_MAX_CANDIDATES
 
     top_scores = [float(scores.get(url, 0.0) or 0.0) for url in urls[:3]]
     top_1 = top_scores[0] if top_scores else 0.0
     top_2 = top_scores[1] if len(top_scores) > 1 else 0.0
+    if strict_visual_category and len(urls) <= _AI_IMAGE_MAX_CANDIDATES:
+        if top_1 >= 0.96 and (top_1 - top_2) >= 0.22:
+            return False
+        return True
     if top_1 >= 0.86 and (top_1 - top_2) >= 0.18:
         return False
     return True
@@ -497,7 +530,7 @@ def _ai_rank_urls_with_vision(
     scores: dict[str, float] | None = None,
     prefer_vision: bool = False,
 ) -> list[str] | None:
-    if not _should_use_vision_ranking(urls, scores, prefer_vision=prefer_vision):
+    if not _should_use_vision_ranking(urls, item, scores, prefer_vision=prefer_vision):
         return None
 
     inspect_urls = list(urls[:_AI_IMAGE_MAX_CANDIDATES])
@@ -531,8 +564,9 @@ Ranking rules:
 1. Exact visible product type must match. Shorts are not t-shirts. Shoes are not bikes or drinks.
 2. Exact visible color match is critical. Wrong color should be rejected.
 3. Prefer clean product photos and official packshots when multiple candidates are otherwise similar.
-4. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
-5. If a candidate looks like the same photo reused for a clearly different item family, discard it.
+4. Prefer a full product view on a plain or clean background over detail crops, outsole/bottom shots, or on-foot/model/lifestyle images.
+5. If multiple candidates show the same product, rank the clearest/best-framed product photo first.
+6. If a candidate looks like the same photo reused for a clearly different item family, discard it.
 
 Return ONLY valid JSON in this format:
 {{
@@ -618,9 +652,10 @@ Ranking criteria (most important first):
 3. URLs matching the full exact query wording most closely should rank highest.
 4. URL is from the brand's official domain or a known fashion CDN
 5. URL path suggests a product image (/product/, /products/, /p/, /catalog/, /item/, scene7, cloudfront, akamaized, shopify, cloudinary)
-6. URL does NOT look like a logo, banner, thumbnail, or avatar
-7. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
-8. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
+6. Prefer clean packshots / full product views. De-prioritize close-up detail images, outsole/bottom shots, and on-foot/model/lifestyle shots.
+7. URL does NOT look like a logo, banner, thumbnail, or avatar
+8. High-resolution image path preferred (not /thumb/, /small/, /icon/, /logo/)
+9. Category/type mismatch is a major negative. Example: shorts must not rank above t-shirts, footwear must not rank below bikes or drinks.
 
 Return ONLY a JSON array of the URL numbers in order from best to worst:
 [3, 1, 5, 2, 4]
@@ -628,6 +663,7 @@ Return ONLY a JSON array of the URL numbers in order from best to worst:
 IMPORTANT:
 - EXCLUDE any URL that clearly shows the WRONG color (different from "{color_name}")
 - EXCLUDE logos, banners, irrelevant images, or wrong product types entirely
+- EXCLUDE close-up detail shots, outsole/bottom views, or on-foot/model/editorial images if a clean product packshot exists
 - If one result matches the full exact query clearly better than the others, put it first
 - Only include numbers for URLs that are likely the correct product in the correct color"""
 
