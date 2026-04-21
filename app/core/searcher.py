@@ -34,7 +34,7 @@ def _make_http_session() -> requests.Session:
 _HTTP = _make_http_session()
 
 MAX_CANDIDATES = 10
-STRICT_MAX_CANDIDATES = 3
+STRICT_MAX_CANDIDATES = 5
 REQUEST_TIMEOUT = 15
 SEARCH_CACHE_VERSION = 3
 
@@ -260,6 +260,7 @@ _TRANSIENT_QUERY_PARAMS = {
 _SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
 _TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
 _SIZE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d+)?)")
+_VARIANT_FAMILY_CODE_RE = re.compile(r"(?i)^(.+?)-(\d{4})$")
 
 
 def normalize_base_item_code(item_code: str | None, item_group: str | None = None, style_name: str | None = None) -> str:
@@ -275,6 +276,19 @@ def normalize_base_item_code(item_code: str | None, item_group: str | None = Non
         m = _TRAILING_SIZE_TOKEN_RE.match(code)
         if m:
             return m.group(1)
+    return code
+
+
+def normalize_related_item_code(item_code: str | None, item_group: str | None = None, style_name: str | None = None) -> str:
+    code = normalize_base_item_code(item_code, item_group, style_name)
+    if not code:
+        return ""
+    m = _VARIANT_FAMILY_CODE_RE.match(code)
+    if not m:
+        return code
+    family_code = m.group(1).strip()
+    if re.search(r"[a-zA-Z]", family_code) and re.search(r"\d", family_code):
+        return family_code
     return code
 
 
@@ -515,20 +529,7 @@ class ImageSearcher:
         return _unique_preserve(urls)
 
     def _normalize_item_code(self, item_code: str, item_group: str | None, style_name: str | None) -> str:
-        code = str(item_code or "").strip()
-        if not code:
-            return ""
-        text = " ".join(filter(None, [item_group, style_name])).lower()
-        footwear_hint = any(term in text for term in _CATEGORY_FAMILY_TERMS["footwear"])
-
-        m = _SIZE_SUFFIX_RE.match(code)
-        if m:
-            return m.group(1)
-        if footwear_hint:
-            m = _TRAILING_SIZE_TOKEN_RE.match(code)
-            if m:
-                return m.group(1)
-        return code
+        return normalize_base_item_code(item_code, item_group, style_name)
 
     def _normalized_color_identity(self, color_code: str | None, color_name: str | None) -> str:
         if color_name:
@@ -561,6 +562,7 @@ class ImageSearcher:
         barcode = str(item.get("barcode") or "").strip() or None
         item_group = str(item.get("item_group") or "").strip() or None
         base_item_code = self._normalize_item_code(item_code, item_group, style_name)
+        related_item_code = normalize_related_item_code(item_code, item_group, style_name)
         family, family_terms = self._infer_category_family(item_group, style_name)
         playbook = self._matching_brand_playbook(brand)
         style_tokens = [
@@ -573,6 +575,7 @@ class ImageSearcher:
         return {
             "item_code": item_code,
             "base_item_code": base_item_code or item_code,
+            "related_item_code": related_item_code or base_item_code or item_code,
             "color_code": color_code,
             "color_name": color_name,
             "style_name": style_name,
@@ -629,14 +632,18 @@ class ImageSearcher:
         return f"\"{exact}\""
 
     def _build_text_query(self, ctx: dict[str, Any], include_category: bool = True, prefer_base_code: bool = True) -> str:
-        item_code = ctx["base_item_code"] if prefer_base_code else ctx["item_code"]
+        item_code = (
+            ctx.get("related_item_code") or ctx["base_item_code"]
+            if prefer_base_code
+            else ctx["item_code"]
+        )
         parts = [ctx["brand"], item_code, ctx["style_name"], ctx["color_name"]]
         if include_category:
             parts.append(ctx["item_group"])
         return _join_distinct_parts(parts)
 
     def _build_code_query(self, ctx: dict[str, Any]) -> str:
-        parts = [ctx["brand"], ctx["base_item_code"], ctx["item_group"], "product image"]
+        parts = [ctx["brand"], ctx.get("related_item_code") or ctx["base_item_code"], ctx["item_group"], "product image"]
         return _join_distinct_parts(parts)
 
     def _is_obvious_wrong_color_hit(self, hit: dict[str, Any], ctx: dict[str, Any]) -> bool:
@@ -759,6 +766,7 @@ class ImageSearcher:
             ordered_pool = sorted(pool, key=lambda hit: raw_scores.get(hit["url"], 0.0), reverse=True)
             full_code_slug = _slug(ctx.get("item_code") or "")
             base_code_slug = _slug(ctx.get("base_item_code") or "")
+            related_code_slug = _slug(ctx.get("related_item_code") or "")
             if full_code_slug or base_code_slug:
                 code_hits = []
                 for hit in ordered_pool:
@@ -772,6 +780,7 @@ class ImageSearcher:
                     if (
                         (full_code_slug and full_code_slug in normalized)
                         or (base_code_slug and base_code_slug in normalized)
+                        or (related_code_slug and related_code_slug in normalized)
                     ):
                         code_hits.append(hit)
                 if code_hits:
@@ -1069,12 +1078,16 @@ class ImageSearcher:
 
         full_code = ctx["item_code"]
         base_code = ctx["base_item_code"]
+        related_code = ctx.get("related_item_code") or ""
         full_code_slug = _slug(full_code)
         base_code_slug = _slug(base_code)
+        related_code_slug = _slug(related_code)
         if full_code_slug and full_code_slug in normalized_text:
             score += 0.75
         elif base_code_slug and base_code_slug in normalized_text:
             score += 0.65
+        elif related_code_slug and related_code_slug in normalized_text:
+            score += 0.5
         else:
             code_tokens = [token for token in _tokenize(base_code) if len(token) >= 3]
             if code_tokens:
@@ -1101,6 +1114,7 @@ class ImageSearcher:
         exact_tokens = ctx.get("exact_query_tokens") or []
         exact_matches = sum(1 for token in exact_tokens if token in text_tokens or token in normalized_text)
         exact_ratio = (exact_matches / len(exact_tokens)) if exact_tokens else 0.0
+        related_code_present = bool(related_code_slug and related_code_slug in normalized_text)
         if exact_ratio >= 0.8:
             score += 0.18
         elif exact_ratio >= 0.6:
@@ -1216,9 +1230,13 @@ class ImageSearcher:
         if ctx.get("strict_query") and (
             {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase", "bing_exact", "bing_phrase"} & set(source_names)
         ):
-            if exact_ratio < 0.45:
+            if exact_ratio < 0.45 and not related_code_present:
                 score -= 0.24
-            if not full_code_slug or full_code_slug not in normalized_text:
+            if not (
+                (full_code_slug and full_code_slug in normalized_text)
+                or (base_code_slug and base_code_slug in normalized_text)
+                or related_code_present
+            ):
                 score -= 0.12
 
         best_position = min(positions) if positions else 99

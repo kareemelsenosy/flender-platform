@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.searcher import ImageSearcher, SearchHit, item_sort_key
+from app.core.searcher import ImageSearcher, SearchHit, item_sort_key, normalize_related_item_code
 
 
 def test_cache_identity_normalizes_size_suffixed_footwear_codes():
@@ -331,7 +331,64 @@ def test_strict_search_caps_candidates_to_few_high_quality_options(monkeypatch):
         "item_group": "Loafers",
     })
 
-    assert len(candidates) <= 3
+    assert len(candidates) <= 5
+
+
+def test_related_item_code_normalizes_near_duplicate_variant_suffixes():
+    related_a = normalize_related_item_code(
+        "CITYLOAFER2LGRY-4300",
+        item_group="Footwear",
+        style_name="City Loafer M",
+    )
+    related_b = normalize_related_item_code(
+        "CITYLOAFER2LGRY-4200",
+        item_group="Footwear",
+        style_name="City Loafer M",
+    )
+
+    assert related_a == "CITYLOAFER2LGRY"
+    assert related_a == related_b
+
+
+def test_search_prefers_related_family_code_hit_for_near_duplicate_variant_skus(monkeypatch):
+    searcher = ImageSearcher({"brand_site_urls": {"aurélien": ["aurelien.com"]}})
+
+    correct_family_hit = SearchHit(
+        url="https://aurelien.com/images/cityloafer2lgry-packshot.jpg",
+        page_url="https://aurelien.com/products/city-loafer-light-grey",
+        title="Aurélien City Loafer M Light Grey CITYLOAFER2LGRY",
+        description="Official clean packshot",
+    )
+    wrong_color_hit = SearchHit(
+        url="https://aurelien.com/images/cityloafer2brn-packshot.jpg",
+        page_url="https://aurelien.com/products/city-loafer-brown",
+        title="Aurélien City Loafer M Chocolate CITYLOAFER2BRN",
+        description="Official brown packshot",
+    )
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(
+        searcher,
+        "_google_images_scrape",
+        lambda query: [correct_family_hit] if "CITYLOAFER2LGRY" in query else [wrong_color_hit],
+    )
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [wrong_color_hit])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, _scores = searcher.search({
+        "item_code": "CITYLOAFER2LGRY-4300",
+        "style_name": "City Loafer M",
+        "color_name": "LIGHT GREY",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    })
+
+    assert candidates
+    assert candidates[0] == correct_family_hit.url
+    assert wrong_color_hit.url not in candidates
 
 
 def test_strict_search_prefers_google_exact_pool_before_broad_matches(monkeypatch):
