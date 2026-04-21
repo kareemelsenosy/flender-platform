@@ -773,9 +773,9 @@ class ImageSearcher:
 
     def _strict_hit_priority_pool(self, hit: dict[str, Any]) -> int:
         source_names = set(hit.get("source_names") or set())
-        if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & source_names:
-            return 0
         if {"bing_exact", "bing_phrase"} & source_names:
+            return 0
+        if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & source_names:
             return 1
         if any(
             (name.startswith("brand_site") or name.startswith("extra_")) and ("exact" in name or "phrase" in name)
@@ -1388,14 +1388,14 @@ class ImageSearcher:
             score += 0.16
         if any(name.startswith("extra_") and "phrase" in name for name in source_names):
             score += 0.22
-        if "google_exact" in source_names or "google_scrape_exact" in source_names:
-            score += 0.34
-        if "google_phrase" in source_names or "google_scrape_phrase" in source_names:
-            score += 0.38
         if "bing_exact" in source_names:
-            score += 0.26
+            score += 0.42
         if "bing_phrase" in source_names:
-            score += 0.3
+            score += 0.46
+        if "google_exact" in source_names or "google_scrape_exact" in source_names:
+            score += 0.32
+        if "google_phrase" in source_names or "google_scrape_phrase" in source_names:
+            score += 0.36
         if ctx.get("strict_query") and (
             {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase", "bing_exact", "bing_phrase"} & set(source_names)
         ):
@@ -1423,7 +1423,7 @@ class ImageSearcher:
             score += top_boost
         if bing_best is not None:
             per_step = 0.03 if strict else 0.02
-            top_boost = max(0.0, (0.16 if strict else 0.09) - bing_best * per_step)
+            top_boost = max(0.0, (0.24 if strict else 0.14) - bing_best * per_step)
             score += top_boost
 
         if google_best is not None and bing_best is not None:
@@ -1487,26 +1487,25 @@ class ImageSearcher:
                 title = str(obj.get("t") or obj.get("title") or "").strip()
                 page_url = str(obj.get("purl") or obj.get("surl") or obj.get("ru") or "").strip()
                 description = str(obj.get("desc") or obj.get("caption") or "").strip()
-                for key in ("murl", "turl"):
-                    value = str(obj.get(key) or "").strip()
-                    if value and value not in seen:
-                        seen.add(value)
-                        hits.append(SearchHit(
-                            url=value,
-                            page_url=page_url,
-                            title=title,
-                            description=description,
-                        ))
+                murl = str(obj.get("murl") or "").strip()
+                turl = str(obj.get("turl") or "").strip()  # thumbnail CDN — metadata only, not a hit
+                if murl and murl not in seen:
+                    seen.add(murl)
+                    if turl:
+                        seen.add(turl)  # prevent turl from appearing as its own hit later
+                    hits.append(SearchHit(
+                        url=murl,
+                        page_url=page_url,
+                        title=title,
+                        description=description,
+                    ))
             except Exception:
                 pass
 
-        # Method 2: murl/turl from decoded JSON blobs (handles &quot; encoding)
+        # Method 2: murl from decoded JSON blobs (handles &quot; encoding)
+        # turl is Bing's CDN thumbnail — intentionally not emitted as a candidate.
         for text in (raw, decoded):
             for value in re.findall(r'"murl"\s*:\s*"(https?://[^"\\]+)"', text):
-                if value and value not in seen:
-                    seen.add(value)
-                    hits.append(SearchHit(url=value))
-            for value in re.findall(r'"turl"\s*:\s*"(https?://[^"\\]+)"', text):
                 if value and value not in seen:
                     seen.add(value)
                     hits.append(SearchHit(url=value))

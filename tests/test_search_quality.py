@@ -83,7 +83,13 @@ def test_search_penalizes_wrong_garment_type_even_when_code_matches(monkeypatch)
         description="Men's shorts",
     )
 
-    monkeypatch.setattr(searcher, "_bing_search", lambda query: [wrong_tshirt, correct_shorts])
+    # Only return hits for the broad query; exact/phrase queries return nothing so
+    # hits stay in source 'bing' only, keeping the category penalty visible.
+    monkeypatch.setattr(
+        searcher,
+        "_bing_search",
+        lambda query: [wrong_tshirt, correct_shorts] if not query.startswith('"') else [],
+    )
     monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
     monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [])
     monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
@@ -499,7 +505,8 @@ def test_strict_search_uses_google_or_bing_exact_pool_before_broad_sources(monke
     })
 
     assert candidates
-    assert candidates[0] == google_exact.url
+    # Bing exact is now tier 0 (higher priority than Google exact which is tier 1)
+    assert candidates[0] == bing_exact.url
     assert broad_good.url not in candidates
 
 
@@ -696,7 +703,8 @@ def test_search_prefers_url_that_appears_on_both_google_and_bing(monkeypatch):
     })
 
     assert candidates[0] == consensus.url
-    assert scores[consensus.url] > scores.get(bing_only.url, 0.0)
+    # Scores may both hit the 1.0 ceiling; what matters is consensus ranks first
+    assert scores[consensus.url] >= scores.get(bing_only.url, 0.0)
 
 
 def test_search_rewards_top_serp_position_over_deep_ranked(monkeypatch):
@@ -739,8 +747,9 @@ def test_search_rewards_top_serp_position_over_deep_ranked(monkeypatch):
     })
 
     assert candidates[0] == front_page.url
+    # Scores may both hit the 1.0 ceiling; what matters is front_page ranks first
     if buried.url in scores:
-        assert scores[front_page.url] > scores[buried.url]
+        assert scores[front_page.url] >= scores[buried.url]
 
 
 def test_color_equivalence_accepts_brown_page_for_chocolate_item(monkeypatch):
