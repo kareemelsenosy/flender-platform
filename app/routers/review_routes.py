@@ -296,7 +296,8 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
         UniqueItem.confidence_label,
         UniqueItem.confidence_reason,
     ).filter(
-        UniqueItem.session_id == session_id
+        UniqueItem.session_id == session_id,
+        UniqueItem.search_status == "done",
     ).all()
     # Sort so similar styles sit under each other (brand -> style -> base code -> color)
     items = sorted(

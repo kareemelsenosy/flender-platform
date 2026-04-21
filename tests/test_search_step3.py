@@ -469,3 +469,57 @@ def test_start_search_continues_pending_items_without_resetting_completed_sample
     assert refreshed_pending.search_status == "pending"
     assert refreshed_session.searched_items == 1
     assert refreshed_session.status == "searching"
+
+
+def test_review_state_hides_pending_items_during_partial_search(
+    client,
+    login_as,
+    db_session,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+
+    session = models.Session(
+        user_id=user["id"],
+        name="Huge Sheet.xlsx",
+        source_type="excel_upload",
+        status="reviewing",
+        total_items=3,
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    searched = models.UniqueItem(
+        session_id=session.id,
+        item_code="DONE-1",
+        brand="Test Brand",
+        search_status="done",
+        review_status="pending",
+        suggested_url="https://example.com/done.jpg",
+    )
+    pending_a = models.UniqueItem(
+        session_id=session.id,
+        item_code="PENDING-1",
+        brand="Test Brand",
+        search_status="pending",
+        review_status="pending",
+    )
+    pending_b = models.UniqueItem(
+        session_id=session.id,
+        item_code="PENDING-2",
+        brand="Test Brand",
+        search_status="pending",
+        review_status="pending",
+    )
+    db_session.add_all([searched, pending_a, pending_b])
+    db_session.commit()
+
+    resp = client.get(f"/review/{session.id}/state")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    state = payload["state"]
+    assert len(state) == 1
+    only = next(iter(state.values()))
+    assert only["item"]["item_code"] == "DONE-1"
