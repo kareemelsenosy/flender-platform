@@ -859,3 +859,91 @@ def test_dominant_color_cluster_picks_item_color_when_it_dominates(monkeypatch):
     assert chocolate_a.url in candidates or brown_b.url in candidates
     # Black is a completely different color family — should be filtered out
     assert black_outlier.url not in candidates
+
+
+def test_compound_color_rejects_light_beige_for_light_grey_item():
+    """The 'LIGHT GREY' vs 'LIGHT BEIGE' bug: old tokenisation put 'light'
+    into the acceptable set, so any 'light *' page matched. The compound
+    tokeniser fixes this."""
+    searcher = ImageSearcher()
+    wrong_light_beige = {
+        "url": "https://aurelien.com/images/light-beige-yacht-loafer.jpg",
+        "page_url": "https://aurelien.com/products/light-beige-yacht-loafer",
+        "title": "Aurélien Light Beige Yacht Loafer",
+        "description": "",
+    }
+    right_light_grey = {
+        "url": "https://aurelien.com/images/light-grey-yacht-loafer.jpg",
+        "page_url": "https://aurelien.com/products/light-grey-yacht-loafer",
+        "title": "Aurélien Light Grey Yacht Loafer",
+        "description": "",
+    }
+    ctx = searcher._build_item_context({
+        "item_code": "CITYLOAFER2LGRY-4200",
+        "style_name": "City Loafer",
+        "color_name": "LIGHT GREY",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    })
+    assert ctx["color_tokens"] == ["lightgrey"]
+    assert searcher._is_obvious_wrong_color_hit(wrong_light_beige, ctx) is True
+    assert searcher._is_obvious_wrong_color_hit(right_light_grey, ctx) is False
+
+
+def test_color_equivalence_covers_obscure_colors():
+    """Expanded equivalence classes — emerald should match green items,
+    burgundy should match red items, etc."""
+    searcher = ImageSearcher()
+    ctx = searcher._build_item_context({
+        "item_code": "X-1",
+        "style_name": "Tee",
+        "color_name": "Green",
+        "brand": "Acme",
+        "item_group": "T-Shirt",
+    })
+    emerald_hit = {"url": "https://x/emerald.jpg", "page_url": "", "title": "Emerald tee", "description": ""}
+    sage_hit = {"url": "https://x/sage.jpg", "page_url": "", "title": "Sage tee", "description": ""}
+    red_hit = {"url": "https://x/red.jpg", "page_url": "", "title": "Red tee", "description": ""}
+    assert searcher._is_obvious_wrong_color_hit(emerald_hit, ctx) is False
+    assert searcher._is_obvious_wrong_color_hit(sage_hit, ctx) is False
+    assert searcher._is_obvious_wrong_color_hit(red_hit, ctx) is True
+
+
+def test_url_lifestyle_path_marks_as_variant():
+    """URL path patterns like /lookbook/ or /editorial/ mark the hit as
+    a lifestyle shot even when the scraped title/description is generic."""
+    searcher = ImageSearcher()
+    lookbook = {
+        "url": "https://brand.example/lookbook/fw26/model-wearing-loafer.jpg",
+        "page_url": "https://brand.example/lookbook/fw26",
+        "title": "Aurélien Lady Chocolate Yacht Loafer",
+        "description": "",
+    }
+    packshot = {
+        "url": "https://brand.example/products/loafer-packshot.jpg",
+        "page_url": "https://brand.example/products/loafer",
+        "title": "Aurélien Lady Chocolate Yacht Loafer",
+        "description": "",
+    }
+    assert searcher._strict_hit_looks_like_variant(lookbook) is True
+    assert searcher._strict_hit_looks_like_variant(packshot) is False
+
+
+def test_high_numbered_carousel_image_marked_as_variant():
+    """Images named with high numeric suffixes like -05.jpg are usually
+    secondary carousel shots, not the primary packshot."""
+    searcher = ImageSearcher()
+    secondary = {
+        "url": "https://brand.example/products/loafer-05.jpg",
+        "page_url": "https://brand.example/products/loafer",
+        "title": "Loafer",
+        "description": "",
+    }
+    primary = {
+        "url": "https://brand.example/products/loafer-01.jpg",
+        "page_url": "https://brand.example/products/loafer",
+        "title": "Loafer",
+        "description": "",
+    }
+    assert searcher._strict_hit_looks_like_variant(secondary) is True
+    assert searcher._strict_hit_looks_like_variant(primary) is False

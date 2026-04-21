@@ -187,23 +187,114 @@ _STOP_TOKENS = {
     "wmns", "gs", "ps", "td", "eu", "uk", "us",
 }
 _COLOR_WORDS = {
+    # Base colors
     "black", "white", "blue", "navy", "green", "red", "pink", "purple", "orange",
     "yellow", "grey", "gray", "beige", "brown", "tan", "khaki", "olive", "cream",
     "silver", "gold", "multi", "multicolor", "violet", "indigo", "aqua", "turquoise",
-    "chocolate",
+    # Extended palette
+    "chocolate", "mocha", "espresso", "cognac", "coffee", "caramel", "taupe",
+    "ivory", "bone", "ecru", "sand", "biscuit", "camel", "nude", "stone", "charcoal", "slate",
+    "emerald", "sage", "forest", "mint", "pine", "hunter", "lime", "teal",
+    "cobalt", "azure", "sky", "denim", "midnight", "royal", "powder",
+    "burgundy", "wine", "crimson", "maroon", "ruby", "cherry", "brick",
+    "rose", "blush", "coral", "salmon", "fuchsia", "magenta", "peach",
+    "lavender", "plum", "eggplant", "aubergine", "mauve", "lilac",
+    "terracotta", "rust", "copper", "bronze",
+    "mustard", "ochre", "amber", "honey",
+    "onyx", "jet", "ink", "raven",
+    "pearl", "champagne", "vanilla",
+    # Brand-specific palette
     "pelican", "ghost", "salt", "lakers", "natural", "oxide", "wax", "dog",
+    # Compound / shade variants stored as single slugs (so URL paths like
+    # "light-beige.jpg" slugified to "lightbeige" are detectable)
+    "lightgrey", "lightgray", "darkgrey", "darkgray",
+    "lightbeige", "darkbeige",
+    "lightbrown", "darkbrown", "mediumbrown",
+    "lightblue", "darkblue", "darknavy", "midnightblue", "royalblue", "skyblue", "babyblue",
+    "lightgreen", "darkgreen", "forestgreen", "oliveGreen", "olivegreen",
+    "lightpink", "darkpink", "hotpink", "babypink",
+    "lightred", "darkred",
+    "lightpurple", "darkpurple",
+    "offwhite", "eggshell", "antiquewhite", "brightwhite",
+    "jetblack", "deepblack",
+    "darkchocolate", "milkchocolate",
 }
+# Compound color slugs — same as single-word compounds but listed separately
+# so we can check them via substring match on slugified URLs/titles.
+_COMPOUND_COLOR_SLUGS = frozenset({
+    c for c in _COLOR_WORDS if len(c) >= 8
+})
+# Color modifier words — never stand alone as color tokens; they're only
+# meaningful when immediately followed by a base color ("light grey").
+_COLOR_MODIFIERS = frozenset({"light", "dark", "bright", "deep", "pale", "pastel", "off", "dusty", "muted"})
+
+# Upper-body clothing terms — used to reject lifestyle shots of models
+# wearing outfits when we're searching for footwear.
+_UPPER_BODY_CLOTHING_TERMS = frozenset({
+    "sweater", "knitwear", "jumper", "pullover", "cardigan", "hoodie",
+    "jacket", "coat", "blazer", "shirt", "turtleneck", "crewneck", "polo",
+})
+
 # Equivalence classes: if any token in a class is in the item's color_tokens,
 # every other token in the class counts as a match for that item. Specific
 # labels (black/white/red/...) stay outside all classes so they remain
-# reject-able.
+# reject-able. Compound slugs (lightgrey) are also included so "LIGHT GREY"
+# items accept pages that say "light grey" even though the slug is one word.
 _COLOR_EQUIVALENCE_CLASSES: tuple[frozenset[str], ...] = (
-    frozenset({"brown", "chocolate", "mocha", "espresso", "cognac", "coffee"}),
-    frozenset({"grey", "gray", "stone", "charcoal", "slate"}),
-    frozenset({"cream", "beige", "ivory", "bone", "natural", "ecru", "sand"}),
-    frozenset({"tan", "khaki", "camel", "biscuit"}),
-    frozenset({"olive", "military"}),
+    frozenset({"brown", "chocolate", "mocha", "espresso", "cognac", "coffee", "caramel",
+               "darkbrown", "lightbrown", "mediumbrown", "darkchocolate", "milkchocolate"}),
+    frozenset({"grey", "gray", "lightgrey", "lightgray", "darkgrey", "darkgray",
+               "stone", "charcoal", "slate", "taupe"}),
+    frozenset({"cream", "beige", "ivory", "bone", "natural", "ecru", "sand", "nude",
+               "lightbeige", "darkbeige", "offwhite", "eggshell", "vanilla", "pearl",
+               "champagne", "antiquewhite"}),
+    frozenset({"tan", "khaki", "camel", "biscuit", "honey"}),
+    frozenset({"olive", "military", "olivegreen"}),
+    frozenset({"navy", "darkblue", "darknavy", "midnight", "midnightblue", "indigo"}),
+    frozenset({"blue", "cobalt", "azure", "sky", "royal", "royalblue", "skyblue",
+               "babyblue", "powder", "denim", "lightblue"}),
+    frozenset({"green", "emerald", "sage", "forest", "mint", "pine", "hunter", "lime",
+               "teal", "lightgreen", "darkgreen", "forestgreen"}),
+    frozenset({"red", "burgundy", "wine", "crimson", "maroon", "ruby", "cherry", "brick",
+               "lightred", "darkred"}),
+    frozenset({"pink", "rose", "blush", "coral", "salmon", "fuchsia", "magenta", "peach",
+               "lightpink", "darkpink", "hotpink", "babypink"}),
+    frozenset({"purple", "violet", "lavender", "plum", "eggplant", "aubergine", "mauve", "lilac",
+               "lightpurple", "darkpurple"}),
+    frozenset({"orange", "terracotta", "rust", "copper", "bronze", "amber"}),
+    frozenset({"yellow", "mustard", "ochre", "gold"}),
+    frozenset({"black", "onyx", "jet", "ink", "raven", "jetblack", "deepblack"}),
+    frozenset({"white", "brightwhite"}),
 )
+
+
+def _parse_color_tokens(color_name: str) -> list[str]:
+    """Tokenise a color name into slugs, merging modifier+base into one slug.
+
+    'LIGHT GREY'  → ['lightgrey']      (not ['light', 'grey'])
+    'LIGHT BEIGE' → ['lightbeige']     (not ['light', 'beige'])
+    'OFF WHITE'   → ['offwhite']
+    'BONE'        → ['bone']
+    'Pelican / Ghost / Yellow' → ['pelican', 'ghost', 'yellow']
+
+    Standalone modifiers at end of string are dropped entirely.
+    """
+    raw = [t for t in _tokenize(color_name) if len(t) >= 2]
+    result: list[str] = []
+    i = 0
+    while i < len(raw):
+        tok = raw[i]
+        if tok in _COLOR_MODIFIERS and i + 1 < len(raw) and raw[i + 1] not in _COLOR_MODIFIERS:
+            # Compound: "light" + "grey" → "lightgrey"
+            result.append(tok + raw[i + 1])
+            i += 2
+        elif tok not in _COLOR_MODIFIERS:
+            result.append(tok)
+            i += 1
+        else:
+            # Dangling modifier with no following base color — skip it
+            i += 1
+    return [t for t in result if len(t) >= 3]
 
 
 def _expand_color_tokens(tokens: list[str] | set[str]) -> set[str]:
@@ -278,6 +369,30 @@ _TRANSIENT_QUERY_PARAMS = {
     "w", "h", "width", "height", "q", "quality", "fit", "fm", "fl", "f",
     "auto", "dpr", "ixlib", "imwidth", "crop", "rect", "bg",
 }
+# Non-primary image URL patterns — brand sites usually put lifestyle/editorial
+# shots under specific paths, or name them with model/worn/outfit keywords, or
+# use high numeric suffixes for secondary carousel images.
+_LIFESTYLE_URL_PATH_PATTERNS = (
+    "/lookbook", "/editorial", "/campaign", "/lifestyle", "/inspiration",
+    "/models", "/collection-hero", "/look-", "/looks/", "/worn-", "/styling",
+)
+_LIFESTYLE_URL_FILE_PATTERNS = (
+    "-model-", "_model_", "-worn-", "_worn_", "-outfit-", "_outfit_",
+    "-style-", "-look-", "-wearing-", "-campaign-", "-lookbook-",
+    "-editorial-", "-lifestyle-", "-model.", "-worn.", "-outfit.",
+)
+# Primary / packshot URL patterns — reward these.
+_PACKSHOT_URL_PATTERNS = (
+    "/packshot", "-packshot", "_packshot", "-main.", "_main.", "-hero.",
+    "_hero.", "-primary.", "-front.", "_front.", "-side.", "_side.",
+    "-product.", "_product.", "-pair.", "-studio.", "_01.", "-01.",
+    "/01/", "/primary/", "/main/", "/hero/", "/packshots/",
+)
+# Matches "-N.ext" or "_N.ext" or "-NN.ext" at end of URL — secondary image
+# carousel position. We only penalize when N >= 3 (first 2 are usually primary
+# angles like front/side).
+_NUMBERED_IMAGE_SUFFIX_RE = re.compile(r"[-_](\d{1,3})\.(?:jpe?g|png|webp|avif|gif)(?:\?|$)", re.IGNORECASE)
+
 _SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
 _TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
 _SIZE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d+)?)")
@@ -611,7 +726,7 @@ class ImageSearcher:
             token for token in _tokenize(style_name or "")
             if token not in family_terms and token not in _COLOR_WORDS and len(token) >= 3
         ]
-        color_tokens = [token for token in _tokenize(color_name or "") if len(token) >= 3]
+        color_tokens = _parse_color_tokens(color_name or "")
         exact_query = _join_distinct_parts([brand, style_name, item_group or "", color_name or "", base_item_code or item_code or barcode or ""])
         exact_query_tokens = [token for token in _tokenize(exact_query) if len(token) >= 3]
         return {
@@ -711,7 +826,14 @@ class ImageSearcher:
         color_matches = {token for token in acceptable if token in text_tokens or token in normalized}
         if color_matches:
             return False
+        # Word-level wrong colors
         other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - acceptable
+        # Also catch compound color slugs inside URL paths (e.g. the URL
+        # "aurelien.com/light-beige-loafer.jpg" slugifies to a string that
+        # contains "lightbeige"). These never show up as a single text token.
+        for compound in _COMPOUND_COLOR_SLUGS:
+            if compound in normalized and compound not in acceptable:
+                other_colors.add(compound)
         return bool(other_colors)
 
     def _coerce_hits(self, raw_hits: list[Any]) -> list[SearchHit]:
@@ -867,7 +989,23 @@ class ImageSearcher:
             str(hit.get("description") or ""),
         ]).lower()
         text_tokens = set(_tokenize(text))
-        return any(term in text_tokens for term in _STRICT_PREVIEW_SHOT_TERMS) or "on-foot" in text or "on foot" in text
+        if any(term in text_tokens for term in _STRICT_PREVIEW_SHOT_TERMS):
+            return True
+        if "on-foot" in text or "on foot" in text:
+            return True
+        # URL-path heuristics for brand sites whose lifestyle shots share
+        # the same product title as the packshot — only the URL reveals it.
+        url_lower = (str(hit.get("url") or "") + " " + str(hit.get("page_url") or "")).lower()
+        if any(p in url_lower for p in _LIFESTYLE_URL_PATH_PATTERNS):
+            return True
+        if any(p in url_lower for p in _LIFESTYLE_URL_FILE_PATTERNS):
+            return True
+        # High-numbered carousel images (e.g. "-05.jpg") are almost always
+        # secondary angles/details, not the primary packshot.
+        m = _NUMBERED_IMAGE_SUFFIX_RE.search(str(hit.get("url") or ""))
+        if m and int(m.group(1)) >= 4:
+            return True
+        return False
 
     def _strict_candidate_pool(
         self,
@@ -1296,12 +1434,19 @@ class ImageSearcher:
 
         color_tokens = ctx.get("color_tokens") or []
         if color_tokens:
-            color_matches = {token for token in color_tokens if token in text_tokens or token in normalized_text}
+            acceptable_colors = _expand_color_tokens(color_tokens)
+            color_matches = {token for token in acceptable_colors if token in text_tokens or token in normalized_text}
             if color_matches:
                 score += min(0.18, len(color_matches) * 0.06)
-            other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - set(color_tokens)
+            # A color is "wrong" if it's a known color word (including compound
+            # slugs found in the normalized URL) that isn't in the item's
+            # acceptable family.
+            other_colors = {token for token in text_tokens if token in _COLOR_WORDS} - acceptable_colors
+            for compound in _COMPOUND_COLOR_SLUGS:
+                if compound in normalized_text and compound not in acceptable_colors:
+                    other_colors.add(compound)
             if other_colors and not color_matches:
-                score -= 0.18 if ctx.get("strict_query") else 0.1
+                score -= 0.28 if ctx.get("strict_query") else 0.14
             elif other_colors and color_matches:
                 score -= min(0.08, len(other_colors) * 0.03)
             if style_tokens:
@@ -1352,7 +1497,35 @@ class ImageSearcher:
         if any(term in text_tokens for term in _LIFESTYLE_SHOT_TERMS) or "on-foot" in lower or "on foot" in lower:
             score -= 0.24 if ctx.get("strict_query") else 0.16
 
+        # --- URL-path heuristics for brand sites where the text doesn't lie
+        # but the URL path does (lifestyle/model shots vs. packshots) --------
+        url_only = url.lower()
+        if any(p in url_only for p in _PACKSHOT_URL_PATTERNS):
+            score += 0.22 if ctx.get("strict_query") else 0.14
+        if any(p in url_only for p in _LIFESTYLE_URL_PATH_PATTERNS):
+            score -= 0.32 if ctx.get("strict_query") else 0.20
+        if any(p in url_only for p in _LIFESTYLE_URL_FILE_PATTERNS):
+            score -= 0.30 if ctx.get("strict_query") else 0.18
+        m_idx = _NUMBERED_IMAGE_SUFFIX_RE.search(url)
+        if m_idx:
+            idx = int(m_idx.group(1))
+            if idx >= 4:
+                # Deep-carousel images are rarely the hero packshot.
+                score -= 0.20 if ctx.get("strict_query") else 0.12
+            elif idx == 1:
+                # First image in a numbered sequence — usually primary.
+                score += 0.08 if ctx.get("strict_query") else 0.04
+
         category_family = ctx.get("category_family")
+        # For footwear items, an image whose text mentions upper-body clothing
+        # (sweater, jacket, coat…) is almost certainly a lifestyle/model shot
+        # where the shoes are barely visible — hard-reject it.
+        if category_family == "footwear" and ctx.get("strict_query"):
+            shoe_terms = _CATEGORY_FAMILY_TERMS.get("footwear", set())
+            has_upper_body = any(t in text_tokens for t in _UPPER_BODY_CLOTHING_TERMS)
+            has_shoe_term = any(t in text_tokens for t in shoe_terms)
+            if has_upper_body and not has_shoe_term:
+                score -= 0.95
         if category_family:
             family_terms = _CATEGORY_FAMILY_TERMS.get(category_family, set())
             family_hits = {token for token in text_tokens if token in family_terms}
