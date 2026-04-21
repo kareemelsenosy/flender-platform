@@ -34,6 +34,7 @@ def _make_http_session() -> requests.Session:
 _HTTP = _make_http_session()
 
 MAX_CANDIDATES = 10
+STRICT_MAX_CANDIDATES = 4
 REQUEST_TIMEOUT = 15
 SEARCH_CACHE_VERSION = 3
 
@@ -805,10 +806,31 @@ class ImageSearcher:
                 hit for hit in combined_hits
                 if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & set(hit.get("source_names") or set())
             ]
+            bing_priority_hits = [
+                hit for hit in combined_hits
+                if {"bing_exact", "bing_phrase"} & set(hit.get("source_names") or set())
+            ]
+            official_priority_hits = [
+                hit for hit in combined_hits
+                if any(
+                    name.startswith("brand_site") or name.startswith("extra_")
+                    for name in (hit.get("source_names") or set())
+                )
+            ]
             if google_priority_hits:
                 combined_hits = google_priority_hits + [
                     hit for hit in combined_hits
                     if hit not in google_priority_hits
+                ]
+            elif bing_priority_hits:
+                combined_hits = bing_priority_hits + [
+                    hit for hit in combined_hits
+                    if hit not in bing_priority_hits
+                ]
+            elif official_priority_hits:
+                combined_hits = official_priority_hits + [
+                    hit for hit in combined_hits
+                    if hit not in official_priority_hits
                 ]
 
             strict_color_hits = [
@@ -821,11 +843,18 @@ class ImageSearcher:
         for hit in combined_hits:
             raw_scores[hit["url"]] = self._score_hit(hit, ctx)
 
-        candidates = sorted(
+        ranked_urls = sorted(
             [hit["url"] for hit in combined_hits],
             key=lambda url: raw_scores[url],
             reverse=True,
-        )[:self.max_candidates]
+        )
+        max_candidates = STRICT_MAX_CANDIDATES if ctx.get("strict_query") else self.max_candidates
+        if ctx.get("strict_query") and ranked_urls:
+            top_score = raw_scores[ranked_urls[0]]
+            keep_threshold = max(0.55, top_score - 0.22)
+            filtered_ranked_urls = [url for url in ranked_urls if raw_scores[url] >= keep_threshold]
+            ranked_urls = filtered_ranked_urls or ranked_urls
+        candidates = ranked_urls[:max_candidates]
         scores = {u: round(raw_scores[u], 2) for u in candidates}
         return candidates, scores
 
@@ -926,20 +955,20 @@ class ImageSearcher:
             reasons.append("full-query match")
 
         high_confidence = (
-            top_score >= 0.82
-            and gap >= 0.12
+            top_score >= (0.88 if ctx.get("strict_query") else 0.82)
+            and gap >= (0.16 if ctx.get("strict_query") else 0.12)
             and not wrong_colors
             and not blocked_domain
             and not blocked_term
             and (category_match or preferred_domain or code_match)
-            and (preferred_domain or code_match or exact_ratio >= 0.72 or local_file)
+            and (preferred_domain or code_match or exact_ratio >= (0.8 if ctx.get("strict_query") else 0.72) or local_file)
         )
         medium_confidence = (
-            top_score >= 0.6
+            top_score >= (0.68 if ctx.get("strict_query") else 0.6)
             and not blocked_domain
             and not blocked_term
             and not wrong_colors
-            and (gap >= 0.05 or preferred_domain or code_match or exact_ratio >= 0.58)
+            and (gap >= (0.08 if ctx.get("strict_query") else 0.05) or preferred_domain or code_match or exact_ratio >= (0.65 if ctx.get("strict_query") else 0.58))
         )
 
         if high_confidence:

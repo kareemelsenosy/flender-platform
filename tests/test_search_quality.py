@@ -63,8 +63,8 @@ def test_search_prefers_official_footwear_hit_over_bike_or_drink(monkeypatch):
     })
 
     assert candidates[0] == official.url
-    assert scores[official.url] > scores[bike.url]
-    assert scores[official.url] > scores[drink.url]
+    assert bike.url not in scores or scores[official.url] > scores[bike.url]
+    assert drink.url not in scores or scores[official.url] > scores[drink.url]
 
 
 def test_search_penalizes_wrong_garment_type_even_when_code_matches(monkeypatch):
@@ -300,6 +300,78 @@ def test_search_prefers_clean_packshot_over_detail_or_outsole_views(monkeypatch)
     assert candidates.index(packshot.url) < candidates.index(detail.url)
     assert candidates.index(packshot.url) < candidates.index(outsole.url)
     assert candidates.index(packshot.url) < candidates.index(on_foot.url)
+
+
+def test_strict_search_caps_candidates_to_few_high_quality_options(monkeypatch):
+    searcher = ImageSearcher()
+
+    hits = [
+        SearchHit(
+            url=f"https://aurelien.com/images/yacht-loafers-chocolate-{idx}.jpg",
+            page_url="https://aurelien.com/products/yacht-loafers-chocolate",
+            title=f"Aurélien Lady Chocolate Yacht Loafers option {idx}",
+            description="Chocolate loafers",
+        )
+        for idx in range(1, 7)
+    ]
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: hits)
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, _scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Chocolate Yacht Loafers",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Loafers",
+    })
+
+    assert len(candidates) <= 4
+
+
+def test_strict_search_prefers_google_exact_pool_before_broad_matches(monkeypatch):
+    searcher = ImageSearcher()
+
+    google_exact = SearchHit(
+        url="https://aurelien.com/images/yacht-loafers-chocolate-packshot.jpg",
+        page_url="https://aurelien.com/products/yacht-loafers-chocolate",
+        title="Aurélien Lady Chocolate Yacht Loafers YLWCHT-3800",
+        description="Official packshot",
+    )
+    broad_wrong = SearchHit(
+        url="https://example.com/images/yacht-loafers-brown.jpg",
+        page_url="https://example.com/products/yacht-loafers-brown",
+        title="Aurélien Lady Brown Yacht Loafers",
+        description="Marketplace listing",
+    )
+
+    monkeypatch.setattr(searcher, "_bing_site_search", lambda domain, query: [])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [broad_wrong])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(
+        searcher,
+        "_google_images_scrape",
+        lambda query: [google_exact] if query.startswith("\"Aurélien Lady Chocolate Yacht Loafers") else [broad_wrong],
+    )
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, _scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Chocolate Yacht Loafers",
+        "color_name": "Chocolate",
+        "brand": "Aurélien",
+        "item_group": "Loafers",
+    })
+
+    assert candidates[0] == google_exact.url
+    assert broad_wrong.url not in candidates
 
 
 def test_item_sort_key_keeps_same_style_and_base_code_grouped_by_size():
