@@ -20,6 +20,7 @@ from app.auth import get_current_user_id
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
 from app.core.searcher import SEARCH_CACHE_VERSION, ImageSearcher, split_and_normalize_domains
 from app.services.file_safety import normalize_uploaded_name, unique_path
+from app.services.review_defaults import materialize_default_review_approvals
 from app.services.ai_service import (
     ai_available,
     ai_build_search_queries,
@@ -511,7 +512,6 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             final_score = float(final_decision.get("score", 0.0) or 0.0)
             final_reason = str(final_decision.get("reason") or "").strip() or None
             final_suggested = str(final_decision.get("suggested_url") or chosen or "").strip() or None
-            auto_approve = bool(final_decision.get("auto_approve")) and bool(final_suggested)
 
             for source_item in grouped["items"]:
                 db_item = db.get(UniqueItem, source_item.id)
@@ -524,7 +524,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 db_item.search_confidence = final_score
                 db_item.confidence_label = final_label
                 db_item.confidence_reason = final_reason
-                if auto_approve:
+                if final_suggested:
                     db_item.approved_url = final_suggested
                     db_item.review_status = "approved"
                     db_item.auto_selected = True
@@ -918,6 +918,8 @@ def search_page(session_id: int, request: Request, db: DBSession = Depends(get_d
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess:
         return RedirectResponse("/", status_code=302)
+
+    materialize_default_review_approvals(db, session_id)
 
     pending_count = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,

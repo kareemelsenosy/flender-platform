@@ -233,6 +233,96 @@ def test_upload_file_sanitizes_names_and_avoids_overwrite(
     assert files[0].filename == "unsafe name.csv"
 
 
+def test_existing_searched_sessions_auto_approve_suggested_items_for_review_and_export(
+    client,
+    login_as,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+    db = test_app["database"].SessionLocal()
+    local_image_path = _make_local_image(test_app["upload_dir"], user["id"], name="auto-approved.jpg")
+    image_url = f"file://{local_image_path.resolve()}"
+
+    try:
+        sess = models.Session(
+            user_id=user["id"],
+            name="Recovered Session",
+            source_type="csv_upload",
+            source_ref="recovered.csv",
+            status="reviewing",
+            total_items=1,
+            searched_items=1,
+        )
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+
+        item = models.UniqueItem(
+            session_id=sess.id,
+            item_code="SKU-RECOVER",
+            brand="FLENDER",
+            style_name="Recovered Runner",
+            color_name="Taupe",
+            search_status="done",
+            review_status="pending",
+            suggested_url=image_url,
+            approved_url=None,
+            candidates=[image_url],
+            scores={image_url: 0.61},
+            confidence_label="low",
+            search_confidence=0.61,
+            sizes=["42"],
+        )
+        db.add(item)
+        db.commit()
+        session_id = sess.id
+    finally:
+        db.close()
+
+    review_state = client.get(f"/review/{session_id}/state")
+    assert review_state.status_code == 200
+    payload = review_state.json()
+    state = payload["state"] if "state" in payload else payload
+    only_entry = next(iter(state.values()))
+    assert only_entry["status"] == "approved"
+    assert only_entry["approved_url"] == image_url
+    assert only_entry["auto_selected"] is True
+
+    image_zip = client.get(f"/review/{session_id}/download-images")
+    assert image_zip.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(image_zip.content)) as archive:
+        assert any(name.endswith(".jpg") for name in archive.namelist())
+
+    export_resp = client.post(f"/generate/{session_id}", json={"save_images": False})
+    assert export_resp.status_code == 200
+    assert export_resp.json()["ok"] is True
+
+    excel_file = None
+    for _ in range(40):
+        poll_db = test_app["database"].SessionLocal()
+        try:
+            excel_file = (
+                poll_db.query(models.GeneratedFile)
+                .filter(
+                    models.GeneratedFile.session_id == session_id,
+                    models.GeneratedFile.filename != "images.zip",
+                )
+                .first()
+            )
+            if excel_file is not None:
+                poll_db.expunge(excel_file)
+                break
+        finally:
+            poll_db.close()
+        time.sleep(0.25)
+
+    assert excel_file is not None
+    excel_download = client.get(f"/download/{excel_file.token}")
+    assert excel_download.status_code == 200
+    assert excel_download.content[:2] == b"PK"
+
+
 def test_review_and_progress_endpoints_enforce_ownership(
     client,
     make_user,

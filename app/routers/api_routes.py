@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models import BrandSearchConfig, Session as SessionModel, UniqueItem
 from app.services.ai_service import ai_assistant_chat, ai_available
 from app.services.notifications import poll_notifications
+from app.services.review_defaults import materialize_default_review_approvals
 
 router = APIRouter()
 
@@ -56,6 +57,8 @@ def _build_assistant_session_context(db: DBSession, uid: int, session_id: int) -
     ).first()
     if not session:
         return None
+
+    materialize_default_review_approvals(db, session.id)
 
     items_q = db.query(UniqueItem).filter(UniqueItem.session_id == session.id)
     brands = [
@@ -410,16 +413,6 @@ async def fix_pending_items(request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from app.models import UniqueItem, Session as SessionModel
-    # Only fix items belonging to this user's sessions
-    user_session_ids = [s.id for s in db.query(SessionModel.id).filter(SessionModel.user_id == uid).all()]
-    if not user_session_ids:
-        return JSONResponse({"fixed": 0})
-    fixed = db.query(UniqueItem).filter(
-        UniqueItem.session_id.in_(user_session_ids),
-        UniqueItem.review_status == "pending",
-        UniqueItem.approved_url.isnot(None),
-        UniqueItem.approved_url != "",
-    ).update({"review_status": "approved", "auto_selected": True}, synchronize_session=False)
-    db.commit()
+    user_session_ids = [sid for (sid,) in db.query(SessionModel.id).filter(SessionModel.user_id == uid).all()]
+    fixed = sum(materialize_default_review_approvals(db, session_id) for session_id in user_session_ids)
     return JSONResponse({"fixed": fixed})

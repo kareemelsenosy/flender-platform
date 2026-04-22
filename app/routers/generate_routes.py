@@ -21,6 +21,7 @@ from app.core.searcher import item_sort_key
 from app.database import get_db
 from app.templates_config import templates
 from app.models import GeneratedFile, Session, UniqueItem
+from app.services.review_defaults import materialize_default_review_approvals
 
 router = APIRouter()
 
@@ -56,6 +57,8 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess:
         return RedirectResponse("/", status_code=302)
+
+    materialize_default_review_approvals(db, session_id)
 
     # Count approved items
     approved_count = db.query(UniqueItem).filter(
@@ -237,6 +240,8 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess:
         return JSONResponse({"error": "not found"}, status_code=404)
+
+    materialize_default_review_approvals(db, session_id)
 
     # Already exporting?
     with _progress_lock:

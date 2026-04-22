@@ -31,6 +31,7 @@ from app.services.ai_service import (
     ai_rank_urls,
     compose_search_instructions,
 )
+from app.services.review_defaults import materialize_default_review_approvals
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -259,6 +260,8 @@ def review_page(session_id: int, request: Request, db: DBSession = Depends(get_d
     if not sess:
         return RedirectResponse("/", status_code=302)
 
+    materialize_default_review_approvals(db, session_id)
+
     pending_search_count = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.search_status == "pending",
@@ -279,6 +282,8 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess:
         return JSONResponse({"error": "not found"}, status_code=404)
+
+    materialize_default_review_approvals(db, session_id)
 
     items = db.query(
         UniqueItem.id,
@@ -649,7 +654,7 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     item.search_confidence = float(decision.get("score", 0.0) or 0.0)
     item.confidence_label = str(decision.get("label") or "low")
     item.confidence_reason = str(decision.get("reason") or "").strip() or None
-    if decision.get("auto_approve") and item.suggested_url:
+    if item.suggested_url:
         item.approved_url = item.suggested_url
         item.auto_selected = True
         item.review_status = "approved"
@@ -683,6 +688,8 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess:
         return RedirectResponse("/", status_code=302)
+
+    materialize_default_review_approvals(db, session_id)
 
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
