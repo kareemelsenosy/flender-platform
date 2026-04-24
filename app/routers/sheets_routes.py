@@ -557,13 +557,9 @@ def _parse_price(val) -> float | None:
 
 
 def _expand_batch_jobs(urls: list[str], selected_tabs_per_url: dict[str, list[str]]) -> list[dict]:
-    """Create one import job per selected tab so tabs stay separate."""
+    """Create one import job per spreadsheet URL so multiple sheets run in parallel."""
     jobs: list[dict] = []
     for url in urls:
         tabs = [str(t).strip() for t in (selected_tabs_per_url.get(url) or []) if str(t).strip()]
-        if tabs:
-            for tab in tabs:
-                jobs.append({"url": url, "selected_tabs": [tab], "label": tab})
-        else:
-            jobs.append({"url": url, "selected_tabs": None, "label": url})
+        jobs.append({"url": url, "selected_tabs": tabs or None, "label": url})
     return jobs

@@ -57,7 +57,7 @@
     <span id="batch-summary" class="text-muted" style="font-size:0.85rem"></span>
   </div>
   <p style="font-size:0.85rem;color:var(--gray-500);margin:0 0 12px 0">
-    ℹ Each selected tab imports as its own result, so sheets stay separate.
+    ℹ Each Google Sheets URL imports as its own result, and different sheets run in parallel.
   </p>
   <div id="job-list" style="display:flex;flex-direction:column;gap:12px"></div>
 </div>
@@ -72,7 +72,8 @@
     <li>Add one or more Google Sheets URLs above</li>
     <li>Select which tabs/sheets to import (all tabs selected by default)</li>
     <li>Toggle "Save images" to include images from =IMAGE() formulas and Dropbox links</li>
-    <li>All selected tabs import <strong>simultaneously</strong> as <strong>separate results</strong></li>
+    <li>Each added Google Sheet imports <strong>simultaneously</strong> as its own result</li>
+    <li>Selected tabs within the same sheet stay together in that sheet's import</li>
     <li>Review and export each imported sheet separately, then search for missing images if needed</li>
   </ol>
 </div>
