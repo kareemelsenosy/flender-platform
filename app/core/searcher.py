@@ -195,6 +195,23 @@ _STOP_TOKENS = {
     "woman", "man", "kid", "kids", "junior", "jr", "adult", "unisex", "new",
     "wmns", "gs", "ps", "td", "eu", "uk", "us",
 }
+
+# Words that look like brand names in a spreadsheet column but are actually
+# product-division / category names (e.g. Stone Island exports use "SPORTSWEAR"
+# as the brand column value).  When every token in the brand field matches one
+# of these, we treat the brand as unknown so the generic word doesn't drown out
+# the specific item-code / style signals in the search query.
+_GENERIC_BRAND_TERMS = frozenset({
+    "sportswear", "apparel", "clothing", "fashion", "footwear", "accessories",
+    "activewear", "menswear", "womenswear", "kidswear", "childrenswear",
+    "outerwear", "knitwear", "swimwear", "underwear", "denim", "casualwear",
+    "athleisure", "streetwear", "workwear", "formalwear", "loungewear",
+    "sport", "sports", "active", "outdoor", "lifestyle", "leisure",
+    "luxury", "premium", "collection", "collections", "studio", "studios",
+    "design", "designs", "goods", "wear", "co", "company", "group",
+    "international", "global", "brand", "brands", "label", "labels",
+    "division", "line", "range", "series",
+})
 _COLOR_WORDS = {
     # Base colors
     "black", "white", "blue", "navy", "green", "red", "pink", "purple", "orange",
@@ -727,6 +744,16 @@ class ImageSearcher:
         brand = str(item.get("brand") or "").strip()
         barcode = str(item.get("barcode") or "").strip() or None
         item_group = str(item.get("item_group") or "").strip() or None
+
+        # Detect when the "brand" column contains a product-division / category
+        # word instead of an actual brand name (e.g. Stone Island exports put
+        # "SPORTSWEAR" in the brand column).  A generic brand pollutes every
+        # query and prevents any images from being found, so we clear it so
+        # downstream query builders skip it entirely.
+        if brand:
+            brand_tokens = set(_tokenize(brand))
+            if brand_tokens and brand_tokens.issubset(_GENERIC_BRAND_TERMS):
+                brand = ""
         base_item_code = self._normalize_item_code(item_code, item_group, style_name)
         related_item_code = normalize_related_item_code(item_code, item_group, style_name)
         family, family_terms = self._infer_category_family(item_group, style_name)
