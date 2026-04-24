@@ -19,6 +19,25 @@ from app.models import Session, UniqueItem, ColumnMappingFormat
 router = APIRouter()
 
 
+def _heuristic_mapping_response(raw_headers: list[str], reason: str = "") -> dict:
+    detected = detect_columns(raw_headers)
+    mapped_headers = {header for header in detected.values() if header}
+    mappings = {
+        field: {"header": header, "confidence": 0.78, "source": "heuristic"}
+        for field, header in detected.items()
+        if header
+    }
+    notes = "AI was unavailable, so FLENDER used built-in smart header matching instead."
+    if reason:
+        notes += f" Provider detail: {reason}"
+    return {
+        "mappings": mappings,
+        "unmapped_headers": [header for header in raw_headers if header not in mapped_headers],
+        "notes": notes,
+        "fallback": True,
+    }
+
+
 def _owned_uploaded_path(uid: int, stored_path: str | None) -> str | None:
     if not stored_path:
         return None
@@ -119,18 +138,17 @@ async def ai_suggest_mapping(session_id: int, request: Request, db: DBSession = 
 
     from app.services.ai_service import ai_last_error_summary, ai_map_columns, ai_available
     if not ai_available():
-        return JSONResponse({"error": "No AI key configured. Add GEMINI_API_KEY (free) or CLAUDE_API_KEY to your .env file."}, status_code=400)
+        return JSONResponse(_heuristic_mapping_response(
+            raw_headers,
+            "No AI provider key configured.",
+        ))
 
     result = ai_map_columns(raw_headers, sample_data, list(COLUMN_PATTERNS.keys()))
 
     if not result:
         detail = ai_last_error_summary()
-        msg = "AI request failed."
-        if detail:
-            msg += f" Last provider error: {detail}"
-        else:
-            msg += " The provider is configured, but the request did not complete successfully."
-        return JSONResponse({"error": msg}, status_code=502)
+        reason = detail or "The provider is configured, but the request did not complete successfully."
+        return JSONResponse(_heuristic_mapping_response(raw_headers, reason))
 
     return JSONResponse(result)
 

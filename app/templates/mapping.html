@@ -169,7 +169,12 @@ async function aiSuggest() {
     }
 
     status.className = 'alert alert-success mb-3';
-    let msg = `AI successfully mapped ${applied} fields. Review and edit the selections above, then click "Apply Mapping".`;
+    let msg = data.fallback
+      ? `AI provider was unavailable, so FLENDER used smart built-in mapping and filled ${applied} fields. Review and edit the selections above, then click "Apply Mapping".`
+      : `AI successfully mapped ${applied} fields. Review and edit the selections above, then click "Apply Mapping".`;
+    if (data.fallback) {
+      status.className = 'alert alert-warning mb-3';
+    }
     if (data.notes) msg += ` Note: ${data.notes}`;
     status.textContent = msg;
 
