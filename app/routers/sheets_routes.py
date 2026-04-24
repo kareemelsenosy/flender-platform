@@ -291,7 +291,15 @@ async def preview_tabs(request: Request):
         tabs = [ws.title for ws in spreadsheet.worksheets()]
         return JSONResponse({"ok": True, "title": spreadsheet.title, "tabs": tabs})
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        msg = str(e)
+        if "not supported for this document" in msg or "[400]" in msg:
+            msg = (
+                "This document cannot be accessed via the Google Sheets API. "
+                "It is likely an Excel file (.xlsx) stored in Google Drive. "
+                "To fix: open it in Google Sheets → File → Save as Google Sheets, "
+                "then share the new Sheets file with your service account."
+            )
+        return JSONResponse({"error": msg}, status_code=500)
 
 
 # ── Single import (original endpoint, kept for compatibility) ─────────────────

@@ -125,7 +125,17 @@ class SheetsReader:
         spreadsheet = self.gc.open_by_key(spreadsheet_id)
         logger.info(f"Spreadsheet: '{spreadsheet.title}'")
 
-        worksheets = spreadsheet.worksheets()
+        try:
+            worksheets = spreadsheet.worksheets()
+        except Exception as e:
+            if "not supported for this document" in str(e) or "[400]" in str(e):
+                raise RuntimeError(
+                    "This document cannot be accessed via the Google Sheets API. "
+                    "It is likely an Excel file (.xlsx) stored in Google Drive. "
+                    "To fix: open it in Google Sheets → File → Save as Google Sheets, "
+                    "then share the new Sheets file with your service account."
+                ) from e
+            raise
 
         # Fetch all tabs in parallel — each tab fires 2 API calls simultaneously
         def _fetch_one(args):
