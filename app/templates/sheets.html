@@ -46,18 +46,18 @@
 
   <button id="import-btn" class="btn btn-primary btn-lg" style="width:100%" onclick="importAll()"
     {% if not has_credentials %}disabled{% endif %}>
-    Import All &amp; Convert to Excel
+    Import Selected Sheets
   </button>
 </div>
 
 <!-- Batch progress section -->
 <div id="batch-section" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <h3 style="margin:0">Importing & Combining Spreadsheets</h3>
+    <h3 style="margin:0">Importing Sheets</h3>
     <span id="batch-summary" class="text-muted" style="font-size:0.85rem"></span>
   </div>
   <p style="font-size:0.85rem;color:var(--gray-500);margin:0 0 12px 0">
-    ℹ All selected sheets will be combined into a single Excel export
+    ℹ Each selected tab imports as its own result, so sheets stay separate.
   </p>
   <div id="job-list" style="display:flex;flex-direction:column;gap:12px"></div>
 </div>
@@ -72,8 +72,8 @@
     <li>Add one or more Google Sheets URLs above</li>
     <li>Select which tabs/sheets to import (all tabs selected by default)</li>
     <li>Toggle "Save images" to include images from =IMAGE() formulas and Dropbox links</li>
-    <li>All sheets import <strong>simultaneously</strong> and combine into a <strong>single Excel export</strong></li>
-    <li>Review the combined data, then search for missing images if needed</li>
+    <li>All selected tabs import <strong>simultaneously</strong> as <strong>separate results</strong></li>
+    <li>Review and export each imported sheet separately, then search for missing images if needed</li>
   </ol>
 </div>
 
@@ -221,26 +221,22 @@ function showCompletedJobs(jobs) {
   const jobList = document.getElementById('job-list');
   jobList.innerHTML = '';
 
-  // Get unique session ID (all sheets combined into one)
-  const sessionIds = new Set(jobs.filter(j => j.status === 'done').map(j => j.session_id).filter(Boolean));
-  const combinedSession = sessionIds.size === 1 ? Array.from(sessionIds)[0] : null;
-
   jobs.forEach((job, idx) => {
-    jobList.appendChild(mkCard(idx, job.url || job.title || `Sheet ${idx+1}`));
+    jobList.appendChild(mkCard(idx, job.title || job.label || job.url || `Sheet ${idx+1}`));
     if (job.status === 'done') {
       const parts = [job.with_images > 0 ? `${job.with_images} with images` : '', job.without_images > 0 ? `${job.without_images} without images` : ''].filter(Boolean).join(' \u00b7 ');
       const acts = [
         `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
         `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
       ].join('');
-      setJob(idx, 'done', {title: job.title || job.url, status: `${job.items} items${parts ? ' \u00b7 ' + parts : ''}`, eta: 'Done', actions: acts});
+      setJob(idx, 'done', {title: job.title || job.label || job.url, status: `${job.items} items${parts ? ' \u00b7 ' + parts : ''}`, eta: 'Done', actions: acts});
     } else if (job.status === 'error') {
       setJob(idx, 'error', {error: job.error || 'Import failed'});
     }
   });
 
   const doneCount = jobs.filter(j => j.status === 'done').length;
-  document.getElementById('batch-summary').textContent = `All ${jobs.length} sheets imported and combined (${doneCount} succeeded)`;
+  document.getElementById('batch-summary').textContent = `${doneCount} of ${jobs.length} sheet imports succeeded`;
 
   // Show "New Import" button
   const newBtn = document.createElement('button');
@@ -295,7 +291,7 @@ function reconnectBatch(batch_id) {
     if (jobList.querySelector('.job-card') === null) {
       jobList.innerHTML = '';
       (batch.jobs || []).forEach((job, idx) => {
-        jobList.appendChild(mkCard(idx, job.url || `Sheet ${idx+1}`));
+        jobList.appendChild(mkCard(idx, job.title || job.label || job.url || `Sheet ${idx+1}`));
         prev[idx] = 'pending';
       });
     }
@@ -314,7 +310,7 @@ function reconnectBatch(batch_id) {
           `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
           `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
         ].join('');
-        setJob(idx, 'done', {title: job.title || job.url, status: `${job.items} items${parts ? ' · ' + parts : ''}`, eta: 'Done', actions: acts});
+        setJob(idx, 'done', {title: job.title || job.label || job.url, status: `${job.items} items${parts ? ' · ' + parts : ''}`, eta: 'Done', actions: acts});
       }
       if (st === 'error') {
         clearInterval(anims[idx]); delete anims[idx];
@@ -326,7 +322,7 @@ function reconnectBatch(batch_id) {
 
     if (batch.complete || (batch.done >= batch.total && batch.total > 0)) {
       es.close();
-      document.getElementById('batch-summary').textContent = `All ${batch.total} sheets imported`;
+      document.getElementById('batch-summary').textContent = `All ${batch.total} sheet imports finished`;
     }
   };
   es.onerror = () => {
@@ -419,9 +415,6 @@ async function importAll() {
   batchSection.style.display='block';
   const jobList=document.getElementById('job-list');
   jobList.innerHTML='';
-  urls.forEach((url,i)=>jobList.appendChild(mkCard(i,url)));
-  document.getElementById('batch-summary').textContent=`0 / ${urls.length} complete`;
-
   const resp = await fetch('/sheets/import-batch',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({urls, selected_tabs: _tabSelections, save_images: saveImages, search_missing: searchMissing}),
@@ -434,14 +427,24 @@ async function importAll() {
     document.getElementById('import-btn').disabled=false;
     return;
   }
-  const {batch_id}=await resp.json();
+  const {batch_id,total}=await resp.json();
+
+  jobList.innerHTML='';
+  document.getElementById('batch-summary').textContent=`0 / ${total} complete`;
 
   const anims={}, t0={};
-  const prev=Array(urls.length).fill('pending');
+  const prev={};
 
   const es=new EventSource(`/sheets/batch/${batch_id}/progress`);
   es.onmessage=(e)=>{
     const batch=JSON.parse(e.data);
+    if (jobList.querySelector('.job-card') === null) {
+      (batch.jobs || []).forEach((job, idx) => {
+        jobList.appendChild(mkCard(idx, job.title || job.label || job.url || `Sheet ${idx+1}`));
+        prev[idx] = 'pending';
+      });
+    }
+
     (batch.jobs||[]).forEach((job,idx)=>{
       const st=job.status;
       if(st==='importing'&&prev[idx]!=='importing'){
@@ -470,7 +473,7 @@ async function importAll() {
 
     if(batch.complete||(batch.done>=batch.total&&batch.total>0)){
       es.close();
-      document.getElementById('batch-summary').textContent=`All ${batch.total} sheets imported`;
+      document.getElementById('batch-summary').textContent=`All ${batch.total} sheet imports finished`;
       _showPostImport(batch.jobs,searchMissing);
     }
   };
@@ -481,7 +484,6 @@ function _showPostImport(jobs,searchMissing){
   const container=document.getElementById('post-import');
   const withMissing=jobs.filter(j=>j.status==='done'&&j.without_images>0);
   const allIds=jobs.filter(j=>j.status==='done').map(j=>j.session_id);
-  // Deduplicate session IDs (since combined sheets use same session)
   const uniqueIds=[...new Set(allIds)];
   if(!searchMissing||!withMissing.length||!uniqueIds.length){container.style.display='none';return;}
   const totalMissing=withMissing.reduce((s,j)=>s+j.without_images,0);
@@ -491,7 +493,7 @@ function _showPostImport(jobs,searchMissing){
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
         <div>
           <h4 style="margin-bottom:4px">Search Missing Images</h4>
-          <p class="text-muted" style="font-size:0.85rem;margin:0">${totalMissing} items in combined sheets have no image</p>
+          <p class="text-muted" style="font-size:0.85rem;margin:0">${totalMissing} items across imported sheets have no image</p>
         </div>
         <button class="btn btn-primary" id="search-all-btn" onclick="searchAllMissing(${JSON.stringify(uniqueIds)})">
           Search All ${totalMissing} Images in Parallel
