@@ -148,6 +148,80 @@ def test_google_sheet_import_persists_selected_tab_order_and_source_sheet(
         db.close()
 
 
+def test_google_sheet_import_deduplicates_across_tabs_by_source_sheet(
+    make_user,
+    test_app,
+    monkeypatch,
+):
+    """Same SKU+color+size on two different tabs must both be persisted."""
+    user = make_user()
+    sheets_routes = test_app["sheets_routes"]
+    sheets_reader = importlib.import_module("app.core.sheets_reader")
+    models = test_app["models"]
+
+    class FakeSheetsReader:
+        def __init__(self, _cred_path):
+            pass
+
+        def fetch_spreadsheet(self, _spreadsheet_id):
+            return {
+                "title": "Buying Sheet",
+                "tabs": [
+                    {"title": "Spring", "headers": ["WHS Price"]},
+                    {"title": "Summer", "headers": ["WHS Price"]},
+                ],
+            }
+
+        def extract_items_from_tab(self, tab):
+            # SAME item_code + color_name + size on both tabs
+            return [{
+                "item_code": "SKU-001",
+                "size": "42",
+                "brand": "Brand",
+                "style_name": "Style X",
+                "color_name": "Black",
+                "gender": "Men",
+                "wholesale_price": "10",
+                "retail_price": "20",
+                "qty_available": "5",
+                "barcode": "BAR-001",
+                "item_group": "Shoes",
+                "sap_code": "SAP-001",
+                "image_url": "",
+                "dropbox_url": "",
+                "comming_soon_qty": "",
+            }]
+
+    monkeypatch.setattr(sheets_reader, "SheetsReader", FakeSheetsReader)
+    monkeypatch.setattr(sheets_reader, "extract_spreadsheet_id", lambda _url: "sheet-456")
+
+    result = sheets_routes._do_import_sheet_sync(
+        user["id"],
+        "https://docs.google.com/spreadsheets/d/sheet-456/edit#gid=0",
+        "unused-creds.json",
+        selected_tabs=["Spring", "Summer"],
+    )
+
+    assert result["ok"] is True
+    assert result["items"] == 2, "both tabs' items must survive despite identical SKU+color+size"
+
+    db = test_app["database"].SessionLocal()
+    try:
+        items = (
+            db.query(models.UniqueItem)
+            .filter(models.UniqueItem.session_id == result["session_id"])
+            .order_by(models.UniqueItem.source_sheet.asc())
+            .all()
+        )
+        assert len(items) == 2
+        source_sheets = {item.source_sheet for item in items}
+        assert source_sheets == {"Spring", "Summer"}
+        # color_codes must differ so the unique constraint isn't violated
+        assert items[0].color_code != items[1].color_code
+    finally:
+        db.close()
+
+
 def test_google_sheet_export_keeps_selected_tabs_as_workbook_sheets(
     client,
     login_as,

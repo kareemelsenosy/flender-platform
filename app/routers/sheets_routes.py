@@ -165,14 +165,16 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         sess.config = cfg
 
         # Store each row as its own UniqueItem (no aggregation).
-        # Use color_name + size as color_code to satisfy unique constraint.
+        # color_code = color|size|source_sheet so items from different tabs with
+        # the same SKU+color+size don't collide on the unique constraint.
         for row in all_rows:
             size = row["size"]
             color = row["color_name"]
+            _src = row.get("source_sheet") or ""
             ui = UniqueItem(
                 session_id=sess.id,
                 item_code=row["item_code"],
-                color_code=f"{color}|{size}" if size else color,
+                color_code=f"{color}|{size}|{_src}" if _src else (f"{color}|{size}" if size else color),
                 brand=row["brand"],
                 style_name=row["style_name"],
                 color_name=color,
@@ -209,10 +211,11 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                 try:
                     size = row["size"]
                     color = row["color_name"]
+                    _src = row.get("source_sheet") or ""
                     ui2 = UniqueItem(
                         session_id=sess.id,
                         item_code=row["item_code"],
-                        color_code=f"{color}|{size}" if size else color,
+                        color_code=f"{color}|{size}|{_src}" if _src else (f"{color}|{size}" if size else color),
                         brand=row["brand"],
                         style_name=row["style_name"],
                         color_name=color,
