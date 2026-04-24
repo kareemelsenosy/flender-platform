@@ -59,7 +59,14 @@ def _parse_worksheet(ws) -> tuple:
         f_display = pool.submit(ws.get_all_values, value_render_option='FORMATTED_VALUE')
         f_formula  = pool.submit(ws.get_all_values, value_render_option='FORMULA')
         display_values = f_display.result()
-        formula_values = f_formula.result()
+        try:
+            formula_values = f_formula.result()
+        except Exception:
+            # Excel files opened in Google Sheets return 400 for FORMULA render;
+            # fall back to display values — image/hyperlink formulas won't resolve
+            # but all other data will import correctly.
+            logger.warning("FORMULA render not supported for '%s', falling back to display values", ws.title)
+            formula_values = display_values
 
     if not display_values:
         return [], [], []
