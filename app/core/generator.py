@@ -156,7 +156,7 @@ class OrderSheetGenerator:
 
     def generate(self, items: list[dict], output_dir: str,
                  input_filename: str = "export", brand: str = "",
-                 currency: str = "") -> str:
+                 currency: str = "", google_sheet_tabs: list[str] | None = None) -> str:
         """Generate standard ordersheet Excel from approved items."""
         os.makedirs(output_dir, exist_ok=True)
 
@@ -173,9 +173,104 @@ class OrderSheetGenerator:
             os.makedirs(images_dir, exist_ok=True)
 
         wb = Workbook()
-        ws = wb.active
-        ws.title = "Order Sheet"
+        sheet_groups = self._build_sheet_groups(items, google_sheet_tabs or [])
+        progress_state = {
+            "downloaded": 0,
+            "total": sum(self._count_unique_sheet_urls(sheet_items, images_dir) for _title, sheet_items in sheet_groups),
+        }
+        self._report(0, progress_state["total"], "downloading")
 
+        used_sheet_names: set[str] = set()
+        tmp_images: list[str] = []
+        active_sheet = wb.active
+
+        for idx, (sheet_title, sheet_items) in enumerate(sheet_groups):
+            ws = active_sheet if idx == 0 else wb.create_sheet()
+            ws.title = self._make_sheet_name(sheet_title, used_sheet_names)
+            self._populate_worksheet(
+                wb=wb,
+                ws=ws,
+                items=sheet_items,
+                images_dir=images_dir,
+                currency=currency,
+                progress_state=progress_state,
+                tmp_images=tmp_images,
+            )
+
+        self._report(progress_state["total"], progress_state["total"], "saving")
+        wb.save(out_path)
+        self._report(progress_state["total"], progress_state["total"], "done")
+
+        # Clean up temp images
+        for p in tmp_images:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+        return os.path.abspath(out_path)
+
+    def _build_sheet_groups(self, items: list[dict], google_sheet_tabs: list[str]) -> list[tuple[str, list[dict]]]:
+        if not google_sheet_tabs:
+            return [("Order Sheet", items)]
+
+        items_by_sheet: dict[str, list[dict]] = {}
+        for item in items:
+            sheet_name = str(item.get("source_sheet") or "").strip()
+            if not sheet_name:
+                sheet_name = google_sheet_tabs[0] if google_sheet_tabs else "Order Sheet"
+            items_by_sheet.setdefault(sheet_name, []).append(item)
+
+        ordered_groups: list[tuple[str, list[dict]]] = []
+        seen: set[str] = set()
+        for title in google_sheet_tabs:
+            ordered_groups.append((title, items_by_sheet.get(title, [])))
+            seen.add(title)
+        for title, sheet_items in items_by_sheet.items():
+            if title not in seen:
+                ordered_groups.append((title, sheet_items))
+        return ordered_groups or [("Order Sheet", items)]
+
+    def _count_unique_sheet_urls(self, items: list[dict], images_dir: str | None) -> int:
+        groups = self._detect_product_groups(items)
+        unique_urls: dict[str, bool] = {}
+        for g in groups:
+            url = g.get("image_url", "")
+            if url:
+                unique_urls[url] = True
+        if images_dir:
+            for item in items:
+                url = item.get("approved_url", "")
+                if url and url.startswith("http"):
+                    unique_urls[url] = True
+                for extra_url in item.get("additional_urls", []):
+                    if extra_url and extra_url.startswith("http"):
+                        unique_urls[extra_url] = True
+        return len(unique_urls)
+
+    def _make_sheet_name(self, title: str, used_names: set[str]) -> str:
+        base = re.sub(r"[\[\]\*\:/\\\?]", "_", str(title or "Order Sheet")).strip() or "Order Sheet"
+        base = base[:31] or "Order Sheet"
+        candidate = base
+        suffix = 2
+        while candidate in used_names:
+            extra = f" ({suffix})"
+            candidate = f"{base[:max(1, 31 - len(extra))]}{extra}"
+            suffix += 1
+        used_names.add(candidate)
+        return candidate
+
+    def _populate_worksheet(
+        self,
+        *,
+        wb: Workbook,
+        ws,
+        items: list[dict],
+        images_dir: str | None,
+        currency: str,
+        progress_state: dict[str, int],
+        tmp_images: list[str],
+    ) -> None:
         # Build column list
         out_headers = list(STANDARD_COLUMNS.keys())
         if not _has_comming_soon_column(items):
@@ -225,24 +320,14 @@ class OrderSheetGenerator:
             if url:
                 unique_urls.setdefault(url, []).append(gi)
 
-        # Also collect per-item URLs for save_images (including additional URLs)
-        all_item_urls = {}
         if images_dir:
-            for ri, item in enumerate(items):
+            for item in items:
                 url = item.get("approved_url", "")
-                if url and url.startswith("http"):
-                    all_item_urls[url] = True
-                    if url not in unique_urls:
-                        unique_urls.setdefault(url, [])
+                if url and url.startswith("http") and url not in unique_urls:
+                    unique_urls.setdefault(url, [])
                 for extra_url in item.get("additional_urls", []):
-                    if extra_url and extra_url.startswith("http"):
-                        all_item_urls[extra_url] = True
-                        if extra_url not in unique_urls:
-                            unique_urls.setdefault(extra_url, [])
-
-        total_images = len(unique_urls)
-        downloaded_count = 0
-        self._report(0, total_images, "downloading")
+                    if extra_url and extra_url.startswith("http") and extra_url not in unique_urls:
+                        unique_urls.setdefault(extra_url, [])
 
         def _dl(url_gis):
             url, gis = url_gis
@@ -250,10 +335,9 @@ class OrderSheetGenerator:
 
         with ThreadPoolExecutor(max_workers=16) as pool:
             for url, gis, img_bytes in pool.map(_dl, unique_urls.items()):
-                downloaded_count += 1
-                self._report(downloaded_count, total_images, "downloading")
+                progress_state["downloaded"] += 1
+                self._report(progress_state["downloaded"], progress_state["total"], "downloading")
                 if img_bytes:
-                    # Store raw bytes to avoid BytesIO cursor issues on reuse
                     img_bytes.seek(0)
                     raw = img_bytes.read()
                     url_to_bytes[url] = raw
@@ -270,8 +354,6 @@ class OrderSheetGenerator:
 
         qty_letter = get_column_letter(qty_col) if qty_col else None
         whs_letter = get_column_letter(whs_col) if whs_col else None
-        # Use hidden Row WHS Price for the formula — it's populated on every size row
-        # even when the visible WHS Price column is blank for non-first rows
         formula_whs_letter = get_column_letter(row_whs_col) if row_whs_col else whs_letter
         total_letter = get_column_letter(total_col) if total_col else None
 
@@ -279,7 +361,6 @@ class OrderSheetGenerator:
         currency_fmt = f'"{currency_symbol}"#,##0.00'
 
         # ── Data rows (row 3+) ──
-        tmp_images = []
         for ri, item in enumerate(items):
             excel_row = ri + DATA_START
             g_info = row_to_group.get(ri)
@@ -397,7 +478,6 @@ class OrderSheetGenerator:
                     cell.alignment = RIGHT
 
                 elif header == "Pictures":
-                    # Use the folder URL from the source sheet if available, else fall back to image URL
                     link_url = item.get("pictures_url", "") or item.get("approved_url", "")
                     if link_url and link_url.startswith("http"):
                         cell.value = "View"
@@ -410,7 +490,6 @@ class OrderSheetGenerator:
                     cell.alignment = CENTER
 
                 elif header == "ItemCode":
-                    # Use SAP code from source, or construct from item_group + size
                     sap = item.get("sap_code", "")
                     if not sap:
                         ig = item.get("item_group", "")
@@ -421,7 +500,6 @@ class OrderSheetGenerator:
                     cell.font = BODY_FONT
                     cell.alignment = LEFT
 
-                # Row helper columns
                 elif header == "Row WHS Price":
                     whs = item.get("wholesale_price")
                     cell.value = float(whs) if whs else None
@@ -439,26 +517,21 @@ class OrderSheetGenerator:
                 elif header == "Row Brand Name":
                     cell.value = item.get("brand", "")
 
-            # Save image to folder (use cached download, no re-download)
             if images_dir:
                 img_url = item.get("approved_url", "")
                 if img_url and img_url in url_to_bytes:
                     self._save_image_file(url_to_bytes[img_url], images_dir, item)
-                # Save additional images with incrementing suffix
                 for extra_url in item.get("additional_urls", []):
                     if extra_url and extra_url in url_to_bytes:
                         self._save_image_file(url_to_bytes[extra_url], images_dir, item)
 
-
-        last_data_row = DATA_START + len(items) - 1
+        last_data_row = max(DATA_START, DATA_START + len(items) - 1)
 
         # ── Merge cells for product groups & embed images ──
-        embedded = 0
         for gi, g in enumerate(groups):
             excel_start = g["start"] + DATA_START
             excel_end = g["end"] + DATA_START
 
-            # Merge Picture column for product group
             if excel_end > excel_start:
                 ws.merge_cells(
                     start_row=excel_start, start_column=pic_col,
@@ -473,7 +546,6 @@ class OrderSheetGenerator:
             if gi not in image_data:
                 continue
 
-            # Embed image
             num_rows = g["end"] - g["start"] + 1
             row_h_pt = max(IMAGE_PT / num_rows, TEXT_ROW_H)
             total_cell_h_px = int(row_h_pt * num_rows / 0.75)
@@ -481,16 +553,14 @@ class OrderSheetGenerator:
 
             img_bytes = io.BytesIO(image_data[gi])
             pil_open = PILImage.open(img_bytes)
-            # Flatten transparency to neutral gray — matches cell bg, visible for dark products
-            if pil_open.mode in ('RGBA', 'LA', 'P'):
-                pil_rgba = pil_open.convert('RGBA')
-                bg = PILImage.new('RGB', pil_rgba.size, (208, 208, 208))  # #D0D0D0
+            if pil_open.mode in ("RGBA", "LA", "P"):
+                pil_rgba = pil_open.convert("RGBA")
+                bg = PILImage.new("RGB", pil_rgba.size, (208, 208, 208))
                 bg.paste(pil_rgba, mask=pil_rgba.split()[3])
                 raw_img = bg
             else:
-                raw_img = pil_open.convert('RGB')
+                raw_img = pil_open.convert("RGB")
 
-            # Resize for Excel embedding — fixed max height, don't stretch
             display_img = raw_img.copy()
             display_img.thumbnail((self.img_size[0], display_h), PILImage.LANCZOS)
 
@@ -500,14 +570,10 @@ class OrderSheetGenerator:
             tmp_images.append(tmp.name)
 
             xl_img = XLImage(tmp.name)
-
-            # Center image in cell — 1px = 9525 EMU
-            # Column width: 21 chars × 7px + 5px padding ≈ 152px
             col_width_px = int(STANDARD_COLUMNS["Picture"]["width"] * 7 + 5)
             h_offset_emu = max(0, (col_width_px - display_img.width) // 2) * 9525
             v_offset_emu = max(0, (total_cell_h_px - display_img.height) // 2) * 9525
 
-            # OneCellAnchor: fixed size in EMU — never stretches regardless of row height
             try:
                 anchor = OneCellAnchor()
                 anchor._from = AnchorMarker(col=pic_col - 1, colOff=h_offset_emu,
@@ -518,10 +584,8 @@ class OrderSheetGenerator:
                 )
                 xl_img.anchor = anchor
                 ws.add_image(xl_img)
-                embedded += 1
             except Exception:
                 ws.add_image(xl_img, f"{get_column_letter(pic_col)}{excel_start}")
-                embedded += 1
 
         # ── Summary row (row 1) ──
         for ci, header in enumerate(out_headers, 1):
@@ -548,26 +612,14 @@ class OrderSheetGenerator:
         # ── Freeze & filter ──
         ws.freeze_panes = f"B{DATA_START}"
         last_col_letter = get_column_letter(len(out_headers))
-        ws.auto_filter.ref = f"A{HEADER_ROW}:{last_col_letter}{last_data_row}"
+        filter_last_row = max(last_data_row, HEADER_ROW)
+        ws.auto_filter.ref = f"A{HEADER_ROW}:{last_col_letter}{filter_last_row}"
 
         ws.sheet_properties.tabColor = "1F2937"
         ws.print_title_rows = "1:2"
         ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToPage = True
         ws.page_setup.fitToWidth = 1
-
-        self._report(total_images, total_images, "saving")
-        wb.save(out_path)
-        self._report(total_images, total_images, "done")
-
-        # Clean up temp images
-        for p in tmp_images:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-
-        return os.path.abspath(out_path)
 
     def _detect_product_groups(self, items: list[dict]) -> list[dict]:
         """Group items by item_code (same product, different sizes/colors)."""

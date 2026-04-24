@@ -93,6 +93,10 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN comming_soon_qty VARCHAR(50)"
                 ))
+            if "source_sheet" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN source_sheet VARCHAR(255)"
+                ))
         if "search_cache" in insp.get_table_names():
             cache_cols = {c["name"] for c in insp.get_columns("search_cache")}
             if "search_version" not in cache_cols:

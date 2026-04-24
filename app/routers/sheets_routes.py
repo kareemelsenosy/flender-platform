@@ -154,11 +154,14 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                     "image_url": item.get("image_url") or "" if save_images else "",
                     "pictures_url": item.get("dropbox_url") or "" if save_images else "",
                     "comming_soon_qty": item.get("comming_soon_qty", ""),
+                    "source_sheet": tab["title"],
                 })
 
         # Store currency in session config
         cfg = sess.config
         cfg["currency"] = detected_currency
+        cfg["selected_sheet_tabs"] = [tab["title"] for tab in tabs_to_process]
+        cfg["google_sheet_title"] = result["title"]
         sess.config = cfg
 
         # Store each row as its own UniqueItem (no aggregation).
@@ -179,6 +182,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                 qty_available=row["qty_available"],
                 barcode=row["barcode"],
                 item_group=row["item_group"],
+                source_sheet=row.get("source_sheet", ""),
                 comming_soon_qty=row.get("comming_soon_qty", ""),
             )
             ui.sizes = [size] if size else []
@@ -218,6 +222,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                         qty_available=row["qty_available"],
                         barcode=row["barcode"],
                         item_group=row["item_group"],
+                        source_sheet=row.get("source_sheet", ""),
                         comming_soon_qty=row.get("comming_soon_qty", ""),
                     )
                     ui2.sizes = [size] if size else []

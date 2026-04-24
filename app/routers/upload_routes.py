@@ -162,7 +162,10 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
 @router.post("/sessions/{session_id}/delete")
 async def delete_session(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
+    is_ajax = "application/json" in request.headers.get("accept", "")
     if not uid:
+        if is_ajax:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
         return RedirectResponse("/login", status_code=302)
 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
@@ -184,4 +187,8 @@ async def delete_session(session_id: int, request: Request, db: DBSession = Depe
                 pass
         db.delete(sess)
         db.commit()
+        if is_ajax:
+            return JSONResponse({"ok": True})
+    elif is_ajax:
+        return JSONResponse({"ok": True})  # idempotent — already gone
     return RedirectResponse("/", status_code=302)

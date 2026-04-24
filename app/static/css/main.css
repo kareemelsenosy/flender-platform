@@ -416,7 +416,7 @@ textarea:focus { border-color: var(--black); }
   gap: 6px;
   flex-wrap: wrap;
 }
-.session-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.session-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ===== TABLE ===== */
 .table-container { overflow-x: auto; }
@@ -852,7 +852,7 @@ input[type="checkbox"] {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   background: rgba(0,0,0,0.35);
-  z-index: 300;
+  z-index: 10000;
   align-items: center;
   justify-content: center;
   animation: modalFadeIn 0.15s ease;

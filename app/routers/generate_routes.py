@@ -109,7 +109,8 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
 def _run_export_background(session_id: int, user_id: int, item_dicts: list,
                            sess_name: str, sess_config: dict,
                            brand: str, save_images: bool,
-                           currency: str = ""):
+                           currency: str = "",
+                           google_sheet_tabs: list[str] | None = None):
     """Run export in background thread so user can navigate away."""
     from app.database import SessionLocal
     db = SessionLocal()
@@ -134,6 +135,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             input_filename=sess_name,
             brand=brand,
             currency=currency,
+            google_sheet_tabs=google_sheet_tabs,
         )
 
         # Create download token for Excel
@@ -294,6 +296,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "brand": item.brand or "",
                 "barcode": item.barcode or "",
                 "item_group": item.item_group or "",
+                "source_sheet": item.source_sheet or "",
                 "comming_soon_qty": item.comming_soon_qty if item.comming_soon_qty is not None else "",
             })
 
@@ -314,6 +317,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
 
     brand = (items[0].brand or "") if items else ""
     currency = sess.config.get("currency", "")
+    google_sheet_tabs = sess.config.get("selected_sheet_tabs", []) if sess.source_type == "google_sheets" else []
 
     # Initialize progress and start background thread
     with _progress_lock:
@@ -322,7 +326,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
 
     threading.Thread(
         target=_run_export_background,
-        args=(session_id, uid, item_dicts, sess.name, sess.config, brand, save_images, currency),
+        args=(session_id, uid, item_dicts, sess.name, sess.config, brand, save_images, currency, google_sheet_tabs),
         daemon=True,
     ).start()
 

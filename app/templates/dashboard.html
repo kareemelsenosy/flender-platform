@@ -233,9 +233,7 @@ async function startUpload(fileList) {
         <a href="/mapping/{{ sess.id }}" class="btn btn-outline btn-sm">Edit Mapping</a>
         {% endif %}
       {% endif %}
-      <form method="POST" action="/sessions/{{ sess.id }}/delete" style="display:inline" class="delete-form">
-        <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete(this)">Delete</button>
-      </form>
+      <button type="button" class="btn btn-danger btn-sm" data-delete-url="/sessions/{{ sess.id }}/delete" onclick="confirmDelete(this)">Delete</button>
     </div>
   </div>
   {% endfor %}
@@ -248,9 +246,62 @@ async function startUpload(fileList) {
 
 <script>
 function confirmDelete(btn) {
-  const form = btn.closest('form');
-  showDanger('This session and all its data will be permanently deleted.', () => form.requestSubmit(), 'Delete Session');
+  showDanger('This session and all its data will be permanently deleted.', () => _doDelete(btn), 'Delete Session');
 }
+
+async function _doDelete(btn) {
+  const url = btn.dataset.deleteUrl;
+  if (!url) return;
+  const card = btn.closest('.session-card');
+
+  // Optimistic: dim card and disable all buttons immediately
+  btn.disabled = true;
+  if (card) {
+    card.style.opacity = '0.45';
+    card.style.pointerEvents = 'none';
+  }
+
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok && !data.ok) throw new Error(data.error || 'Delete failed');
+
+    // Animate card out: collapse height then remove
+    if (card) {
+      const h = card.offsetHeight;
+      card.style.transition = 'opacity 0.2s ease, max-height 0.3s ease 0.1s, margin-bottom 0.3s ease 0.1s, padding 0.3s ease 0.1s';
+      card.style.overflow = 'hidden';
+      card.style.maxHeight = h + 'px';
+      // Force reflow so transition fires
+      card.offsetHeight; // eslint-disable-line
+      card.style.opacity = '0';
+      card.style.maxHeight = '0';
+      card.style.marginBottom = '0';
+      card.style.paddingTop = '0';
+      card.style.paddingBottom = '0';
+      setTimeout(() => {
+        card.remove();
+        // Show empty state if no sessions left
+        const list = document.querySelector('.flex.flex-col.gap-3');
+        if (list && !list.querySelector('.session-card')) {
+          list.outerHTML = `<div class="card text-center" style="padding:48px">
+            <p class="text-muted">No sessions yet. Upload an Excel file or import from Google Sheets to get started.</p>
+          </div>`;
+        }
+      }, 420);
+    }
+  } catch (err) {
+    // Restore card on error
+    if (card) { card.style.opacity = '1'; card.style.pointerEvents = ''; }
+    btn.disabled = false;
+    showAlert('Could not delete session. Please try again.', 'Delete Failed');
+  }
+}
+
 // Eagerly prefetch likely next pages after load
 setTimeout(() => {
   document.querySelectorAll('a[href^="/mapping/"],a[href^="/review/"],a[href^="/generate/"]')
