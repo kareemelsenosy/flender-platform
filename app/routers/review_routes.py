@@ -573,11 +573,15 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     extra_site_urls = split_and_normalize_domains(session_config.get("extra_brand_urls", []))
     session_notes = str(session_config.get("search_notes", "") or "").strip()
 
+    from app.routers.search_routes import _infer_brand_from_session
+    brand_hint = _infer_brand_from_session(db, session_id)
+
     search_config = {
         "brand_site_urls": brand_site_urls,
         "extra_site_urls": extra_site_urls,
         "google_api_key": GOOGLE_SEARCH_KEY,
         "google_cse_id": GOOGLE_CSE_ID,
+        "brand_hint": brand_hint,
     }
     searcher = ImageSearcher(search_config)
 

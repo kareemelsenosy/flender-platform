@@ -178,6 +178,33 @@ def _reset_items_for_search(db: DBSession, session_id: int) -> int:
     }, synchronize_session=False)
 
 
+def _infer_brand_from_session(db: DBSession, session_id: int) -> str:
+    """Return a known brand name found in the session file/name, or empty string.
+
+    Stone Island and similar brands export spreadsheets where the brand column
+    contains a product division (e.g. "SPORTSWEAR") instead of the real brand
+    name.  We recover the real brand by scanning the session's source_ref
+    (file name) and name against every brand we know about.
+    """
+    from app.core.searcher import BRAND_DOMAINS
+    try:
+        sess = db.query(Session).filter(Session.id == session_id).first()
+        if not sess:
+            return ""
+        haystack = " ".join(filter(None, [
+            str(sess.source_ref or ""),
+            str(sess.name or ""),
+        ])).lower()
+        # Try longest brand names first so "the north face" beats "north face"
+        for brand in sorted(BRAND_DOMAINS.keys(), key=len, reverse=True):
+            if brand in haystack:
+                # Title-case the matched brand for display / query use
+                return brand.title()
+    except Exception:
+        pass
+    return ""
+
+
 def _run_search_background(session_id: int, config: dict, user_id: int = None):
     """Run image search in background thread."""
     db = SessionLocal()
@@ -227,12 +254,18 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
         # Extra brand URLs entered in Step 3 form — apply to ALL items as priority domains
         extra_brand_urls = split_and_normalize_domains(config.get("extra_brand_urls", []))
 
+        # Infer brand from the session file name when item rows have a generic
+        # brand column (e.g. Stone Island exports "SPORTSWEAR" as the brand).
+        # "Stone Island Stock On Hand.xlsx" → brand_hint = "Stone Island".
+        brand_hint = _infer_brand_from_session(db, session_id)
+
         search_config = {
             **config,
             "brand_site_urls": brand_site_urls,
             "extra_site_urls": extra_brand_urls,  # priority domains for this session
             "google_api_key": GOOGLE_SEARCH_KEY,
             "google_cse_id": GOOGLE_CSE_ID,
+            "brand_hint": brand_hint,
         }
         searcher = ImageSearcher(search_config)
 

@@ -609,6 +609,10 @@ class ImageSearcher:
             self.config.get("extra_site_urls", [])
         )
         self.strict_match_mode = bool(self.config.get("strict_match_mode", True))
+        # Fallback brand used when the item's brand field is a generic category
+        # word (e.g. "SPORTSWEAR").  Typically inferred from the session/file name
+        # (e.g. "Stone Island Stock On Hand.xlsx" → brand_hint = "Stone Island").
+        self.brand_hint: str = str(self.config.get("brand_hint", "") or "").strip()
 
     def _brand_identity_keys(self, brand: str) -> set[str]:
         text = str(brand or "").strip().lower()
@@ -748,12 +752,13 @@ class ImageSearcher:
         # Detect when the "brand" column contains a product-division / category
         # word instead of an actual brand name (e.g. Stone Island exports put
         # "SPORTSWEAR" in the brand column).  A generic brand pollutes every
-        # query and prevents any images from being found, so we clear it so
-        # downstream query builders skip it entirely.
+        # query, so we clear it and fall back to the session-level brand_hint
+        # (inferred from the file name, e.g. "Stone Island Stock On Hand.xlsx"
+        # → brand_hint = "Stone Island").
         if brand:
             brand_tokens = set(_tokenize(brand))
             if brand_tokens and brand_tokens.issubset(_GENERIC_BRAND_TERMS):
-                brand = ""
+                brand = self.brand_hint  # use hint if available, else ""
         base_item_code = self._normalize_item_code(item_code, item_group, style_name)
         related_item_code = normalize_related_item_code(item_code, item_group, style_name)
         family, family_terms = self._infer_category_family(item_group, style_name)
