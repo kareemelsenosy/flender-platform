@@ -50,7 +50,8 @@ def _get_credentials_path(user_id: int) -> str:
 
 def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                           selected_tabs: list[str] | None = None,
-                          save_images: bool = True) -> dict:
+                          save_images: bool = True,
+                          search_missing: bool = True) -> dict:
     """Synchronous import logic — safe to run in a thread."""
     db = SessionLocal()
     try:
@@ -162,6 +163,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         cfg["currency"] = detected_currency
         cfg["selected_sheet_tabs"] = [tab["title"] for tab in tabs_to_process]
         cfg["google_sheet_title"] = result["title"]
+        cfg["search_missing"] = bool(search_missing)
         sess.config = cfg
 
         # Store each row as its own UniqueItem (no aggregation).
@@ -194,6 +196,9 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                 ui.approved_url = image_url
                 ui.review_status = "approved"
                 ui.auto_selected = True
+                ui.search_status = "done"
+            elif not search_missing:
+                ui.review_status = "approved"
                 ui.search_status = "done"
             db.add(ui)
             total_items += 1
@@ -236,6 +241,9 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                         ui2.review_status = "approved"
                         ui2.auto_selected = True
                         ui2.search_status = "done"
+                    elif not search_missing:
+                        ui2.review_status = "approved"
+                        ui2.search_status = "done"
                     db.add(ui2)
                     db.commit()
                     total_items += 1
@@ -260,6 +268,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
             "items": total_items,
             "with_images": with_images,
             "without_images": without_images,
+            "search_missing": bool(search_missing),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -335,6 +344,8 @@ async def import_sheets(request: Request, db: DBSession = Depends(get_db)):
 
     data = await request.json()
     sheets_url = data.get("url", "").strip()
+    save_images: bool = data.get("save_images", True)
+    search_missing: bool = data.get("search_missing", True)
     if not sheets_url:
         return JSONResponse({"error": "No URL provided"}, status_code=400)
 
@@ -342,7 +353,7 @@ async def import_sheets(request: Request, db: DBSession = Depends(get_db)):
     if not os.path.exists(cred_path):
         return JSONResponse({"error": "Google credentials not configured. Go to Settings to upload."}, status_code=400)
 
-    result = await asyncio.to_thread(_do_import_sheet_sync, uid, sheets_url, cred_path)
+    result = await asyncio.to_thread(_do_import_sheet_sync, uid, sheets_url, cred_path, None, save_images, search_missing)
     if result.get("ok"):
         return JSONResponse(result)
     return JSONResponse(result, status_code=400)
@@ -378,6 +389,7 @@ async def import_sheets_batch(request: Request):
             {
                 "url": job["url"], "label": job["label"], "status": "pending", "title": "", "error": "",
                 "session_id": None, "items": 0, "with_images": 0, "without_images": 0,
+                "search_missing": search_missing,
             }
             for job in import_jobs
         ],
@@ -394,7 +406,7 @@ async def import_sheets_batch(request: Request):
             url = job_data["url"]
             sel_tabs = job_data.get("selected_tabs") or None
             result = await asyncio.wait_for(
-                asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs, save_images),
+                asyncio.to_thread(_do_import_sheet_sync, uid, url, cred_path, sel_tabs, save_images, search_missing),
                 timeout=300,  # 5 min max per sheet
             )
             job = _batch_progress[batch_id]["jobs"][idx]
@@ -406,6 +418,7 @@ async def import_sheets_batch(request: Request):
                     "items": result["items"],
                     "with_images": result["with_images"],
                     "without_images": result["without_images"],
+                    "search_missing": result.get("search_missing", search_missing),
                 })
                 _persist_batch(batch_id, uid)
             else:

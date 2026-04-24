@@ -60,3 +60,40 @@ def test_google_sheets_import_persists_comming_soon_qty(test_app, make_user, mon
         assert item.comming_soon_qty == "3"
     finally:
         db.close()
+
+
+def test_google_sheets_import_without_search_missing_auto_approves_rows(
+    test_app,
+    make_user,
+    monkeypatch,
+    tmp_path,
+):
+    user = make_user(username="convert_only", email="convert_only@flendergroup.com")
+    cred_path = tmp_path / "google.json"
+    cred_path.write_text("{}", encoding="utf-8")
+
+    import app.core.sheets_reader as sheets_reader
+    import app.routers.sheets_routes as sheets_routes
+
+    monkeypatch.setattr(sheets_reader, "SheetsReader", _FakeSheetsReader)
+    monkeypatch.setattr(sheets_reader, "extract_spreadsheet_id", lambda url: "sheet-123")
+
+    result = sheets_routes._do_import_sheet_sync(
+        user["id"],
+        "https://docs.google.com/spreadsheets/d/sheet-123/edit",
+        str(cred_path),
+        search_missing=False,
+    )
+
+    assert result["ok"] is True
+
+    db = test_app["database"].SessionLocal()
+    try:
+        item = db.query(test_app["models"].UniqueItem).filter_by(session_id=result["session_id"]).one()
+        sess = db.query(test_app["models"].Session).filter_by(id=result["session_id"]).one()
+        assert item.review_status == "approved"
+        assert item.search_status == "done"
+        assert item.approved_url in (None, "")
+        assert sess.config["search_missing"] is False
+    finally:
+        db.close()

@@ -322,3 +322,85 @@ def test_google_sheet_export_keeps_selected_tabs_as_workbook_sheets(
         assert wb["Tab B"].max_row == 2
     finally:
         wb.close()
+
+
+def test_google_sheet_convert_only_session_exports_without_image_review(
+    client,
+    login_as,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+    db = test_app["database"].SessionLocal()
+    try:
+        sess = models.Session(
+            user_id=user["id"],
+            name="Convert Only",
+            source_type="google_sheets",
+            source_ref="https://docs.google.com/spreadsheets/d/sheet-456/edit#gid=0",
+            status="reviewing",
+            total_items=1,
+            searched_items=1,
+        )
+        sess.config = {
+            "selected_sheet_tabs": ["Main"],
+            "currency": "€",
+            "search_missing": False,
+        }
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+
+        db.add(
+            models.UniqueItem(
+                session_id=sess.id,
+                item_code="SKU-CONVERT",
+                color_code="Black|42|Main",
+                brand="Brand",
+                style_name="Converter Shoe",
+                color_name="Black",
+                gender="Men",
+                wholesale_price=10,
+                retail_price=20,
+                qty_available=5,
+                review_status="approved",
+                search_status="done",
+                source_sheet="Main",
+                sizes=["42"],
+            )
+        )
+        db.commit()
+        session_id = sess.id
+    finally:
+        db.close()
+
+    page = client.get(f"/generate/{session_id}")
+    assert page.status_code == 200
+    assert "1 approved items" in page.text
+
+    response = client.post(f"/generate/{session_id}", json={"save_images": False})
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+    excel_file = None
+    for _ in range(40):
+        poll_db = test_app["database"].SessionLocal()
+        try:
+            excel_file = (
+                poll_db.query(models.GeneratedFile)
+                .filter(
+                    models.GeneratedFile.session_id == session_id,
+                    models.GeneratedFile.filename != "images.zip",
+                )
+                .first()
+            )
+            if excel_file is not None:
+                poll_db.expunge(excel_file)
+                break
+        finally:
+            poll_db.close()
+        time.sleep(0.25)
+
+    assert excel_file is not None
+    download = client.get(f"/download/{excel_file.token}")
+    assert download.status_code == 200

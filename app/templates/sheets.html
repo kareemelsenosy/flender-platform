@@ -235,8 +235,8 @@ function showCompletedJobs(jobs) {
       const parts = [job.with_images > 0 ? `${job.with_images} with images` : '', job.without_images > 0 ? `${job.without_images} without images` : ''].filter(Boolean).join(' \u00b7 ');
       const acts = [
         `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
-        `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
-      ].join('');
+        job.search_missing ? `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>` : '',
+      ].filter(Boolean).join('');
       setJob(idx, 'done', {title: job.title || job.label || job.url, status: `${job.items} items${parts ? ' \u00b7 ' + parts : ''}`, eta: 'Done', actions: acts});
     } else if (job.status === 'error') {
       setJob(idx, 'error', {error: job.error || 'Import failed'});
@@ -316,8 +316,8 @@ function reconnectBatch(batch_id) {
         const parts = [job.with_images > 0 ? `${job.with_images} with images` : '', job.without_images > 0 ? `${job.without_images} without images` : ''].filter(Boolean).join(' · ');
         const acts = [
           `<a href="/generate/${job.session_id}" class="btn btn-primary" style="font-size:0.8rem;padding:6px 14px">Export Excel</a>`,
-          `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>`,
-        ].join('');
+          job.search_missing ? `<a href="/review/${job.session_id}" class="btn btn-outline" style="font-size:0.8rem;padding:6px 14px">Review Images</a>` : '',
+        ].filter(Boolean).join('');
         setJob(idx, 'done', {title: job.title || job.label || job.url, status: `${job.items} items${parts ? ' · ' + parts : ''}`, eta: 'Done', actions: acts});
       }
       if (st === 'error') {
