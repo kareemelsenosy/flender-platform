@@ -1695,8 +1695,15 @@ class ImageSearcher:
         return self._bing_raw(query)
 
     def _bing_raw(self, query: str) -> list[SearchHit]:
+        # Bing-specific minimal headers. Do NOT spread _HEADERS here: the
+        # sec-ch-ua-* / Sec-Fetch-* headers in _HEADERS mismatch the actual
+        # HTTP/2 fingerprint sent by the requests library, which causes Bing
+        # to serve a 164KB bot-detection page with 0 image results instead of
+        # the full 685KB page with 35+ results.
         bing_headers = {
-            **_HEADERS,
+            "User-Agent": _HEADERS["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.bing.com/",
         }
         # nfpr=1 stops Bing from autocorrecting SKU strings like "I027681_1YF.XX"
@@ -1865,8 +1872,11 @@ class ImageSearcher:
         return [SearchHit(url=u) for u in self._dedupe(filtered)[:self.max_candidates]]
 
     def _duckduckgo_search(self, query: str) -> list[SearchHit]:
+        # Minimal DDG headers — like Bing, the full sec-ch-ua fingerprint triggers
+        # bot detection and causes the i.js endpoint to return an empty body.
         headers = {
-            **_HEADERS,
+            "User-Agent": _HEADERS["User-Agent"],
+            "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://duckduckgo.com/",
         }
         try:
