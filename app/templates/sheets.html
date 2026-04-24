@@ -197,7 +197,14 @@ function updateTabSel(rowId, url) {
     .map(c => allTabs[parseInt(c.dataset.idx)]);
   _tabSelections[url] = checked;
 }
-addRow();
+// Defer addRow() until escapeAttr is available. On a direct page load the
+// content block script runs before base.html's helpers are defined; on SPA
+// navigation they're already defined so we can call immediately.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => addRow());
+} else {
+  addRow();
+}
 
 // ── Auto-reconnect to active imports on page load ─────────────────────────
 (async function() {
@@ -411,6 +418,14 @@ async function importAll() {
   const searchMissing = document.getElementById('search-missing').checked;
   document.getElementById('import-btn').disabled=true;
   document.getElementById('import-card').style.display='none';
+  try { await _importAll(urls, saveImages, searchMissing); } catch(e) {
+    document.getElementById('import-card').style.display='block';
+    document.getElementById('batch-section').style.display='none';
+    document.getElementById('import-btn').disabled=false;
+    showAlert((e&&e.message)||'Unexpected error. Please try again.','Import Error');
+  }
+}
+async function _importAll(urls, saveImages, searchMissing) {
 
   const batchSection=document.getElementById('batch-section');
   batchSection.style.display='block';
@@ -478,7 +493,13 @@ async function importAll() {
       _showPostImport(batch.jobs,searchMissing);
     }
   };
-  es.onerror=()=>{es.close();document.getElementById('batch-summary').textContent='Connection lost';};
+  es.onerror=()=>{
+    es.close();
+    document.getElementById('import-card').style.display='block';
+    document.getElementById('batch-section').style.display='none';
+    document.getElementById('import-btn').disabled=false;
+    showAlert('Connection to import service lost. Please try again.','Import Error');
+  };
 }
 
 function _showPostImport(jobs,searchMissing){
