@@ -35,6 +35,28 @@ _completed_exports: dict[int, list] = {}
 _completed_lock = threading.Lock()
 
 
+def _materialize_google_sheet_conversion_approvals(db: DBSession, sess: Session) -> None:
+    """Older Google Sheets convert-only imports may still have pending rows.
+    Promote them to approved so export behaves like a pure conversion flow.
+    """
+    if sess.source_type != "google_sheets":
+        return
+    if sess.config.get("search_missing", True):
+        return
+
+    pending_items = db.query(UniqueItem).filter(
+        UniqueItem.session_id == sess.id,
+        UniqueItem.review_status != "approved",
+    ).all()
+    if not pending_items:
+        return
+
+    for item in pending_items:
+        item.review_status = "approved"
+        item.search_status = "done"
+    db.commit()
+
+
 @router.get("/generate/{session_id}/progress")
 async def generate_progress(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     """Poll endpoint for real-time generation progress. Requires auth + session ownership. (C1)"""
@@ -59,6 +81,7 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
         return RedirectResponse("/", status_code=302)
 
     materialize_default_review_approvals(db, session_id)
+    _materialize_google_sheet_conversion_approvals(db, sess)
 
     # Count approved items
     approved_count = db.query(UniqueItem).filter(
@@ -244,6 +267,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         return JSONResponse({"error": "not found"}, status_code=404)
 
     materialize_default_review_approvals(db, session_id)
+    _materialize_google_sheet_conversion_approvals(db, sess)
 
     # Already exporting?
     with _progress_lock:

@@ -363,8 +363,8 @@ def test_google_sheet_convert_only_session_exports_without_image_review(
                 wholesale_price=10,
                 retail_price=20,
                 qty_available=5,
-                review_status="approved",
-                search_status="done",
+                review_status="pending",
+                search_status="pending",
                 source_sheet="Main",
                 sizes=["42"],
             )
