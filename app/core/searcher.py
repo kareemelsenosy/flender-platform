@@ -42,12 +42,21 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/124.0.6367.207 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "DNT": "1",
     "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
 
 BRAND_DOMAINS: dict[str, str] = {
@@ -770,21 +779,36 @@ class ImageSearcher:
 
     def build_manual_search_query(self, item: dict) -> str:
         ctx = self._build_item_context(item)
-        return _join_distinct_parts([
+        # Delegate to _build_full_query so the displayed query is identical to
+        # what every search engine receives — colour before SKU, raw item_code.
+        return self._build_full_query(ctx)
+
+    def _build_full_query(self, ctx: dict[str, Any]) -> str:
+        """Primary search query — brand + style + COLOR FIRST + raw item_code.
+
+        Color appears before the SKU so engines see the color intent even when
+        the SKU encodes the color in a suffix (e.g. I027681_1YF.XX → green).
+        The raw item_code is used without base-normalization so color-encoding
+        suffixes are preserved and match brand product pages exactly.
+        """
+        parts = [
             ctx["brand"],
             ctx["style_name"],
-            ctx["item_group"],
-            ctx["color_name"],
-            ctx["base_item_code"],
-        ])
+            ctx["color_name"],        # color before the code — critical for color accuracy
+            ctx["base_item_code"],    # size-stripped but color-encoding preserved
+                                      # (e.g. 3WE-W-6 → 3WE-W, I027681_1YF.XX unchanged)
+        ]
+        return _join_distinct_parts(parts)
 
     def _build_exact_query(self, ctx: dict[str, Any]) -> str:
+        # Use raw item_code (not base-normalized) so color-encoding suffixes
+        # like _1YF.XX stay in the query and find the right colour variant.
         parts = [
             ctx["brand"],
             ctx["style_name"],
             ctx["item_group"],
             ctx["color_name"],
-            ctx["base_item_code"],
+            ctx["item_code"],
         ]
         if not ctx["style_name"] and ctx["barcode"]:
             parts.append(ctx["barcode"])
@@ -797,6 +821,9 @@ class ImageSearcher:
         return f"\"{exact}\""
 
     def _build_text_query(self, ctx: dict[str, Any], include_category: bool = True, prefer_base_code: bool = True) -> str:
+        # Brand-site searches pass prefer_base_code=True because brand websites
+        # index by their own base product code; all other callers should use
+        # the raw item_code so colour-encoding suffixes are not stripped.
         item_code = (
             ctx.get("related_item_code") or ctx["base_item_code"]
             if prefer_base_code
@@ -808,7 +835,7 @@ class ImageSearcher:
         return _join_distinct_parts(parts)
 
     def _build_code_query(self, ctx: dict[str, Any]) -> str:
-        parts = [ctx["brand"], ctx.get("related_item_code") or ctx["base_item_code"], ctx["item_group"], "product image"]
+        parts = [ctx["brand"], ctx.get("related_item_code") or ctx["base_item_code"], ctx["item_group"]]
         return _join_distinct_parts(parts)
 
     def _is_obvious_wrong_color_hit(self, hit: dict[str, Any], ctx: dict[str, Any]) -> bool:
@@ -1133,9 +1160,10 @@ class ImageSearcher:
         ctx = self._build_item_context(item)
         item_code = ctx["item_code"]
         brand = ctx["brand"]
-        broad_query = self._build_text_query(ctx)
-        exact_query = self._build_exact_query(ctx)
-        phrase_query = self._build_phrase_query(ctx)
+        broad_query = self._build_text_query(ctx)       # base-code, used for brand-site searches
+        full_query = self._build_full_query(ctx)        # raw SKU + color-first — primary Google/Bing
+        exact_query = self._build_exact_query(ctx)      # same structure, raw SKU, for _exact variants
+        phrase_query = self._build_phrase_query(ctx)    # quoted exact_query
 
         source_results: dict[str, list[SearchHit]] = {}
         lock = threading.Lock()
@@ -1189,25 +1217,25 @@ class ImageSearcher:
                     )
 
         if self.google_api_key and self.google_cse_id:
-            tasks["google"] = lambda q=broad_query: self._google_search(q)
-            if exact_query and exact_query != broad_query:
+            tasks["google"] = lambda q=full_query: self._google_search(q)
+            if exact_query and exact_query != full_query:
                 tasks["google_exact"] = lambda q=exact_query: self._google_search(q)
             if phrase_query:
                 tasks["google_phrase"] = lambda q=phrase_query: self._google_search(q)
 
-        tasks["bing"] = lambda q=broad_query: self._bing_search(q)
-        if exact_query and exact_query != broad_query:
+        tasks["bing"] = lambda q=full_query: self._bing_search(q)
+        if exact_query and exact_query != full_query:
             tasks["bing_exact"] = lambda q=exact_query: self._bing_search(q)
         if phrase_query:
             tasks["bing_phrase"] = lambda q=phrase_query: self._bing_search(q)
         tasks["bing_code_only"] = lambda: self._bing_raw(self._build_code_query(ctx)) if item_code else []
-        tasks["google_scrape"] = lambda q=broad_query: self._google_images_scrape(q)
-        if exact_query and exact_query != broad_query:
+        tasks["google_scrape"] = lambda q=full_query: self._google_images_scrape(q)
+        if exact_query and exact_query != full_query:
             tasks["google_scrape_exact"] = lambda q=exact_query: self._google_images_scrape(q)
         if phrase_query:
             tasks["google_scrape_phrase"] = lambda q=phrase_query: self._google_images_scrape(q)
-        tasks["ddg"] = lambda q=broad_query: self._duckduckgo_search(q)
-        tasks["yahoo"] = lambda q=broad_query: self._yahoo_images_scrape(q)
+        tasks["ddg"] = lambda q=full_query: self._duckduckgo_search(q)
+        tasks["yahoo"] = lambda q=full_query: self._yahoo_images_scrape(q)
 
         # Fire all sources at the same time
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -1440,7 +1468,8 @@ class ImageSearcher:
             acceptable_colors = _expand_color_tokens(color_tokens)
             color_matches = {token for token in acceptable_colors if token in text_tokens or token in normalized_text}
             if color_matches:
-                score += min(0.18, len(color_matches) * 0.06)
+                # Raised from 0.18 max / 0.06 per match — color accuracy is critical
+                score += min(0.32, len(color_matches) * 0.12)
             # A color is "wrong" if it's a known color word (including compound
             # slugs found in the normalized URL) that isn't in the item's
             # acceptable family.
@@ -1449,13 +1478,15 @@ class ImageSearcher:
                 if compound in normalized_text and compound not in acceptable_colors:
                     other_colors.add(compound)
             if other_colors and not color_matches:
-                score -= 0.28 if ctx.get("strict_query") else 0.14
+                # Raised from 0.28/0.14 — wrong color with no matching color is a
+                # strong disqualifier, especially for colour-variant products.
+                score -= 0.50 if ctx.get("strict_query") else 0.28
             elif other_colors and color_matches:
-                score -= min(0.08, len(other_colors) * 0.03)
+                score -= min(0.12, len(other_colors) * 0.04)
             if style_tokens:
                 style_matches = sum(1 for token in style_tokens if token in text_tokens or token in normalized_text)
                 if style_matches >= max(1, min(2, len(style_tokens))) and color_matches:
-                    score += 0.12
+                    score += 0.16
 
         # Boost for user-specified priority domains (highest priority)
         for extra_d in self.extra_site_urls:
@@ -1633,12 +1664,11 @@ class ImageSearcher:
 
     def _bing_raw(self, query: str) -> list[SearchHit]:
         bing_headers = {
-            "User-Agent": _HEADERS["User-Agent"],
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            **_HEADERS,
             "Referer": "https://www.bing.com/",
         }
-        url = f"https://www.bing.com/images/search?q={urllib.parse.quote(query)}&form=HDRSC2&first=1"
+        # nfpr=1 stops Bing from autocorrecting SKU strings like "I027681_1YF.XX"
+        url = f"https://www.bing.com/images/search?q={urllib.parse.quote(query)}&form=HDRSC2&first=1&nfpr=1"
         resp = self._get(url, headers=bing_headers)
         if resp is None:
             return []
@@ -1719,7 +1749,7 @@ class ImageSearcher:
         resp = self._get("https://www.googleapis.com/customsearch/v1", params={
             "key": self.google_api_key, "cx": self.google_cse_id, "q": query,
             "searchType": "image", "num": self.max_candidates,
-            "imgType": "photo", "safe": "active",
+            "safe": "active",
         })
         if resp is None:
             return []
@@ -1743,40 +1773,57 @@ class ImageSearcher:
     def _google_images_scrape(self, query: str) -> list[SearchHit]:
         """Scrape Google Images search results (no API key needed)."""
         google_headers = {
-            "User-Agent": _HEADERS["User-Agent"],
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            **_HEADERS,
+            "Referer": "https://www.google.com/",
+            # Accept cookie consent so Google doesn't redirect to a consent page
+            "Cookie": "CONSENT=YES+; SOCS=CAESEwgDEgk0OTM3NzU0NDAYASAB",
         }
-        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&tbm=isch&hl=en"
+        # nfpr=1 disables spelling autocorrection — critical for SKU queries like
+        # "I027681_1YF.XX" which Google otherwise rewrites to something generic.
+        # num=30 asks for 30 results (vs default 10) to widen the candidate pool.
+        url = (
+            f"https://www.google.com/search"
+            f"?q={urllib.parse.quote(query)}"
+            f"&tbm=isch&hl=en&gl=us&nfpr=1&num=30"
+        )
         resp = self._get(url, headers=google_headers)
         if resp is None:
             return []
 
         urls: list[str] = []
-        # Google embeds image URLs in various JSON-like structures in the page
-        # Pattern 1: ["url","https://..."] pairs
-        img_matches = re.findall(r'\["(https?://[^"]+\.(?:jpg|jpeg|png|webp)(?:\?[^"]*)?)",[0-9]+,[0-9]+\]', resp.text)
-        urls.extend(img_matches)
-
-        # Pattern 2: ou:"url" (original URL in metadata)
+        # Pattern 1: ou:"url" (original full-size URL in Google's metadata blobs)
         ou_matches = re.findall(r'"ou"\s*:\s*"(https?://[^"]+)"', resp.text)
         urls.extend(ou_matches)
 
-        # Pattern 3: data-src attributes
+        # Pattern 2: ["url","https://..."] pairs in JSON arrays
+        img_matches = re.findall(r'\["(https?://[^"]+\.(?:jpg|jpeg|png|webp)(?:\?[^"]*)?)",[0-9]+,[0-9]+\]', resp.text)
+        urls.extend(img_matches)
+
+        # Pattern 3: imgurl= query-param in redirect hrefs
+        imgurl_matches = re.findall(r'imgurl=(https?://[^&"\']+)', resp.text)
+        urls.extend([urllib.parse.unquote(u) for u in imgurl_matches])
+
+        # Pattern 4: data-src / data-iurl on <img> tags
         soup = BeautifulSoup(resp.text, "html.parser")
         for img in soup.find_all("img"):
             src = img.get("data-src") or img.get("data-iurl") or ""
-            if src.startswith("http") and not "gstatic.com" in src:
+            if src.startswith("http") and "gstatic.com" not in src:
                 urls.append(src)
 
-        # Filter out Google/tracking URLs
-        filtered = [u for u in urls if "google.com" not in u and "gstatic.com" not in u
-                    and "googleapis.com" not in u and len(u) > 20]
+        filtered = [
+            u for u in urls
+            if "google.com" not in u
+            and "gstatic.com" not in u
+            and "googleapis.com" not in u
+            and len(u) > 20
+        ]
 
-        # If few results, retry once with the same text query to pick up alternate embeds
+        # Fallback: retry without nfpr in case Google blocked the no-autocorrect flag
         if len(filtered) < 3:
-            fallback_query = query
-            fallback_url = f"https://www.google.com/search?q={urllib.parse.quote(fallback_query)}&tbm=isch&hl=en"
+            fallback_url = (
+                f"https://www.google.com/search"
+                f"?q={urllib.parse.quote(query)}&tbm=isch&hl=en&gl=us&num=30"
+            )
             resp2 = self._get(fallback_url, headers=google_headers)
             if resp2:
                 ou2 = re.findall(r'"ou"\s*:\s*"(https?://[^"]+)"', resp2.text)
@@ -1786,8 +1833,10 @@ class ImageSearcher:
         return [SearchHit(url=u) for u in self._dedupe(filtered)[:self.max_candidates]]
 
     def _duckduckgo_search(self, query: str) -> list[SearchHit]:
-
-        headers = {"User-Agent": _HEADERS["User-Agent"], "Accept-Language": "en-US,en;q=0.9"}
+        headers = {
+            **_HEADERS,
+            "Referer": "https://duckduckgo.com/",
+        }
         try:
             resp = _HTTP.get("https://duckduckgo.com/",
                              params={"q": query, "iax": "images", "ia": "images"},
@@ -1795,16 +1844,32 @@ class ImageSearcher:
         except Exception:
             return []
 
-        vqd = re.search(r"vqd=([\d-]+)", resp.text)
-        if not vqd:
-            fallback = re.findall(r'"image"\s*:\s*"(https://[^"]+?)"', resp.text)[:self.max_candidates]
-            return [SearchHit(url=u) for u in fallback]
+        # Try multiple vqd extraction patterns — DDG changes its page structure regularly
+        vqd_token = None
+        for pattern in [
+            r'vqd="([^"]+)"',
+            r"vqd='([^']+)'",
+            r"vqd=([\d-]+)",
+            r'"vqd"\s*:\s*"([^"]+)"',
+        ]:
+            m = re.search(pattern, resp.text)
+            if m:
+                vqd_token = m.group(1)
+                break
+
+        if not vqd_token:
+            # Hard fallback: parse image URLs directly from the HTML response
+            fallback = re.findall(r'"image"\s*:\s*"(https://[^"]+?)"', resp.text)
+            fallback += re.findall(r'"thumbnail"\s*:\s*"(https://[^"]+?)"', resp.text)
+            return [SearchHit(url=u) for u in self._dedupe(fallback)[:self.max_candidates]]
 
         try:
-            img_resp = _HTTP.get("https://duckduckgo.com/i.js",
-                                 params={"q": query, "o": "json", "vqd": vqd.group(1), "f": ",,,", "p": "1"},
-                                 headers={**headers, "Referer": "https://duckduckgo.com/"},
-                                 timeout=REQUEST_TIMEOUT)
+            img_resp = _HTTP.get(
+                "https://duckduckgo.com/i.js",
+                params={"q": query, "o": "json", "vqd": vqd_token, "f": ",,,,,", "p": "1", "l": "us-en"},
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
             data = img_resp.json()
             hits: list[SearchHit] = []
             for result in data.get("results", [])[:self.max_candidates]:
