@@ -117,14 +117,20 @@ async def ai_suggest_mapping(session_id: int, request: Request, db: DBSession = 
     for row in rows[:3]:
         sample_data.append({k: v for k, v in row.items() if k != "_raw" and v is not None})
 
-    from app.services.ai_service import ai_map_columns, ai_available
+    from app.services.ai_service import ai_last_error_summary, ai_map_columns, ai_available
     if not ai_available():
         return JSONResponse({"error": "No AI key configured. Add GEMINI_API_KEY (free) or CLAUDE_API_KEY to your .env file."}, status_code=400)
 
     result = ai_map_columns(raw_headers, sample_data, list(COLUMN_PATTERNS.keys()))
 
     if not result:
-        return JSONResponse({"error": "AI request failed. Check your API key in .env file."}, status_code=400)
+        detail = ai_last_error_summary()
+        msg = "AI request failed."
+        if detail:
+            msg += f" Last provider error: {detail}"
+        else:
+            msg += " The provider is configured, but the request did not complete successfully."
+        return JSONResponse({"error": msg}, status_code=502)
 
     return JSONResponse(result)
 

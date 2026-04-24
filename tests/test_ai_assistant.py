@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services import ai_service
+
 
 def _create_session_with_item(test_app, db_session, user_id: int, *, brand: str = "American Rag") -> tuple[object, object]:
     models = test_app["models"]
@@ -141,3 +143,41 @@ def test_ai_assistant_does_not_leak_foreign_session(client, login_as, make_user,
     assert response.json()["ok"] is True
     assert captured["context"].get("session") is None
     assert captured["context"].get("item") is None
+
+
+def test_ai_assistant_reports_provider_failure_when_configured(monkeypatch):
+    monkeypatch.setattr(ai_service, "CLAUDE_API_KEY", "configured-key")
+    monkeypatch.setattr(ai_service, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1400: None)
+    ai_service._set_ai_last_error("claude", "text", "401 invalid x-api-key")
+
+    try:
+        result = ai_service.ai_assistant_chat("Help me", {"page_path": "/review/1"})
+    finally:
+        ai_service._clear_ai_last_error()
+
+    assert "AI is configured" in result["reply"]
+    assert "CLAUDE text" in result["reply"]
+    assert "[redacted-key]" not in result["reply"]
+
+
+def test_ai_status_endpoint_returns_runtime_status(client, login_as, test_app, monkeypatch):
+    login_as(username="status-user", email="status@example.com")
+    monkeypatch.setattr(
+        test_app["api_routes"],
+        "ai_runtime_status",
+        lambda: {
+            "configured": True,
+            "providers": ["claude"],
+            "last_error": {"provider": "claude", "operation": "text", "message": "timeout", "at": 123.0},
+            "last_success_at": None,
+        },
+    )
+
+    response = client.get("/api/ai-status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["configured"] is True
+    assert payload["providers"] == ["claude"]
+    assert payload["last_error"]["message"] == "timeout"

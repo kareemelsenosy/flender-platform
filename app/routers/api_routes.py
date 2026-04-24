@@ -13,7 +13,7 @@ from app.config import INTERNAL_API_ENABLED
 from app.core.searcher import ImageSearcher, split_and_normalize_domains
 from app.database import get_db
 from app.models import BrandSearchConfig, Session as SessionModel, UniqueItem
-from app.services.ai_service import ai_assistant_chat, ai_available
+from app.services.ai_service import ai_assistant_chat, ai_available, ai_runtime_status
 from app.services.notifications import poll_notifications
 from app.services.review_defaults import materialize_default_review_approvals
 
@@ -370,11 +370,20 @@ async def ai_assistant_chat_api(request: Request, db: DBSession = Depends(get_db
     return JSONResponse({
         "ok": True,
         "ai_available": ai_available(),
+        "ai_status": ai_runtime_status(),
         "reply": result.get("reply", ""),
         "suggestions": result.get("suggestions", []),
         "search_instructions": result.get("search_instructions", ""),
         "priority_domains": result.get("priority_domains", []),
     })
+
+
+@router.get("/api/ai-status")
+async def ai_status_api(request: Request):
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"ok": True, **ai_runtime_status()})
 
 
 @router.get("/api/search-test")

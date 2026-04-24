@@ -8,6 +8,8 @@ import base64
 import io
 import json
 import logging
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -91,15 +93,97 @@ def _make_http_session() -> requests.Session:
 
 
 _AI_HTTP = _make_http_session()
+_AI_LAST_ERROR: dict[str, Any] = {
+    "provider": "",
+    "operation": "",
+    "message": "",
+    "at": 0.0,
+}
+_AI_LAST_SUCCESS_AT = 0.0
+
+
+def _sanitize_ai_error_message(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return "Unknown AI provider error."
+    cleaned = re.sub(r"sk-[A-Za-z0-9_-]+", "[redacted-key]", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned[:240]
+
+
+def _set_ai_last_error(provider: str, operation: str, error: Exception | str) -> None:
+    _AI_LAST_ERROR.update({
+        "provider": str(provider or "").strip().lower(),
+        "operation": str(operation or "").strip().lower(),
+        "message": _sanitize_ai_error_message(str(error)),
+        "at": time.time(),
+    })
+
+
+def _clear_ai_last_error() -> None:
+    global _AI_LAST_SUCCESS_AT
+    _AI_LAST_ERROR.update({
+        "provider": "",
+        "operation": "",
+        "message": "",
+        "at": 0.0,
+    })
+    _AI_LAST_SUCCESS_AT = time.time()
+
+
+def _should_retry_ai_error(error: Exception | str) -> bool:
+    text = str(error or "").lower()
+    retry_hints = (
+        "timeout",
+        "timed out",
+        "rate limit",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "connection reset",
+        "connection aborted",
+        "temporarily unavailable",
+        "overloaded",
+        "internal server error",
+        "service unavailable",
+    )
+    return any(hint in text for hint in retry_hints)
+
+
+def _run_ai_call(provider: str, operation: str, fn, *, attempts: int = 3) -> str | None:
+    last_error: Exception | str | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = fn()
+            text = str(result or "").strip()
+            if text:
+                _clear_ai_last_error()
+                return text
+            last_error = "Empty AI response."
+        except Exception as exc:
+            last_error = exc
+            logger.error(f"{provider} {operation} error (attempt {attempt}/{attempts}): {exc}")
+
+        if attempt < attempts and _should_retry_ai_error(last_error):
+            time.sleep(0.6 * attempt)
+            continue
+        break
+
+    if last_error is not None:
+        _set_ai_last_error(provider, operation, last_error)
+    return None
 
 
 def _call_gemini(prompt: str, max_tokens: int = 1024) -> str | None:
     """Call Google Gemini API (free tier)."""
     if not GEMINI_API_KEY:
         return None
-    try:
+    def _do_call():
         from google import genai
         from google.genai import types
+
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -109,28 +193,31 @@ def _call_gemini(prompt: str, max_tokens: int = 1024) -> str | None:
                 temperature=0.1,
             ),
         )
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        return None
+        return response.text
+
+    return _run_ai_call("gemini", "text", _do_call)
 
 
 def _call_claude(prompt: str, max_tokens: int = 1024) -> str | None:
     """Call Anthropic Claude API (paid)."""
     if not CLAUDE_API_KEY:
         return None
-    try:
+    def _do_call():
         import anthropic
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+
+        client = anthropic.Anthropic(
+            api_key=CLAUDE_API_KEY,
+            timeout=30.0,
+            max_retries=2,
+        )
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text.strip()
-    except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        return None
+        return message.content[0].text
+
+    return _run_ai_call("claude", "text", _do_call)
 
 
 def _call_ai(prompt: str, max_tokens: int = 1024) -> str | None:
@@ -149,7 +236,7 @@ def _call_ai(prompt: str, max_tokens: int = 1024) -> str | None:
 def _call_gemini_vision(prompt: str, images: list[dict[str, Any]], max_tokens: int = 1024) -> str | None:
     if not GEMINI_API_KEY or not images:
         return None
-    try:
+    def _do_call():
         from google import genai
         from google.genai import types
 
@@ -169,19 +256,22 @@ def _call_gemini_vision(prompt: str, images: list[dict[str, Any]], max_tokens: i
                 temperature=0.1,
             ),
         )
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Gemini vision API error: {e}")
-        return None
+        return response.text
+
+    return _run_ai_call("gemini", "vision", _do_call)
 
 
 def _call_claude_vision(prompt: str, images: list[dict[str, Any]], max_tokens: int = 1024) -> str | None:
     if not CLAUDE_API_KEY or not images:
         return None
-    try:
+    def _do_call():
         import anthropic
 
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        client = anthropic.Anthropic(
+            api_key=CLAUDE_API_KEY,
+            timeout=30.0,
+            max_retries=2,
+        )
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for image in images:
             content.append({"type": "text", "text": f"Candidate {image['index']}: {image['url']}"})
@@ -204,9 +294,8 @@ def _call_claude_vision(prompt: str, images: list[dict[str, Any]], max_tokens: i
             if getattr(block, "type", "") == "text" and getattr(block, "text", "").strip()
         ]
         return "\n".join(text_blocks).strip() if text_blocks else None
-    except Exception as e:
-        logger.error(f"Claude vision API error: {e}")
-        return None
+
+    return _run_ai_call("claude", "vision", _do_call)
 
 
 def _call_ai_vision(prompt: str, images: list[dict[str, Any]], max_tokens: int = 1024) -> str | None:
@@ -790,6 +879,15 @@ Return ONLY valid JSON in this format:
 
     text = _call_ai(prompt, max_tokens=1400)
     if not text:
+        if ai_available():
+            last_error = ai_last_error_summary()
+            detail = f" The last provider error was: {last_error}" if last_error else ""
+            return {
+                "reply": f"AI is configured, but the last provider request failed.{detail}",
+                "suggestions": [],
+                "search_instructions": "",
+                "priority_domains": [],
+            }
         return {
             "reply": "AI is not available right now. I can still help once the AI provider is configured again.",
             "suggestions": [],
@@ -818,6 +916,30 @@ Return ONLY valid JSON in this format:
 def ai_available() -> bool:
     """Check if any AI service is configured."""
     return bool(GEMINI_API_KEY or CLAUDE_API_KEY)
+
+
+def ai_last_error_summary() -> str:
+    """Short human-readable summary of the last AI provider failure."""
+    if not _AI_LAST_ERROR.get("message"):
+        return ""
+    provider = str(_AI_LAST_ERROR.get("provider") or "ai").upper()
+    operation = str(_AI_LAST_ERROR.get("operation") or "request")
+    return f"{provider} {operation}: {_AI_LAST_ERROR['message']}"
+
+
+def ai_runtime_status() -> dict[str, Any]:
+    """Lightweight runtime diagnostics for AI availability and recent failures."""
+    providers = []
+    if GEMINI_API_KEY:
+        providers.append("gemini")
+    if CLAUDE_API_KEY:
+        providers.append("claude")
+    return {
+        "configured": bool(providers),
+        "providers": providers,
+        "last_error": dict(_AI_LAST_ERROR) if _AI_LAST_ERROR.get("message") else None,
+        "last_success_at": _AI_LAST_SUCCESS_AT or None,
+    }
 
 
 _CONTEXT_PROMPT = (

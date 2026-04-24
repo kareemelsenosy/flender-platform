@@ -26,6 +26,7 @@ from app.services.ai_service import (
     ai_build_search_queries,
     ai_describe_context_image,
     ai_describe_context_text,
+    ai_last_error_summary,
     compose_search_instructions,
     ai_optimize_search_query,
     ai_rank_urls,
@@ -901,7 +902,13 @@ async def describe_context_file(
 
     summary = (summary or "").strip()
     if not summary:
-        return JSONResponse({"error": "AI did not return a description. Try a different file."}, status_code=502)
+        detail = ai_last_error_summary()
+        msg = "AI did not return a description."
+        if detail:
+            msg += f" Last provider error: {detail}"
+        else:
+            msg += " Try again in a moment or use a different file."
+        return JSONResponse({"error": msg}, status_code=502)
 
     logger.info(f"Session {session_id}: generated context summary from {source_kind} ({len(summary)} chars)")
     return JSONResponse({"ok": True, "description": summary, "source": source_kind, "filename": file.filename})
