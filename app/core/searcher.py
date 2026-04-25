@@ -36,7 +36,7 @@ _HTTP = _make_http_session()
 MAX_CANDIDATES = 10
 STRICT_MAX_CANDIDATES = 5
 REQUEST_TIMEOUT = 15
-SEARCH_CACHE_VERSION = 6
+SEARCH_CACHE_VERSION = 7
 
 _HEADERS = {
     "User-Agent": (
@@ -364,10 +364,14 @@ _CATEGORY_FAMILY_TERMS: dict[str, set[str]] = {
     "pants": {
         "pant", "pants", "trouser", "trousers", "jean", "jeans", "denim",
         "legging", "leggings", "cargo", "cargos", "chino", "chinos",
+        "jogger", "joggers", "sweatpant", "sweatpants", "trackpant", "trackpants",
+        "tracksuit", "tracksuits", "bottom", "bottoms",
     },
     "jacket": {
         "jacket", "jackets", "coat", "coats", "parka", "parkas", "vest", "vests",
         "gilet", "gilets", "blazer", "blazers", "windbreaker", "anorak",
+        "blouson", "blousons", "puffer", "puffers", "bomber", "bombers",
+        "trench", "raincoat", "overcoat",
     },
     "bag": {
         "bag", "bags", "backpack", "backpacks", "tote", "totes", "satchel", "satchels",
@@ -377,7 +381,14 @@ _CATEGORY_FAMILY_TERMS: dict[str, set[str]] = {
     "hat": {"hat", "hats", "cap", "caps", "beanie", "beanies", "bucket", "buckethat", "buckethats"},
     "dress": {"dress", "dresses", "gown", "gowns"},
     "skirt": {"skirt", "skirts"},
-    "accessory": {"bracelet", "bracelets", "necklace", "necklaces", "ring", "rings", "belt", "belts", "scarf", "scarves"},
+    "accessory": {
+        "bracelet", "bracelets", "necklace", "necklaces", "ring", "rings",
+        "belt", "belts", "scarf", "scarves", "bandana", "bandanas",
+        "leash", "leashes", "earring", "earrings", "pendant", "pendants",
+        "cufflink", "cufflinks", "tie", "ties", "bowtie", "bowties",
+        "glove", "gloves", "sock", "socks", "sleeve", "sleeves",
+        "lighter", "keychain", "keychains", "patch", "patches", "pin", "pins",
+    },
 }
 _NEGATIVE_HINT_TERMS: dict[str, set[str]] = {
     "footwear": {"bike", "bikes", "bicycle", "bicycles", "mtb", "mountainbike", "drink", "beverage", "can", "cans"},
@@ -757,7 +768,19 @@ class ImageSearcher:
                 matched_terms[family] = hits
         if not family_scores:
             return None, set()
-        family = max(family_scores, key=family_scores.get)
+        # Tie-breaker: specific noun categories beat ambiguous modifiers like
+        # "short" (could mean shorts OR a "short watch hat", "short sleeve").
+        # When two families tie on hit count, the lower-priority-number wins.
+        # Lower number = more specific / less likely to be a modifier word.
+        priority = {
+            "footwear": 0, "hat": 1, "bag": 1, "jacket": 1, "dress": 1,
+            "skirt": 1, "hoodie": 2, "shirt": 2, "tshirt": 2, "pants": 2,
+            "accessory": 3, "shorts": 4,  # "short" is often a modifier
+        }
+        family = max(
+            family_scores.keys(),
+            key=lambda f: (family_scores[f], -priority.get(f, 5)),
+        )
         return family, matched_terms.get(family, set())
 
     def _build_item_context(self, item: dict) -> dict[str, Any]:
@@ -869,9 +892,13 @@ class ImageSearcher:
         word — NO SKU. Apparel SKUs rarely have public product pages and the
         opaque code drowns out the descriptive style name, sending Google to
         category landing pages instead of the actual product.
+
+        Exception: when the style name is just a generic category word (e.g.
+        Lacoste exports "POLOS" / "DRESSES" as the style), there's no
+        distinctive product term to search on — fall back to the SKU.
         """
         family = ctx.get("category_family")
-        if self._is_apparel_category(family):
+        if self._is_apparel_category(family) and not self._style_is_just_category(ctx):
             parts = [
                 ctx["brand"],
                 ctx["style_name"],
@@ -887,6 +914,28 @@ class ImageSearcher:
                                           # (e.g. 3WE-W-6 → 3WE-W, I027681_1YF.XX unchanged)
             ]
         return _join_distinct_parts(parts)
+
+    def _style_is_just_category(self, ctx: dict[str, Any]) -> bool:
+        """True when the style name contains nothing distinctive beyond the
+        category word itself — e.g. Lacoste's "POLOS", "DRESSES",
+        "PARKAS & BLOUSONS".  In those cases dropping the SKU leaves the query
+        with no unique identifier, so we keep the SKU instead."""
+        family = ctx.get("category_family")
+        style = ctx.get("style_name") or ""
+        if not family or not style:
+            return False
+        family_terms = _CATEGORY_FAMILY_TERMS.get(family, set())
+        style_tokens = _tokenize(style)
+        if not style_tokens:
+            return False
+        # Treat tokens that are either family terms or stop tokens as
+        # "non-distinctive". If every meaningful token is non-distinctive, the
+        # style name carries no unique product identity.
+        distinctive = [
+            t for t in style_tokens
+            if t not in family_terms and t not in _STOP_TOKENS and len(t) >= 3
+        ]
+        return len(distinctive) == 0
 
     def _build_exact_query(self, ctx: dict[str, Any]) -> str:
         # Use raw item_code (not base-normalized) so color-encoding suffixes
