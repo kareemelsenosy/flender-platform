@@ -36,7 +36,7 @@ from app.templates_config import templates
 from app.models import BrandSearchConfig, SearchCache, Session, UniqueItem
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
-_MAX_IMAGE_UPLOAD = 500 * 1024 * 1024  # 500 MB total
+_MAX_IMAGE_UPLOAD = 1024 * 1024 * 1024  # 1 GB total
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -770,7 +770,7 @@ async def upload_images_for_search(
         content = await upload.read()
         total_bytes += len(content)
         if total_bytes > _MAX_IMAGE_UPLOAD:
-            return JSONResponse({"error": "Total upload size exceeds 500 MB limit"}, status_code=413)
+            return JSONResponse({"error": "Total upload size exceeds 1 GB limit"}, status_code=413)
 
         _display_name, safe_name = normalize_uploaded_name(upload.filename or "image", default="image")
         ext = os.path.splitext(safe_name)[1].lower()
@@ -787,7 +787,7 @@ async def upload_images_for_search(
                             continue
                         extracted_bytes += info.file_size
                         if extracted_bytes > _MAX_IMAGE_UPLOAD:
-                            return JSONResponse({"error": "Extracted image size exceeds 500 MB limit"}, status_code=413)
+                            return JSONResponse({"error": "Extracted image size exceeds 1 GB limit"}, status_code=413)
                         dest = unique_path(img_dir, zip_safe_name)
                         dest.write_bytes(zf.read(info))
                         image_count += 1

@@ -194,12 +194,35 @@ function proxyUrl(url) {
   return '/api/image/proxy?url=' + encodeURIComponent(url);
 }
 
-function localFilePlaceholder(url, cls) {
+function localFilePlaceholder(url, cls, hidden = false) {
   const fname = url ? url.replace(/^file:\/\//, '').split(/[\\/]/).pop() : '';
-  return `<div class="thumb-placeholder local-file ${escapeAttr(cls || '')}" title="${escapeAttr(fname)}">
+  const hiddenStyle = hidden ? ' style="display:none"' : '';
+  return `<div class="thumb-placeholder local-file ${escapeAttr(cls || '')}" title="${escapeAttr(fname)}"${hiddenStyle}>
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
     <span>Local file</span>
   </div>`;
+}
+
+function localFileImage(url, {
+  alt = '',
+  placeholderClass = '',
+  imgClass = '',
+  lazy = false,
+} = {}) {
+  const attrs = lazy
+    ? `data-src="${escapeAttr(proxyUrl(url))}"`
+    : `src="${escapeAttr(proxyUrl(url))}"`;
+  const classes = [imgClass, lazy ? 'lazy-local' : ''].filter(Boolean).join(' ');
+  const style = lazy ? 'opacity:0;transition:opacity .2s' : '';
+  return `
+    <img ${attrs}
+         class="${escapeAttr(classes)}"
+         alt="${escapeAttr(alt)}"
+         ${style ? `style="${style}"` : ''}
+         onload="this.style.opacity='1'"
+         onerror="this.style.display='none'; const placeholder = this.nextElementSibling; if (placeholder) placeholder.style.display='flex'">
+    ${localFilePlaceholder(url, placeholderClass, true)}
+  `;
 }
 
 function getConfidenceLabel(score) {
@@ -478,7 +501,12 @@ function updateSidebar() {
       const thumbHtml = !thumbUrl
         ? '<div class="thumb-placeholder">N/A</div>'
         : isLocalFile(thumbUrl)
-          ? localFilePlaceholder(thumbUrl)
+          ? localFileImage(thumbUrl, {
+              alt: grp,
+              placeholderClass: 'sidebar-local',
+              imgClass: 'lazy-thumb',
+              lazy: true,
+            })
           : `<img data-src="${escapeAttr(proxyUrl(thumbUrl))}" class="lazy-thumb" alt="${escapeAttr(grp)}" style="opacity:0;transition:opacity .2s"><div class="thumb-placeholder" style="display:none">ERR</div>`;
 
       return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}" data-group="${escapeAttr(grp)}">
@@ -505,7 +533,12 @@ function updateSidebar() {
       const thumbHtml = !thumbUrl
         ? '<div class="thumb-placeholder">N/A</div>'
         : isLocalFile(thumbUrl)
-          ? localFilePlaceholder(thumbUrl)
+          ? localFileImage(thumbUrl, {
+              alt: safeCode,
+              placeholderClass: 'sidebar-local',
+              imgClass: 'lazy-thumb',
+              lazy: true,
+            })
           : `<img data-src="${escapeAttr(proxyUrl(thumbUrl))}" class="lazy-thumb" alt="${safeCode}" style="opacity:0;transition:opacity .2s"><div class="thumb-placeholder" style="display:none">ERR</div>`;
 
       return `<div class="review-item ${isActive ? 'active' : ''}" data-select-key="${safeKey}">
@@ -627,7 +660,11 @@ function renderMain(key) {
     ${selectedUrl ? `
       <div class="selected-preview mb-6">
         ${isLocalFile(selectedUrl)
-          ? localFilePlaceholder(selectedUrl, 'selected-local')
+          ? localFileImage(selectedUrl, {
+              alt: 'Selected image',
+              placeholderClass: 'selected-local',
+              imgClass: 'selected-img local-selected-image',
+            })
           : `<img src="${escapeAttr(proxyUrl(selectedUrl))}" alt="Selected image" id="selected-img"
                data-key="${escapeAttr(key)}" data-id="${entry.id}"
                onerror="autoAdvanceSelected(this)">`}
@@ -635,7 +672,11 @@ function renderMain(key) {
           <div style="display:flex;gap:8px;margin-top:8px;justify-content:center">
             ${entry.additional_urls.map((u, i) => `<div style="position:relative">
               ${isLocalFile(u)
-                ? localFilePlaceholder(u)
+                ? localFileImage(u, {
+                    alt: `Additional image ${i + 1}`,
+                    placeholderClass: 'extra-local',
+                    imgClass: 'local-extra-image',
+                  })
                 : `<img src="${escapeAttr(proxyUrl(u))}" style="height:60px;border-radius:4px;border:2px solid var(--primary)" onerror="this.parentElement.style.display='none'">`}
               <span style="position:absolute;top:-4px;right:-4px;background:var(--primary);color:white;font-size:0.55rem;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center">+${i+1}</span>
             </div>`).join('')}
@@ -677,7 +718,12 @@ function renderMain(key) {
         // First 6 load immediately; rest are lazy (data-src) to avoid flooding the proxy
         const eager = i < 6;
         const cardImage = isLocalFile(url)
-          ? localFilePlaceholder(url, 'candidate-local')
+          ? localFileImage(url, {
+              alt: `Candidate ${i + 1}`,
+              placeholderClass: 'candidate-local',
+              imgClass: eager ? '' : 'lazy-candidate',
+              lazy: !eager,
+            })
           : eager
             ? `<img src="${escapeAttr(proxyUrl(url))}" alt="" onerror="this.closest('.image-card').style.display='none'">`
             : `<img data-src="${escapeAttr(proxyUrl(url))}" alt="" class="lazy-candidate" style="opacity:0;transition:opacity .2s" onerror="this.closest('.image-card').style.display='none'">`;

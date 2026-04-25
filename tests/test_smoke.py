@@ -149,6 +149,13 @@ def test_core_smoke_flow_upload_mapping_search_review_export_and_downloads(
     assert detail["candidates"] == [image_url]
     assert detail["approved_url"] == image_url
 
+    local_preview = client.get(
+        "/api/image/local",
+        params={"path": str(local_image_path.resolve())},
+    )
+    assert local_preview.status_code == 200
+    assert local_preview.headers["content-type"] == "image/jpeg"
+
     monkeypatch.setattr(test_app["search_routes"].threading, "Thread", real_thread_class)
 
     export_resp = client.post(f"/generate/{session_id}", json={"save_images": True})

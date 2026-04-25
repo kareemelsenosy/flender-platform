@@ -55,7 +55,7 @@
            ondrop="event.preventDefault();this.style.borderColor='var(--gray-300)';handleFileSelect(event.dataTransfer.files)">
         <div style="font-size:1.8rem;margin-bottom:6px">📂</div>
         <p style="margin:0;font-weight:600;color:var(--gray-700)">Click or drag &amp; drop images here</p>
-        <p style="margin:4px 0 0;font-size:0.8rem;color:var(--gray-400)">JPG · PNG · WebP · GIF · BMP · ZIP archive · Max 500 MB</p>
+        <p style="margin:4px 0 0;font-size:0.8rem;color:var(--gray-400)">JPG · PNG · WebP · GIF · BMP · ZIP archive · Max 1 GB</p>
       </div>
       <input type="file" id="img-file-input" multiple
              accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.zip"
@@ -233,6 +233,7 @@ if (sampleToggle) {
 function handleFileSelect(files) {
   if (!files || !files.length) return;
   _pendingFiles = files;
+  _uploadedFolderPath = '';
   const count = files.length;
   let totalMB = 0;
   for (const f of files) totalMB += f.size;
@@ -358,6 +359,7 @@ function _uploadImages() {
         return;
       }
       statusEl.innerHTML = `<span style="color:green;font-weight:600">✓ ${data.image_count} image${data.image_count !== 1 ? 's' : ''} ready</span>`;
+      _pendingFiles = null;
       resolve(data.folder_path);
     });
 
@@ -449,13 +451,14 @@ async function startSearch() {
 
   // Upload images first if local/both mode
   if (mode === 'local' || mode === 'both') {
-    if (!_pendingFiles || !_pendingFiles.length) {
+    if (_pendingFiles && _pendingFiles.length) {
+      localFolder = await _uploadImages();
+      if (!localFolder) return;
+      _uploadedFolderPath = localFolder;
+    } else if (!localFolder) {
       showAlert('Please select image files to upload first.', 'No Images Selected');
       return;
     }
-    localFolder = await _uploadImages();
-    if (!localFolder) return;
-    _uploadedFolderPath = localFolder;
   }
 
   const resp = await fetch(`/search/${sessionId}/start`, {

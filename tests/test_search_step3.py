@@ -170,6 +170,7 @@ def test_search_page_prefills_matching_settings_defaults(client, login_as, db_se
     assert resp.status_code == 200
     assert "americanrag.ae" in resp.text
     assert "Search the official American Rag domain first." in resp.text
+    assert "Max 1 GB" in resp.text
 
 
 def test_describe_context_endpoint_summarizes_uploaded_text_file(

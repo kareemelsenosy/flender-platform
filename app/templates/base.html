@@ -1246,9 +1246,9 @@
     const bar = document.getElementById('nav-progress');
     let barTimer = null;
     // Skip only non-GET endpoints or external URLs.
-    // /review uses its own full-page layout (no .main-content shell) and reacts
-    // poorly to document.write swaps — always do a normal browser nav for it.
-    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip', '/review'];
+    // /review and /search both have stateful page-level JS (image review + local
+    // file upload) that behaves more reliably with a full browser navigation.
+    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip', '/review', '/search'];
 
     function canInstantNav(href) {
       try {
@@ -1403,6 +1403,7 @@
         });
         const html = await r.text();
         const finalUrl = r.url;
+        if (!canInstantNav(finalUrl)) { writeDoc(html, finalUrl); return; }
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');
         const curMain = document.querySelector('.main-content');
