@@ -23,7 +23,7 @@ def test_ai_rank_urls_uses_vision_when_scores_are_close(monkeypatch):
     )
     monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1024: None)
 
-    ranked = ai_service.ai_rank_urls(
+    ranked, discarded = ai_service.ai_rank_urls(
         urls,
         {
             "item_code": "WS25-TR-280-02",
@@ -40,7 +40,8 @@ def test_ai_rank_urls_uses_vision_when_scores_are_close(monkeypatch):
         },
     )
 
-    assert ranked == [urls[1], urls[0], urls[3], urls[2]]
+    assert ranked == [urls[1], urls[0], urls[3]]
+    assert discarded == {urls[2]}
 
 
 def test_ai_rank_urls_skips_vision_when_metadata_already_has_clear_winner(monkeypatch):
@@ -57,7 +58,7 @@ def test_ai_rank_urls_skips_vision_when_metadata_already_has_clear_winner(monkey
     monkeypatch.setattr(ai_service, "_call_ai_vision", fake_vision)
     monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1024: "[2,1]")
 
-    ranked = ai_service.ai_rank_urls(
+    ranked, discarded = ai_service.ai_rank_urls(
         urls,
         {
             "item_code": "3WE30133563-W",
@@ -74,6 +75,7 @@ def test_ai_rank_urls_skips_vision_when_metadata_already_has_clear_winner(monkey
 
     assert vision_called["value"] is False
     assert ranked == [urls[1], urls[0]]
+    assert discarded == set()
 
 
 def test_ai_rank_urls_can_force_vision_for_manual_research(monkeypatch):
@@ -93,7 +95,7 @@ def test_ai_rank_urls_can_force_vision_for_manual_research(monkeypatch):
     )
     monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1024: None)
 
-    ranked = ai_service.ai_rank_urls(
+    ranked, discarded = ai_service.ai_rank_urls(
         urls,
         {
             "item_code": "3WE30543714-W-8",
@@ -110,6 +112,7 @@ def test_ai_rank_urls_can_force_vision_for_manual_research(monkeypatch):
     )
 
     assert ranked == [urls[1], urls[0]]
+    assert discarded == set()
 
 
 def test_ai_rank_urls_uses_vision_for_detail_or_lifestyle_ambiguity(monkeypatch):
@@ -133,7 +136,7 @@ def test_ai_rank_urls_uses_vision_for_detail_or_lifestyle_ambiguity(monkeypatch)
     monkeypatch.setattr(ai_service, "_call_ai_vision", fake_vision)
     monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1024: None)
 
-    ranked = ai_service.ai_rank_urls(
+    ranked, discarded = ai_service.ai_rank_urls(
         urls,
         {
             "item_code": "YLWCHT-3800",
@@ -151,6 +154,7 @@ def test_ai_rank_urls_uses_vision_for_detail_or_lifestyle_ambiguity(monkeypatch)
 
     assert vision_called["value"] is True
     assert ranked == [urls[1], urls[0]]
+    assert discarded == {urls[2]}
 
 
 def test_ai_rank_urls_drops_unwanted_footwear_presentations_after_vision(monkeypatch):
@@ -174,7 +178,7 @@ def test_ai_rank_urls_drops_unwanted_footwear_presentations_after_vision(monkeyp
     )
     monkeypatch.setattr(ai_service, "_call_ai", lambda prompt, max_tokens=1024: None)
 
-    ranked = ai_service.ai_rank_urls(
+    ranked, discarded = ai_service.ai_rank_urls(
         urls,
         {
             "item_code": "CITYLOAFER2LGRY-4300",
@@ -193,3 +197,4 @@ def test_ai_rank_urls_drops_unwanted_footwear_presentations_after_vision(monkeyp
     )
 
     assert ranked == [urls[0]]
+    assert discarded == {urls[1], urls[2], urls[3]}

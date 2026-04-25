@@ -399,34 +399,45 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                                 candidates.append(url)
                                 scores[url] = retry_scores.get(url, 0)
 
-                # ── STEP 5: AI re-ranks the final URL list ────────────────────
-                # Only web URLs go through AI ranking (local file:// paths are kept as-is)
+                # ── STEP 5: AI vision = QUALITY GATE (filter), not re-ranker ──
+                # We want the final order to mirror Google Images as closely as
+                # possible. AI vision is the safety net that drops wrong-color /
+                # wrong-product / detail-crop / lifestyle hits entirely. Among
+                # the URLs AI keeps, we preserve the score-based order — which
+                # is now Google-position-dominant — so the user sees Google's
+                # #1 result first, with bad images filtered out.
                 if use_ai and candidates:
                     web_urls = [u for u in candidates if not u.startswith("file://")]
                     local_urls = [u for u in candidates if u.startswith("file://")]
                     if web_urls:
                         ai_primary_mode = bool(searcher and searcher.should_force_ai_primary(item_dict))
-                        ranked_web = ai_rank_urls(
+                        ranked_web, discarded = ai_rank_urls(
                             web_urls,
                             item_dict,
                             brand_label,
                             scores=scores,
                             prefer_vision=ai_primary_mode,
                         )
-                        # Rebuild candidates: local first, then AI-ranked web
-                        reranked = local_urls + ranked_web
-                        # In strict/vision-heavy categories we let AI order drive the
-                        # final score more strongly so clean packshots win decisively.
-                        new_scores = {}
-                        for i, url in enumerate(reranked):
+                        # Drop AI's hard rejects entirely — they are not safe
+                        # to surface even at the bottom of the list.
+                        kept_web = [u for u in ranked_web if u not in discarded]
+                        # Re-sort kept URLs by the Google-position-aware score
+                        # so the top result tracks Google's organic #1 unless
+                        # a higher-confidence brand-site / consensus hit beats
+                        # it. AI's rank is used only as a tie-breaker.
+                        ai_position = {url: i for i, url in enumerate(kept_web)}
+                        kept_web.sort(
+                            key=lambda u: (
+                                -float(scores.get(u, 0.0) or 0.0),
+                                ai_position.get(u, 99),
+                            )
+                        )
+                        candidates = local_urls + kept_web
+                        new_scores: dict[str, float] = {}
+                        for i, url in enumerate(candidates):
                             base = scores.get(url, 0.5)
-                            if ai_primary_mode and not url.startswith("file://"):
-                                ai_target = max(0.45, 0.97 - i * 0.09)
-                                new_scores[url] = min(round((base * 0.4) + (ai_target * 0.6), 2), 1.0)
-                            else:
-                                position_bonus = max(0.0, 0.1 - i * 0.02)
-                                new_scores[url] = min(round(base + position_bonus, 2), 1.0)
-                        candidates = reranked
+                            position_bonus = max(0.0, 0.06 - i * 0.012)
+                            new_scores[url] = min(round(base + position_bonus, 2), 1.0)
                         scores = new_scores
 
                 # ── STEP 6: Save to cache — web search only ──────────────────

@@ -36,7 +36,7 @@ _HTTP = _make_http_session()
 MAX_CANDIDATES = 10
 STRICT_MAX_CANDIDATES = 5
 REQUEST_TIMEOUT = 15
-SEARCH_CACHE_VERSION = 5
+SEARCH_CACHE_VERSION = 6
 
 _HEADERS = {
     "User-Agent": (
@@ -331,6 +331,26 @@ def _expand_color_tokens(tokens: list[str] | set[str]) -> set[str]:
         if expanded & cls:
             expanded |= cls
     return expanded
+_APPAREL_CATEGORY_FAMILIES = frozenset({
+    "shorts", "tshirt", "shirt", "hoodie", "pants", "jacket",
+    "dress", "skirt", "bag", "hat", "accessory",
+})
+# Canonical category word appended to queries when the style name doesn't
+# already make the product type obvious. Keeps Google's results focused on
+# the right product category instead of returning category landing pages.
+_CATEGORY_PRIMARY_WORDS: dict[str, str] = {
+    "shorts": "shorts",
+    "tshirt": "t-shirt",
+    "shirt": "shirt",
+    "hoodie": "hoodie",
+    "pants": "pants",
+    "jacket": "jacket",
+    "dress": "dress",
+    "skirt": "skirt",
+    "bag": "bag",
+    "hat": "cap",
+    "accessory": "accessory",
+}
 _CATEGORY_FAMILY_TERMS: dict[str, set[str]] = {
     "footwear": {
         "footwear", "shoe", "shoes", "sneaker", "sneakers", "trainer", "trainers",
@@ -815,21 +835,57 @@ class ImageSearcher:
         # what every search engine receives — colour before SKU, raw item_code.
         return self._build_full_query(ctx)
 
-    def _build_full_query(self, ctx: dict[str, Any]) -> str:
-        """Primary search query — brand + style + COLOR FIRST + raw item_code.
+    def _is_apparel_category(self, family: str | None) -> bool:
+        """True for categories where the SKU pollutes Google results.
+        Footwear keeps the SKU (shoe SKUs are well-indexed); apparel/bags/hats
+        drop it because their SKUs rarely have public product pages and the
+        opaque code drowns out the descriptive style name."""
+        return bool(family) and family in _APPAREL_CATEGORY_FAMILIES
 
-        Color appears before the SKU so engines see the color intent even when
-        the SKU encodes the color in a suffix (e.g. I027681_1YF.XX → green).
-        The raw item_code is used without base-normalization so color-encoding
-        suffixes are preserved and match brand product pages exactly.
+    def _category_primary_word(self, ctx: dict[str, Any]) -> str:
+        """Canonical category word to disambiguate apparel queries (e.g. add
+        "jacket" when the style name is just "Cruiser"). Returns empty string
+        when the style name already contains a category term."""
+        family = ctx.get("category_family")
+        if not family:
+            return ""
+        word = _CATEGORY_PRIMARY_WORDS.get(family, "")
+        if not word:
+            return ""
+        style_tokens = set(_tokenize(ctx.get("style_name") or ""))
+        family_terms = _CATEGORY_FAMILY_TERMS.get(family, set())
+        if style_tokens & family_terms:
+            return ""
+        return word
+
+    def _build_full_query(self, ctx: dict[str, Any]) -> str:
+        """Primary search query — category-aware so it mirrors what a human
+        would type into Google Images for this product.
+
+        Footwear: brand + style + color + raw item_code (shoe SKUs land on
+        well-indexed product pages, so the SKU helps).
+
+        Apparel / bags / hats / accessories: brand + style + color + category
+        word — NO SKU. Apparel SKUs rarely have public product pages and the
+        opaque code drowns out the descriptive style name, sending Google to
+        category landing pages instead of the actual product.
         """
-        parts = [
-            ctx["brand"],
-            ctx["style_name"],
-            ctx["color_name"],        # color before the code — critical for color accuracy
-            ctx["base_item_code"],    # size-stripped but color-encoding preserved
-                                      # (e.g. 3WE-W-6 → 3WE-W, I027681_1YF.XX unchanged)
-        ]
+        family = ctx.get("category_family")
+        if self._is_apparel_category(family):
+            parts = [
+                ctx["brand"],
+                ctx["style_name"],
+                ctx["color_name"],
+                self._category_primary_word(ctx),
+            ]
+        else:
+            parts = [
+                ctx["brand"],
+                ctx["style_name"],
+                ctx["color_name"],        # color before the code — critical for color accuracy
+                ctx["base_item_code"],    # size-stripped but color-encoding preserved
+                                          # (e.g. 3WE-W-6 → 3WE-W, I027681_1YF.XX unchanged)
+            ]
         return _join_distinct_parts(parts)
 
     def _build_exact_query(self, ctx: dict[str, Any]) -> str:
@@ -861,6 +917,22 @@ class ImageSearcher:
             if prefer_base_code
             else ctx["item_code"]
         )
+        # For apparel, lead with the descriptive name so engines that aren't
+        # restricted to a brand site still find product pages by name first.
+        # The SKU stays in the query (brand-site searches need it) but moves
+        # to the end so Google's organic ranker sees the human-readable terms
+        # at the front of the query.
+        if self._is_apparel_category(ctx.get("category_family")):
+            parts = [
+                ctx["brand"],
+                ctx["style_name"],
+                ctx["color_name"],
+                self._category_primary_word(ctx),
+                item_code,
+            ]
+            if include_category and ctx.get("item_group"):
+                parts.append(ctx["item_group"])
+            return _join_distinct_parts(parts)
         parts = [ctx["brand"], item_code, ctx["style_name"], ctx["color_name"]]
         if include_category:
             parts.append(ctx["item_group"])
@@ -1648,32 +1720,36 @@ class ImageSearcher:
                 score -= 0.12
 
         # --- First-visible-result / cross-source consensus boosts ------------
-        # We want URLs that (a) appear near the top of Google's SERP, (b) appear
-        # near the top of Bing's SERP, and (c) ideally appear on BOTH engines.
-        # That's the "what a human would see first when manually googling" signal.
+        # The user wants results that mirror what they'd see when manually
+        # searching Google Images. That means Google's organic position should
+        # dominate the final ranking, with Bing as a strong corroborating
+        # signal and consensus (both engines agree) treated as near-perfect.
         google_best = _best_position_in_family(hit, _GOOGLE_SOURCE_NAMES)
         bing_best = _best_position_in_family(hit, _BING_SOURCE_NAMES)
         strict = bool(ctx.get("strict_query"))
 
         if google_best is not None:
-            # Position 0 → +0.18 (strict) / +0.10 (loose). Decays per rank.
-            per_step = 0.03 if strict else 0.02
-            top_boost = max(0.0, (0.18 if strict else 0.10) - google_best * per_step)
+            # Position 0 → +0.55 (strict) / +0.45 (loose). Big enough that
+            # Google's #1 outranks brand-site-only hits unless the brand-site
+            # hit also matches color and code perfectly.
+            per_step = 0.07 if strict else 0.06
+            top_boost = max(0.0, (0.55 if strict else 0.45) - google_best * per_step)
             score += top_boost
         if bing_best is not None:
-            per_step = 0.03 if strict else 0.02
-            top_boost = max(0.0, (0.24 if strict else 0.14) - bing_best * per_step)
+            # Bing top boost — slightly weaker than Google so Google wins ties.
+            per_step = 0.05 if strict else 0.04
+            top_boost = max(0.0, (0.40 if strict else 0.30) - bing_best * per_step)
             score += top_boost
 
         if google_best is not None and bing_best is not None:
             # Consensus: URL appears on both Google and Bing. This is the strongest
             # "both search engines agree" signal we can derive without clicking through.
-            score += 0.28 if strict else 0.18
+            score += 0.32 if strict else 0.22
             if google_best < _TOP_SERP_WINDOW and bing_best < _TOP_SERP_WINDOW:
                 # Top-5 in both — treat as a near-perfect consensus hit.
-                score += 0.15 if strict else 0.10
+                score += 0.20 if strict else 0.14
             elif google_best < (_TOP_SERP_WINDOW * 2) and bing_best < (_TOP_SERP_WINDOW * 2):
-                score += 0.06 if strict else 0.04
+                score += 0.08 if strict else 0.06
 
         # Legacy fallback boost for non-search-engine positions (brand sites etc.)
         best_position = min(positions) if positions else 99

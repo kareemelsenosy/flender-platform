@@ -626,28 +626,33 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
 
     candidates, scores = searcher.search(item_dict, ai_queries=ai_queries or None)
 
-    # AI re-rank
+    # AI vision = QUALITY GATE: drop hard rejects, keep Google's organic order
+    # for the rest. See search_routes._run_search_background for the rationale.
     if ai_available() and candidates:
         web_urls = [u for u in candidates if not u.startswith("file://")]
+        local_urls = [u for u in candidates if u.startswith("file://")]
         if web_urls:
-            ai_primary_mode = bool(searcher and searcher.should_force_ai_primary(item_dict))
-            ranked = ai_rank_urls(
+            ranked, discarded = ai_rank_urls(
                 web_urls,
                 item_dict,
                 item.brand or "",
                 scores=scores,
                 prefer_vision=True,
             )
-            new_scores = {}
-            for i, url in enumerate(ranked):
+            kept = [u for u in ranked if u not in discarded]
+            ai_position = {url: i for i, url in enumerate(kept)}
+            kept.sort(
+                key=lambda u: (
+                    -float(scores.get(u, 0.0) or 0.0),
+                    ai_position.get(u, 99),
+                )
+            )
+            candidates = local_urls + kept
+            new_scores: dict[str, float] = {}
+            for i, url in enumerate(candidates):
                 base = scores.get(url, 0.5)
-                if ai_primary_mode:
-                    ai_target = max(0.45, 0.97 - i * 0.09)
-                    new_scores[url] = min(round((base * 0.4) + (ai_target * 0.6), 2), 1.0)
-                else:
-                    bonus = max(0.0, 0.1 - i * 0.02)
-                    new_scores[url] = min(round(base + bonus, 2), 1.0)
-            candidates = ranked
+                bonus = max(0.0, 0.06 - i * 0.012)
+                new_scores[url] = min(round(base + bonus, 2), 1.0)
             scores = new_scores
 
     # Update item in DB

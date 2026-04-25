@@ -635,7 +635,14 @@ def _ai_rank_urls_with_vision(
     *,
     scores: dict[str, float] | None = None,
     prefer_vision: bool = False,
-) -> list[str] | None:
+) -> tuple[list[str], set[str]] | None:
+    """Returns (reordered_urls, discarded_urls) or None if vision skipped.
+
+    discarded_urls is the set of URLs the vision model judged to be hard
+    rejects (wrong color, wrong product, detail crop, lifestyle shot when
+    a clean packshot exists). Callers should DROP these entirely rather
+    than rank them last — they are not acceptable picks at any position.
+    """
     if not _should_use_vision_ranking(urls, item, scores, prefer_vision=prefer_vision):
         return None
 
@@ -722,19 +729,30 @@ Only use candidate numbers from the attached images."""
         for image in prepared
         if image["index"] not in discarded_indices and image["url"] not in seen
     ]
-    trailing_urls = [
+    discarded_urls: set[str] = {
         image["url"]
         for image in prepared
-        if image["index"] in discarded_indices and image["url"] not in seen
+        if image["index"] in discarded_indices
+    }
+    remainder = [
+        url for url in urls
+        if url not in ranked_urls
+        and url not in middle_urls
+        and url not in discarded_urls
     ]
-    remainder = [url for url in urls if url not in ranked_urls and url not in middle_urls and url not in trailing_urls]
     strict_visual_category = _is_strict_visual_category(item)
     if strict_visual_category:
-        middle_urls = [url for url in middle_urls if not _looks_like_unwanted_presentation(url)]
-        remainder = [url for url in remainder if not _looks_like_unwanted_presentation(url)]
-        trailing_urls = []
-    final = ranked_urls + middle_urls + remainder + trailing_urls
-    return final if final else None
+        # For strictly-visual categories (footwear, bags, headwear), the URL
+        # alone is enough to flag detail/lifestyle shots — drop them too.
+        bad_presentation = {url for url in middle_urls if _looks_like_unwanted_presentation(url)}
+        bad_presentation |= {url for url in remainder if _looks_like_unwanted_presentation(url)}
+        middle_urls = [url for url in middle_urls if url not in bad_presentation]
+        remainder = [url for url in remainder if url not in bad_presentation]
+        discarded_urls |= bad_presentation
+    final = ranked_urls + middle_urls + remainder
+    if not final and not discarded_urls:
+        return None
+    return final, discarded_urls
 
 
 def _ai_rank_urls_text_only(urls: list[str], item: dict, brand: str) -> list[str]:
@@ -823,22 +841,30 @@ def ai_rank_urls(
     *,
     scores: dict[str, float] | None = None,
     prefer_vision: bool = False,
-) -> list[str]:
-    """AI re-rank candidates, using vision first when the results are ambiguous."""
-    if not urls:
-        return urls
+) -> tuple[list[str], set[str]]:
+    """AI re-rank candidates, using vision first when the results are ambiguous.
 
-    vision_ranked = _ai_rank_urls_with_vision(
+    Returns ``(reordered_urls, discarded_urls)`` where ``discarded_urls`` are
+    hard rejects (wrong color, wrong product, detail crop, lifestyle shot when
+    a clean packshot exists). Callers should DROP discarded URLs entirely.
+
+    The text-only fallback returns an empty discard set — text alone can't
+    reliably identify color mismatches without seeing the pixels.
+    """
+    if not urls:
+        return urls, set()
+
+    vision_result = _ai_rank_urls_with_vision(
         urls,
         item,
         brand,
         scores=scores,
         prefer_vision=prefer_vision,
     )
-    if vision_ranked:
-        return vision_ranked
+    if vision_result is not None:
+        return vision_result
 
-    return _ai_rank_urls_text_only(urls, item, brand)
+    return _ai_rank_urls_text_only(urls, item, brand), set()
 
 
 def ai_assistant_chat(message: str, context: dict[str, Any]) -> dict[str, Any]:
