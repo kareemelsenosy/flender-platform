@@ -36,7 +36,7 @@ _HTTP = _make_http_session()
 MAX_CANDIDATES = 10
 STRICT_MAX_CANDIDATES = 5
 REQUEST_TIMEOUT = 15
-SEARCH_CACHE_VERSION = 7
+SEARCH_CACHE_VERSION = 8
 
 _HEADERS = {
     "User-Agent": (
@@ -145,6 +145,8 @@ BRAND_DOMAINS: dict[str, str] = {
     "superdry": "superdry.com",
     "jack wolfskin": "jack-wolfskin.com",
     "mammut": "mammut.com",
+    "aurelien": "aurelien-online.com",
+    "aurélien": "aurelien-online.com",
 }
 
 BRAND_PLAYBOOKS: dict[str, dict[str, Any]] = {
@@ -182,6 +184,16 @@ BRAND_PLAYBOOKS: dict[str, dict[str, Any]] = {
         "preferred_domains": ["stoneisland.com"],
         "strict_query": True,
     },
+    "aurelien": {
+        "preferred_domains": ["aurelien-online.com"],
+        "blocked_domains": ["dhgate.", "aliexpress.", "temu.", "ebay."],
+        "strict_query": True,
+    },
+    "aurélien": {
+        "preferred_domains": ["aurelien-online.com"],
+        "blocked_domains": ["dhgate.", "aliexpress.", "temu.", "ebay."],
+        "strict_query": True,
+    },
 }
 
 _CDN_PATTERNS = [
@@ -211,6 +223,11 @@ _GENERIC_BRAND_TERMS = frozenset({
     "design", "designs", "goods", "wear", "co", "company", "group",
     "international", "global", "brand", "brands", "label", "labels",
     "division", "line", "range", "series",
+})
+_STYLE_GENERIC_TOKENS = frozenset({
+    "lady", "ladies", "men", "mens", "women", "womens", "woman", "male",
+    "female", "unisex", "kid", "kids", "junior", "adult", "wmns", "wms",
+    "man", "new", "season", "collection", "classic",
 })
 _COLOR_WORDS = {
     # Base colors
@@ -449,6 +466,12 @@ _PACKSHOT_URL_PATTERNS = (
 # carousel position. We only penalize when N >= 3 (first 2 are usually primary
 # angles like front/side).
 _NUMBERED_IMAGE_SUFFIX_RE = re.compile(r"[-_](\d{1,3})\.(?:jpe?g|png|webp|avif|gif)(?:\?|$)", re.IGNORECASE)
+# Shopify/CDN filenames often encode carousel position before the resized
+# derivative suffix: "chocolate6_600x.jpg", "navy3_1200x.webp".
+_SHOPIFY_CAROUSEL_INDEX_RE = re.compile(
+    r"[a-z]+(\d{1,2})(?:[_-](?:\d{2,4}x|[a-f0-9-]{8,})|\.(?:jpe?g|png|webp|avif|gif)(?:\?|$))",
+    re.IGNORECASE,
+)
 
 _SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
 _TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
@@ -474,6 +497,19 @@ def _best_position_in_family(hit: dict, family: frozenset) -> int | None:
     src_pos = hit.get("source_positions") or {}
     positions = [pos for name, pos in src_pos.items() if name in family]
     return min(positions) if positions else None
+
+
+def _image_carousel_index(url: str) -> int | None:
+    path = urllib.parse.urlparse(str(url or "")).path
+    filename = path.rsplit("/", 1)[-1].lower()
+    for pattern in (_NUMBERED_IMAGE_SUFFIX_RE, _SHOPIFY_CAROUSEL_INDEX_RE):
+        m = pattern.search(filename)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+    return None
 _VARIANT_FAMILY_CODE_RE = re.compile(r"(?i)^(.+?)-(\d{4})$")
 
 
@@ -564,7 +600,12 @@ def _join_distinct_parts(parts: list[str]) -> str:
 
 
 def _tokenize(value: str) -> list[str]:
-    text = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
+    text = (value or "").lower()
+    # Image filenames often glue color words to carousel numbers
+    # (e.g. chocolate6.jpg, navy1.webp). Split alpha/digit boundaries so
+    # strict color checks can still see "chocolate" / "navy".
+    text = re.sub(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
     return [token for token in text.split() if token and token not in _STOP_TOKENS]
 
 
@@ -808,7 +849,11 @@ class ImageSearcher:
         playbook = self._matching_brand_playbook(brand)
         style_tokens = [
             token for token in _tokenize(style_name or "")
-            if token not in family_terms and token not in _COLOR_WORDS and len(token) >= 3
+            if token not in family_terms
+            and token not in _COLOR_WORDS
+            and token not in _STOP_TOKENS
+            and token not in _STYLE_GENERIC_TOKENS
+            and len(token) >= 3
         ]
         color_tokens = _parse_color_tokens(color_name or "")
         exact_query = _join_distinct_parts([brand, style_name, item_group or "", color_name or "", base_item_code or item_code or barcode or ""])
@@ -826,6 +871,7 @@ class ImageSearcher:
             "category_family": family,
             "category_terms": family_terms,
             "style_tokens": _unique_preserve(style_tokens),
+            "core_style_tokens": _unique_preserve(style_tokens),
             "color_tokens": _unique_preserve(color_tokens),
             "normalized_color_identity": self._normalized_color_identity(color_code, color_name),
             "preferred_domains": _unique_preserve(self.extra_site_urls + self.matching_brand_site_urls(brand)),
@@ -1019,6 +1065,74 @@ class ImageSearcher:
                 other_colors.add(compound)
         return bool(other_colors)
 
+    def _hit_matches_exact_color_text(self, hit: dict[str, Any], ctx: dict[str, Any]) -> bool:
+        """True when the hit explicitly mentions the requested color wording.
+
+        This is stricter than the family matcher. A LIGHT GREY item can fall
+        back to "grey" or "stone" if nothing better exists, but if any clean
+        result says "light grey", that exact-color pool should win first.
+        """
+        color_tokens = ctx.get("color_tokens") or []
+        if not color_tokens:
+            return False
+        text = " ".join([
+            str(hit.get("url") or ""),
+            str(hit.get("page_url") or ""),
+            str(hit.get("title") or ""),
+            str(hit.get("description") or ""),
+        ]).lower()
+        normalized = _slug(text)
+        text_tokens = set(_tokenize(text))
+        return any(token in text_tokens or token in normalized for token in color_tokens)
+
+    def _hit_matches_core_style_text(self, hit: dict[str, Any], ctx: dict[str, Any]) -> bool:
+        """True when the hit mentions the product's distinctive style words.
+
+        Color + category is not enough: "Chocolate Loafer" can still be the
+        wrong Aurélien model. Tokens like Yacht, City, Wharfie, Cloudvista,
+        Stan/Smith are the guardrail that keeps strict search tied to the
+        same item a user searched manually in Google.
+        """
+        style_tokens = ctx.get("core_style_tokens") or ctx.get("style_tokens") or []
+        if not style_tokens:
+            return False
+        text = " ".join([
+            str(hit.get("url") or ""),
+            str(hit.get("page_url") or ""),
+            str(hit.get("title") or ""),
+            str(hit.get("description") or ""),
+        ]).lower()
+        normalized = _slug(text)
+        text_tokens = set(_tokenize(text))
+        matches = sum(1 for token in style_tokens if token in text_tokens or token in normalized)
+        required = 1 if len(style_tokens) <= 2 else 2
+        return matches >= required
+
+    def _url_contradicts_category(self, hit: dict[str, Any], ctx: dict[str, Any]) -> bool:
+        """Reject when the image URL itself names another product family.
+
+        Search engines can pair a correct product-page title with a sibling
+        carousel image URL. The URL is the thing we embed/download, so if the
+        filename says belt/bag/t-shirt while the item is footwear, trust the
+        URL contradiction.
+        """
+        category_family = ctx.get("category_family")
+        if not category_family:
+            return False
+        # Only inspect the actual image URL. The page URL/title can be correct
+        # while the embedded image URL points at a sibling product.
+        url_text = str(hit.get("url") or "").lower()
+        url_tokens = set(_tokenize(url_text))
+        family_terms = _CATEGORY_FAMILY_TERMS.get(category_family, set())
+        if url_tokens & family_terms:
+            return False
+        conflicting_terms: set[str] = set()
+        for other_family, other_terms in _CATEGORY_FAMILY_TERMS.items():
+            if other_family == category_family:
+                continue
+            conflicting_terms |= (url_tokens & other_terms)
+        return bool(conflicting_terms)
+
     def _coerce_hits(self, raw_hits: list[Any]) -> list[SearchHit]:
         hits: list[SearchHit] = []
         for raw in raw_hits or []:
@@ -1078,9 +1192,9 @@ class ImageSearcher:
 
     def _strict_hit_priority_pool(self, hit: dict[str, Any]) -> int:
         source_names = set(hit.get("source_names") or set())
-        if {"bing_exact", "bing_phrase"} & source_names:
-            return 0
         if {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase"} & source_names:
+            return 0
+        if {"bing_exact", "bing_phrase"} & source_names:
             return 1
         if any(
             (name.startswith("brand_site") or name.startswith("extra_")) and ("exact" in name or "phrase" in name)
@@ -1183,10 +1297,10 @@ class ImageSearcher:
             return True
         if any(p in url_lower for p in _LIFESTYLE_URL_FILE_PATTERNS):
             return True
-        # High-numbered carousel images (e.g. "-05.jpg") are almost always
+        # High-numbered carousel images (e.g. "-03.jpg") are almost always
         # secondary angles/details, not the primary packshot.
-        m = _NUMBERED_IMAGE_SUFFIX_RE.search(str(hit.get("url") or ""))
-        if m and int(m.group(1)) >= 4:
+        image_index = _image_carousel_index(str(hit.get("url") or ""))
+        if image_index is not None and image_index >= 3:
             return True
         return False
 
@@ -1206,6 +1320,58 @@ class ImageSearcher:
         ]
         if strict_color_hits:
             filtered_hits = strict_color_hits
+
+        category_safe_hits = [
+            hit for hit in filtered_hits
+            if not self._url_contradicts_category(hit, ctx)
+        ]
+        if category_safe_hits:
+            filtered_hits = category_safe_hits
+
+        # Exact-color-first: once obvious wrong colors are removed, prefer hits
+        # that literally contain the requested color slug/words. This prevents
+        # broad color-family aliases from beating a clean exact-color Google
+        # result (e.g. LIGHT GREY should beat taupe/stone/grey-brown).
+        exact_color_hits = [
+            hit for hit in filtered_hits
+            if self._hit_matches_exact_color_text(hit, ctx)
+        ]
+        if exact_color_hits and any(
+            not self._strict_hit_looks_like_variant(hit) for hit in exact_color_hits
+        ):
+            filtered_hits = exact_color_hits
+
+        # Core-style-first: when at least one clean result contains the
+        # distinctive style/model word, discard same-color same-category
+        # siblings that are a different model (e.g. Yacht Loafer vs Voyager
+        # Loafer, City Loafer vs other Aurélien loafers).
+        core_style_hits = [
+            hit for hit in filtered_hits
+            if self._hit_matches_core_style_text(hit, ctx)
+        ]
+        if core_style_hits and any(
+            not self._strict_hit_looks_like_variant(hit) for hit in core_style_hits
+        ):
+            filtered_hits = core_style_hits
+
+        category_family = ctx.get("category_family")
+        family_terms = _CATEGORY_FAMILY_TERMS.get(category_family or "", set())
+        if family_terms:
+            category_hits = []
+            for hit in filtered_hits:
+                text = " ".join([
+                    str(hit.get("url") or ""),
+                    str(hit.get("page_url") or ""),
+                    str(hit.get("title") or ""),
+                    str(hit.get("description") or ""),
+                ]).lower()
+                text_tokens = set(_tokenize(text))
+                if text_tokens & family_terms:
+                    category_hits.append(hit)
+            if category_hits and any(
+                not self._strict_hit_looks_like_variant(hit) for hit in category_hits
+            ):
+                filtered_hits = category_hits
 
         # Dominant-color pass: tally how many hits each color family captures
         # across the top results (score-weighted).  When the item's own color
@@ -1598,9 +1764,9 @@ class ImageSearcher:
         style_tokens = ctx.get("style_tokens") or []
         if style_tokens:
             style_matches = sum(1 for token in style_tokens if token in text_tokens or token in normalized_text)
-            score += min(0.35, style_matches * 0.08)
+            score += min(0.45, style_matches * (0.14 if ctx.get("strict_query") else 0.08))
             if style_matches == 0 and base_code_slug not in normalized_text:
-                score -= 0.08
+                score -= 0.18 if ctx.get("strict_query") else 0.08
 
         exact_tokens = ctx.get("exact_query_tokens") or []
         exact_matches = sum(1 for token in exact_tokens if token in text_tokens or token in normalized_text)
@@ -1693,12 +1859,11 @@ class ImageSearcher:
             score -= 0.32 if ctx.get("strict_query") else 0.20
         if any(p in url_only for p in _LIFESTYLE_URL_FILE_PATTERNS):
             score -= 0.30 if ctx.get("strict_query") else 0.18
-        m_idx = _NUMBERED_IMAGE_SUFFIX_RE.search(url)
-        if m_idx:
-            idx = int(m_idx.group(1))
-            if idx >= 4:
+        idx = _image_carousel_index(url)
+        if idx is not None:
+            if idx >= 3:
                 # Deep-carousel images are rarely the hero packshot.
-                score -= 0.20 if ctx.get("strict_query") else 0.12
+                score -= 0.28 if ctx.get("strict_query") else 0.16
             elif idx == 1:
                 # First image in a numbered sequence — usually primary.
                 score += 0.08 if ctx.get("strict_query") else 0.04
@@ -1713,6 +1878,8 @@ class ImageSearcher:
             has_shoe_term = any(t in text_tokens for t in shoe_terms)
             if has_upper_body and not has_shoe_term:
                 score -= 0.95
+        if ctx.get("strict_query") and self._url_contradicts_category(hit, ctx):
+            score -= 0.85
         if category_family:
             family_terms = _CATEGORY_FAMILY_TERMS.get(category_family, set())
             family_hits = {token for token in text_tokens if token in family_terms}
@@ -1748,14 +1915,14 @@ class ImageSearcher:
             score += 0.16
         if any(name.startswith("extra_") and "phrase" in name for name in source_names):
             score += 0.22
-        if "bing_exact" in source_names:
-            score += 0.42
-        if "bing_phrase" in source_names:
-            score += 0.46
         if "google_exact" in source_names or "google_scrape_exact" in source_names:
-            score += 0.32
+            score += 0.46
         if "google_phrase" in source_names or "google_scrape_phrase" in source_names:
-            score += 0.36
+            score += 0.50
+        if "bing_exact" in source_names:
+            score += 0.34
+        if "bing_phrase" in source_names:
+            score += 0.38
         if ctx.get("strict_query") and (
             {"google_exact", "google_phrase", "google_scrape_exact", "google_scrape_phrase", "bing_exact", "bing_phrase"} & set(source_names)
         ):

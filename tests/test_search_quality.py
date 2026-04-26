@@ -505,8 +505,8 @@ def test_strict_search_uses_google_or_bing_exact_pool_before_broad_sources(monke
     })
 
     assert candidates
-    # Bing exact is now tier 0 (higher priority than Google exact which is tier 1)
-    assert candidates[0] == bing_exact.url
+    # Google exact/phrase is tier 0 because it should mirror manual Google first.
+    assert candidates[0] == google_exact.url
     assert broad_good.url not in candidates
 
 
@@ -604,6 +604,14 @@ def test_brand_playbook_matches_american_rag_variants():
     urls = searcher.matching_brand_site_urls("American Rag Cie")
 
     assert "americanrag.ae" in urls
+
+
+def test_brand_playbook_matches_aurelien_official_domain():
+    searcher = ImageSearcher()
+
+    urls = searcher.matching_brand_site_urls("Aurélien")
+
+    assert "aurelien-online.com" in urls
 
 
 def test_assess_match_confidence_auto_approves_strong_official_match():
@@ -890,6 +898,116 @@ def test_compound_color_rejects_light_beige_for_light_grey_item():
     assert searcher._is_obvious_wrong_color_hit(right_light_grey, ctx) is False
 
 
+def test_strict_search_prefers_exact_color_over_broad_color_family(monkeypatch):
+    """LIGHT GREY should not be displaced by same-family-but-not-exact colors
+    like taupe/stone when a clean exact LIGHT GREY hit exists."""
+    searcher = ImageSearcher()
+
+    exact_light_grey = SearchHit(
+        url="https://aurelien-online.com/images/city-loafer-light-grey-01.jpg",
+        page_url="https://aurelien-online.com/products/light-grey-city-loafer",
+        title="Aurélien Light Grey City Loafer CITYLOAFER2LGRY",
+        description="Clean packshot",
+    )
+    broad_taupe = SearchHit(
+        url="https://aurelien-online.com/images/city-loafer-taupe-01.jpg",
+        page_url="https://aurelien-online.com/products/taupe-city-loafer",
+        title="Aurélien Taupe City Loafer CITYLOAFER2LGRY",
+        description="Clean packshot",
+    )
+    broad_stone = SearchHit(
+        url="https://aurelien-online.com/images/city-loafer-stone-01.jpg",
+        page_url="https://aurelien-online.com/products/stone-city-loafer",
+        title="Aurélien Stone City Loafer CITYLOAFER2LGRY",
+        description="Clean packshot",
+    )
+
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [exact_light_grey, broad_taupe, broad_stone])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [broad_taupe, broad_stone])
+
+    candidates, _scores = searcher.search({
+        "item_code": "CITYLOAFER2LGRY-4300",
+        "style_name": "City Loafer M",
+        "color_name": "LIGHT GREY",
+        "brand": "Aurélien",
+        "item_group": "Footwear",
+    })
+
+    assert candidates
+    assert candidates[0] == exact_light_grey.url
+    assert broad_taupe.url not in candidates
+    assert broad_stone.url not in candidates
+
+
+def test_strict_search_prefers_distinctive_style_token_over_same_color_sibling(monkeypatch):
+    """Official same-color images for another model should not beat the item
+    whose distinctive style/model word appears in the query."""
+    searcher = ImageSearcher()
+
+    correct_yacht = SearchHit(
+        url="https://aurelien-online.com/cdn/shop/products/aurelien-yacht-loafers-chocolate-01.jpg",
+        page_url="https://aurelien-online.com/products/yacht-loafers-chocolate",
+        title="Aurélien Yacht Loafers Chocolate",
+        description="Clean packshot",
+    )
+    wrong_voyager = SearchHit(
+        url="https://aurelien-online.com/cdn/shop/products/aurelien-voyager-loafer-chocolate-01.jpg",
+        page_url="https://aurelien-online.com/products/voyager-loafer-chocolate",
+        title="Aurélien Voyager Loafer Chocolate",
+        description="Clean packshot",
+    )
+
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [wrong_voyager, correct_yacht])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [wrong_voyager, correct_yacht])
+
+    candidates, _scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Chocolate Yacht Loafers",
+        "color_name": "CHOCOLATE",
+        "brand": "Aurélien",
+        "item_group": "Loafers",
+    })
+
+    assert candidates
+    assert candidates[0] == correct_yacht.url
+    assert wrong_voyager.url not in candidates
+
+
+def test_strict_search_rejects_url_that_names_wrong_product_family(monkeypatch):
+    searcher = ImageSearcher()
+
+    correct_loafer = SearchHit(
+        url="https://aurelien-online.com/cdn/shop/products/aurelien-yacht-loafers-chocolate-01.jpg",
+        page_url="https://aurelien-online.com/products/yacht-loafers-chocolate",
+        title="Aurélien Yacht Loafers Chocolate",
+        description="Clean packshot",
+    )
+    mislabeled_belt_image = SearchHit(
+        url="https://aurelien-online.com/cdn/shop/products/aurelien-chocolate-suede-belt-01.jpg",
+        page_url="https://aurelien-online.com/products/yacht-loafers-chocolate",
+        title="Aurélien Yacht Loafers Chocolate",
+        description="Search metadata says loafer, URL is actually a belt image",
+    )
+
+    _stub_all_search_methods(searcher, monkeypatch)
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [mislabeled_belt_image, correct_loafer])
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [mislabeled_belt_image, correct_loafer])
+
+    candidates, _scores = searcher.search({
+        "item_code": "YLWCHT-3800",
+        "style_name": "Lady Chocolate Yacht Loafers",
+        "color_name": "CHOCOLATE",
+        "brand": "Aurélien",
+        "item_group": "Loafers",
+    })
+
+    assert candidates
+    assert candidates[0] == correct_loafer.url
+    assert mislabeled_belt_image.url not in candidates
+
+
 def test_color_equivalence_covers_obscure_colors():
     """Expanded equivalence classes — emerald should match green items,
     burgundy should match red items, etc."""
@@ -943,6 +1061,24 @@ def test_high_numbered_carousel_image_marked_as_variant():
         "url": "https://brand.example/products/loafer-01.jpg",
         "page_url": "https://brand.example/products/loafer",
         "title": "Loafer",
+        "description": "",
+    }
+    assert searcher._strict_hit_looks_like_variant(secondary) is True
+    assert searcher._strict_hit_looks_like_variant(primary) is False
+
+
+def test_shopify_resized_carousel_index_marked_as_variant():
+    searcher = ImageSearcher()
+    secondary = {
+        "url": "https://cdn.shopify.com/products/Aurelien_Yacht_Loafers_chocolate6_600x.jpg?v=1",
+        "page_url": "",
+        "title": "Aurélien Yacht Loafers Chocolate",
+        "description": "",
+    }
+    primary = {
+        "url": "https://cdn.shopify.com/products/Aurelien_Yacht_Loafers_chocolate1_600x.jpg?v=1",
+        "page_url": "",
+        "title": "Aurélien Yacht Loafers Chocolate",
         "description": "",
     }
     assert searcher._strict_hit_looks_like_variant(secondary) is True
