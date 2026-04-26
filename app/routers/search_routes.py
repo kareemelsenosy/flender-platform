@@ -338,10 +338,11 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 matched_brand_urls = []
                 for _cfg_brand, urls in matched_brand_configs:
                     matched_brand_urls.extend(urls)
+                matched_priority_urls = searcher.matching_priority_site_urls(brand_label) if searcher else []
                 effective_instructions = compose_search_instructions(
                     session_notes=session_notes,
                     brand_notes=matched_brand_notes,
-                    priority_domains=extra_brand_urls + matched_brand_urls,
+                    priority_domains=matched_priority_urls + matched_brand_urls,
                 )
 
                 # ── STEP 1: AI builds initial search queries ─────────────────

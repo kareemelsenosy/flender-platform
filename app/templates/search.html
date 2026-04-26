@@ -79,7 +79,7 @@
     <div class="form-group">
       <label>Priority Brand URLs <span class="text-muted" style="font-weight:400">(optional)</span></label>
       <textarea id="brand-urls" rows="2" placeholder="e.g. stoneisland.com, goldengoose.com (one per line)">{{ '\n'.join(default_brand_urls or []) }}</textarea>
-      <small class="text-muted">Search these sites first. Set default domains in <a href="/settings" style="color:var(--black);font-weight:600">Settings</a>.</small>
+      <small class="text-muted">Search these sites first. For multi-brand sheets, paste all official domains here; each item will use only the domains that match its brand. Set default domains in <a href="/settings" style="color:var(--black);font-weight:600">Settings</a>.</small>
       {% if matched_brand_labels %}
       <small class="text-muted" style="display:block;margin-top:6px">Loaded defaults from Settings for: {{ ', '.join(matched_brand_labels) }}</small>
       {% endif %}

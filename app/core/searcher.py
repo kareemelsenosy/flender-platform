@@ -676,7 +676,9 @@ class ImageSearcher:
             clean_urls = split_and_normalize_domains(urls)
             if clean_urls:
                 self.brand_site_urls[str(brand_name or "").strip().lower()] = clean_urls
-        # Extra priority domains that apply to every item in this session
+        # Session priority domains from Step 3. These are matched per item
+        # brand before each search so multi-brand sheets don't waste queries on
+        # unrelated domains or ignore domains after the first few entries.
         self.extra_site_urls: list[str] = split_and_normalize_domains(
             self.config.get("extra_site_urls", [])
         )
@@ -734,6 +736,42 @@ class ImageSearcher:
                     return True
 
         return False
+
+    def _domain_matches_brand(self, brand: str, domain: str) -> bool:
+        brand_keys = self._brand_identity_keys(brand)
+        domain_keys = self._domain_identity_keys([domain])
+        if not brand_keys or not domain_keys:
+            return False
+        if brand_keys & domain_keys:
+            return True
+        for brand_key in brand_keys:
+            for domain_key in domain_keys:
+                # Exact/substring matching lets "American Rag Cie" match
+                # americanrag.ae, "Golden Goose Deluxe Brand" match
+                # goldengoose.com, etc. Short exact keys like "on" are already
+                # handled by intersection above.
+                if min(len(brand_key), len(domain_key)) >= 5 and (
+                    brand_key in domain_key or domain_key in brand_key
+                ):
+                    return True
+        return False
+
+    def matching_priority_site_urls(self, brand: str) -> list[str]:
+        """Return Step-3 priority domains that match this specific item brand.
+
+        If the user entered a single priority domain, keep it as an explicit
+        override even when the brand label is messy. With multiple domains,
+        only brand-matching domains apply to avoid cross-brand pollution.
+        """
+        matches = [
+            domain for domain in self.extra_site_urls
+            if self._domain_matches_brand(brand, domain)
+        ]
+        if matches:
+            return _unique_preserve(matches)
+        if len(self.extra_site_urls) == 1:
+            return list(self.extra_site_urls)
+        return []
 
     def _matching_brand_playbook(self, brand: str) -> dict[str, Any]:
         merged: dict[str, Any] = {
@@ -874,7 +912,7 @@ class ImageSearcher:
             "core_style_tokens": _unique_preserve(style_tokens),
             "color_tokens": _unique_preserve(color_tokens),
             "normalized_color_identity": self._normalized_color_identity(color_code, color_name),
-            "preferred_domains": _unique_preserve(self.extra_site_urls + self.matching_brand_site_urls(brand)),
+            "preferred_domains": _unique_preserve(self.matching_priority_site_urls(brand) + self.matching_brand_site_urls(brand)),
             "blocked_domains": playbook.get("blocked_domains", []),
             "blocked_terms": set(playbook.get("blocked_terms", [])),
             "strict_query": bool(playbook.get("strict_query", self.strict_match_mode)),
@@ -1501,8 +1539,10 @@ class ImageSearcher:
             for i, query in enumerate(ai_queries[:3]):
                 tasks[f"ai_{i}"] = lambda q=query: self._bing_raw(q)
 
-        # Extra priority domains (from step-3 form) — searched first, before brand domains
-        for ei, extra_domain in enumerate(self.extra_site_urls[:3]):
+        # Step-3 priority domains — searched first, but only when the domain
+        # matches this item brand (or it is the only explicit override).
+        priority_site_urls = self.matching_priority_site_urls(brand)
+        for ei, extra_domain in enumerate(priority_site_urls[:5]):
             d = normalize_search_domain(extra_domain)
             if d:
                 tasks[f"extra_{ei}"] = lambda dom=d: self._bing_site_search(
@@ -1514,7 +1554,7 @@ class ImageSearcher:
                     tasks[f"extra_{ei}_phrase"] = lambda dom=d, q=phrase_query: self._bing_site_search(dom, q)
 
         if site_urls:
-            seen_domains = set(self.extra_site_urls)
+            seen_domains = set(priority_site_urls)
             for site_idx, site_url in enumerate(site_urls[:2]):
                 if not site_url or site_url in seen_domains:
                     continue
@@ -1807,8 +1847,9 @@ class ImageSearcher:
                 if style_matches >= max(1, min(2, len(style_tokens))) and color_matches:
                     score += 0.16
 
-        # Boost for user-specified priority domains (highest priority)
-        for extra_d in self.extra_site_urls:
+        # Boost for user-specified priority domains that match this item brand
+        # (highest priority, but no cross-brand pollution on multi-brand sheets).
+        for extra_d in self.matching_priority_site_urls(ctx.get("brand") or ""):
             clean_d = normalize_search_domain(extra_d)
             if clean_d and (clean_d in url.lower() or clean_d in page_url.lower()):
                 score += 0.55

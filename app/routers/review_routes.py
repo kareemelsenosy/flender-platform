@@ -604,12 +604,13 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
     matched_brand_urls = []
     for _cfg_brand, urls in matched_brand_configs:
         matched_brand_urls.extend(urls)
+    matched_priority_urls = searcher.matching_priority_site_urls(item.brand or "")
 
     effective_instructions = compose_search_instructions(
         manual_instructions=instructions,
         session_notes=session_notes,
         brand_notes=matched_brand_notes,
-        priority_domains=extra_site_urls + matched_brand_urls,
+        priority_domains=matched_priority_urls + matched_brand_urls,
     )
 
     # Build AI queries using instructions if provided

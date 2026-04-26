@@ -65,6 +65,92 @@ def test_brand_config_matching_handles_suffix_variants_without_searching_other_b
     assert generic.url not in scores or scores[official.url] > scores[generic.url]
 
 
+def test_session_priority_domains_match_per_brand_past_first_three(monkeypatch):
+    searcher = ImageSearcher({
+        "extra_site_urls": [
+            "stoneisland.com",
+            "goldengoose.com",
+            "on.com",
+            "somecoolbrand.com",
+        ],
+    })
+
+    called_domains: list[str] = []
+    official = SearchHit(
+        url="https://somecoolbrand.com/images/runner-black.jpg",
+        page_url="https://somecoolbrand.com/products/runner-black",
+        title="Some Cool Brand Runner Black",
+        description="Official product image",
+    )
+    generic = SearchHit(
+        url="https://example.com/runner-black.jpg",
+        page_url="https://example.com/runner-black",
+        title="Some Cool Brand Runner Black",
+        description="Marketplace listing",
+    )
+
+    monkeypatch.setattr(
+        searcher,
+        "_bing_site_search",
+        lambda domain, query: called_domains.append(domain) or ([official] if domain == "somecoolbrand.com" else []),
+    )
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [generic])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, _scores = searcher.search({
+        "item_code": "SCB-001",
+        "style_name": "Runner",
+        "color_name": "Black",
+        "brand": "Some Cool Brand",
+        "item_group": "Footwear",
+    })
+
+    assert "somecoolbrand.com" in called_domains
+    assert "stoneisland.com" not in called_domains
+    assert "goldengoose.com" not in called_domains
+    assert "on.com" not in called_domains
+    assert candidates[0] == official.url
+
+
+def test_single_session_priority_domain_still_applies_as_manual_override(monkeypatch):
+    searcher = ImageSearcher({"extra_site_urls": ["official-example.com"]})
+
+    called_domains: list[str] = []
+    official = SearchHit(
+        url="https://official-example.com/images/product-black.jpg",
+        page_url="https://official-example.com/products/product-black",
+        title="Messy Brand Product Black",
+        description="Official product image",
+    )
+
+    monkeypatch.setattr(
+        searcher,
+        "_bing_site_search",
+        lambda domain, query: called_domains.append(domain) or ([official] if domain == "official-example.com" else []),
+    )
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, _scores = searcher.search({
+        "item_code": "MS-001",
+        "style_name": "Product",
+        "color_name": "Black",
+        "brand": "Messy Distributor Label",
+        "item_group": "Accessory",
+    })
+
+    assert set(called_domains) == {"official-example.com"}
+    assert candidates[0] == official.url
+
+
 def test_review_research_uses_session_priority_domains_and_brand_defaults(
     client,
     login_as,
