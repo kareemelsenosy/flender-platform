@@ -696,9 +696,16 @@ class OrderSheetGenerator:
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
         safe_color = re.sub(r"[^\w\-]", "_", color_code) if color_code else ""
 
-        # Determine subfolder
+        # Determine subfolder. SAP creates folders named exactly after the
+        # Item Group (e.g. "BUT BA BG264943 Black"), so we preserve the
+        # original spelling — including spaces — and only strip characters
+        # the filesystem can't store. Anything else means the folders SAP
+        # produces won't line up with what we export and the user has to
+        # rename by hand.
         if item_group:
-            folder_name = re.sub(r"[^\w\-]", "_", item_group)
+            folder_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", item_group).strip().rstrip(".")
+            if not folder_name:
+                folder_name = safe_code
         else:
             folder_name = safe_code
 
