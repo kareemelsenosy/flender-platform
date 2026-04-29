@@ -767,40 +767,82 @@ async def upload_images_for_search(
     total_bytes = 0
     extracted_bytes = 0
 
-    for upload in files:
-        content = await upload.read()
-        total_bytes += len(content)
-        if total_bytes > _MAX_IMAGE_UPLOAD:
-            return JSONResponse({"error": "Total upload size exceeds 1 GB limit"}, status_code=413)
+    # Stream every upload to a temp file on disk in 4 MB chunks so a 600 MB
+    # ZIP doesn't have to fit in RAM. ZIPs are then opened from the file
+    # handle and entries are streamed out the same way.
+    import tempfile
+    import shutil
+    _CHUNK = 4 * 1024 * 1024
 
+    async def _spool_to_disk(upload: UploadFile, remaining: int) -> tuple[str, int]:
+        """Write the upload to a NamedTemporaryFile, enforcing remaining-bytes
+        budget. Returns (path, written_bytes). Caller must unlink the path."""
+        tmp = tempfile.NamedTemporaryFile(delete=False, dir=str(img_dir.parent), suffix=".upload")
+        written = 0
+        try:
+            while True:
+                chunk = await upload.read(_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > remaining:
+                    tmp.close()
+                    os.unlink(tmp.name)
+                    raise _UploadTooLarge()
+                tmp.write(chunk)
+        finally:
+            tmp.close()
+        return tmp.name, written
+
+    for upload in files:
         _display_name, safe_name = normalize_uploaded_name(upload.filename or "image", default="image")
         ext = os.path.splitext(safe_name)[1].lower()
 
-        if ext == ".zip":
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    for info in zf.infolist():
-                        if info.is_dir():
-                            continue
-                        _zip_display, zip_safe_name = normalize_uploaded_name(info.filename, default="image")
-                        zext = os.path.splitext(zip_safe_name)[1].lower()
-                        if zext not in _IMAGE_EXTENSIONS:
-                            continue
-                        extracted_bytes += info.file_size
-                        if extracted_bytes > _MAX_IMAGE_UPLOAD:
-                            return JSONResponse({"error": "Extracted image size exceeds 1 GB limit"}, status_code=413)
-                        dest = unique_path(img_dir, zip_safe_name)
-                        dest.write_bytes(zf.read(info))
-                        image_count += 1
-            except zipfile.BadZipFile:
-                logger.warning(f"Skipping bad ZIP: {safe_name}")
-        elif ext in _IMAGE_EXTENSIONS:
-            dest = unique_path(img_dir, safe_name)
-            dest.write_bytes(content)
-            image_count += 1
+        try:
+            tmp_path, written = await _spool_to_disk(upload, _MAX_IMAGE_UPLOAD - total_bytes)
+        except _UploadTooLarge:
+            return JSONResponse({"error": "Total upload size exceeds 1 GB limit"}, status_code=413)
+
+        total_bytes += written
+
+        try:
+            if ext == ".zip":
+                try:
+                    with zipfile.ZipFile(tmp_path) as zf:
+                        for info in zf.infolist():
+                            if info.is_dir():
+                                continue
+                            _zip_display, zip_safe_name = normalize_uploaded_name(info.filename, default="image")
+                            zext = os.path.splitext(zip_safe_name)[1].lower()
+                            if zext not in _IMAGE_EXTENSIONS:
+                                continue
+                            extracted_bytes += info.file_size
+                            if extracted_bytes > _MAX_IMAGE_UPLOAD:
+                                return JSONResponse({"error": "Extracted image size exceeds 1 GB limit"}, status_code=413)
+                            dest = unique_path(img_dir, zip_safe_name)
+                            with zf.open(info) as src, open(dest, "wb") as out:
+                                shutil.copyfileobj(src, out, length=_CHUNK)
+                            image_count += 1
+                except zipfile.BadZipFile:
+                    logger.warning(f"Skipping bad ZIP: {safe_name}")
+            elif ext in _IMAGE_EXTENSIONS:
+                dest = unique_path(img_dir, safe_name)
+                shutil.move(tmp_path, dest)
+                tmp_path = ""  # consumed
+                image_count += 1
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     logger.info(f"Session {session_id}: uploaded {image_count} images to {img_dir}")
     return JSONResponse({"ok": True, "folder_path": str(img_dir), "image_count": image_count})
+
+
+class _UploadTooLarge(Exception):
+    """Raised internally when an upload exceeds the per-request size budget."""
 
 
 _CONTEXT_TEXT_EXTS = {".txt", ".md", ".csv", ".tsv", ".json", ".html", ".htm"}
