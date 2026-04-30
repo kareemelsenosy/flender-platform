@@ -325,10 +325,10 @@ class OrderSheetGenerator:
         if images_dir:
             for item in items:
                 url = item.get("approved_url", "")
-                if url and url.startswith("http") and url not in unique_urls:
+                if url and url.startswith(("http", "file://")) and url not in unique_urls:
                     unique_urls.setdefault(url, [])
                 for extra_url in item.get("additional_urls", []):
-                    if extra_url and extra_url.startswith("http") and extra_url not in unique_urls:
+                    if extra_url and extra_url.startswith(("http", "file://")) and extra_url not in unique_urls:
                         unique_urls.setdefault(extra_url, [])
 
         def _dl(url_gis):

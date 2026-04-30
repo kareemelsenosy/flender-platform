@@ -530,7 +530,6 @@ async def upload_replacement_image(
     so the user can drop in any file (any name) and still get the correct
     folder/filename layout in the final ZIP.
     """
-    from fastapi import UploadFile  # local import — uvicorn quirk
     from app.services.file_safety import normalize_uploaded_name, unique_path
 
     uid = get_current_user_id(request)
@@ -544,7 +543,10 @@ async def upload_replacement_image(
         item_id = int(item_id_raw)
     except (TypeError, ValueError):
         return JSONResponse({"error": "missing item id"}, status_code=400)
-    if not isinstance(upload, UploadFile):
+    # Accept any starlette/fastapi UploadFile-like object (duck-typed: both
+    # expose `.read()` and `.filename`). Avoids isinstance() pitfalls when
+    # fastapi.UploadFile and starlette.datastructures.UploadFile diverge.
+    if not (upload and hasattr(upload, "read") and hasattr(upload, "filename")):
         return JSONResponse({"error": "missing file"}, status_code=400)
 
     item = _get_owned_item(db, uid, session_id, item_id)
