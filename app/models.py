@@ -107,6 +107,7 @@ class UniqueItem(Base):
     search_status = Column(String(20), default="pending")  # pending, done
     candidates_json = Column(Text, default="[]")  # JSON list of candidate URLs
     scores_json = Column(Text, default="{}")  # JSON dict {url: score}
+    match_reasons_json = Column(Text, default="{}")  # JSON dict {url: reason}
     review_status = Column(String(20), default="pending")  # pending, approved, skipped
     approved_url = Column(Text)
     suggested_url = Column(Text)
@@ -159,6 +160,14 @@ class UniqueItem(Base):
     def scores(self, val: dict):
         self.scores_json = json.dumps(val)
 
+    @property
+    def match_reasons(self) -> dict:
+        return json.loads(self.match_reasons_json or "{}")
+
+    @match_reasons.setter
+    def match_reasons(self, val: dict):
+        self.match_reasons_json = json.dumps(val)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -178,6 +187,7 @@ class UniqueItem(Base):
             "comming_soon_qty": self.comming_soon_qty,
             "candidates": self.candidates,
             "scores": self.scores,
+            "match_reasons": self.match_reasons,
             "review_status": self.review_status,
             "approved_url": self.approved_url,
             "suggested_url": self.suggested_url,
@@ -199,6 +209,7 @@ class SearchCache(Base):
     search_version = Column(Integer, default=1)
     candidates_json = Column(Text, default="[]")
     scores_json = Column(Text, default="{}")
+    match_reasons_json = Column(Text, default="{}")
     searched_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (UniqueConstraint("item_code", "color_code", "brand"),)
@@ -218,6 +229,14 @@ class SearchCache(Base):
     @scores.setter
     def scores(self, val: dict):
         self.scores_json = json.dumps(val)
+
+    @property
+    def match_reasons(self) -> dict:
+        return json.loads(self.match_reasons_json or "{}")
+
+    @match_reasons.setter
+    def match_reasons(self, val: dict):
+        self.match_reasons_json = json.dumps(val)
 
 
 class ColumnMappingFormat(Base):

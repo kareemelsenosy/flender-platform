@@ -324,7 +324,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
                 if cached and cached.candidates:
                     decision = searcher.assess_match_confidence(cached.candidates, cached.scores, item_dict)
-                    return cached.candidates, cached.scores, True, decision
+                    cached_reasons = getattr(cached, "match_reasons", None) or {}
+                    return cached.candidates, cached.scores, True, decision, cached_reasons
 
                 candidates = []
                 scores = {}
@@ -364,12 +365,15 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                         )
 
                 # ── STEP 2: Local folder search ───────────────────────────────
+                match_reasons: dict[str, str] = {}
                 if local_search_fn:
                     local_results = local_search_fn(local_folder, item_dict)
                     for lr in local_results:
                         file_url = f"file://{lr['path']}"
                         candidates.append(file_url)
                         scores[file_url] = lr["score"]
+                        if lr.get("reason"):
+                            match_reasons[file_url] = lr["reason"]
 
                 # ── STEP 3: Web search with AI queries ────────────────────────
                 if search_mode == "web" or (search_mode == "both" and len(candidates) < 3):
@@ -455,6 +459,10 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                         if existing_cache:
                             existing_cache.candidates = candidates
                             existing_cache.scores = scores
+                            try:
+                                existing_cache.match_reasons = match_reasons
+                            except Exception:
+                                pass
                         else:
                             new_cache = SearchCache(
                                 item_code=cache_item_code,
@@ -464,12 +472,16 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                             )
                             new_cache.candidates = candidates
                             new_cache.scores = scores
+                            try:
+                                new_cache.match_reasons = match_reasons
+                            except Exception:
+                                pass
                             cache_db.add(new_cache)
                         cache_db.commit()
                     except Exception:
                         cache_db.rollback()
 
-                return candidates, scores, False, decision
+                return candidates, scores, False, decision, match_reasons
             finally:
                 cache_db.close()
 
@@ -506,8 +518,14 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
                 grouped = futures[future]
                 try:
-                    candidates, scores, _from_cache, decision = future.result()
-                    completed_results.append((grouped, candidates, scores, decision))
+                    result = future.result()
+                    # Backwards compatibility: older return shape lacked reasons.
+                    if len(result) == 5:
+                        candidates, scores, _from_cache, decision, item_reasons = result
+                    else:
+                        candidates, scores, _from_cache, decision = result
+                        item_reasons = {}
+                    completed_results.append((grouped, candidates, scores, decision, item_reasons))
                 except Exception as e:
                     logger.error(f"Search error: {e}")
 
@@ -525,7 +543,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             reverse=True,
         )
         claimed_urls: set[str] = set()
-        for grouped, candidates, scores, _decision in completed_results:
+        for grouped, candidates, scores, _decision, item_reasons in completed_results:
             sorted_urls = sorted(candidates, key=lambda u: scores.get(u, 0.0), reverse=True)
             chosen = ""
             for url in sorted_urls:
@@ -559,12 +577,22 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             final_reason = str(final_decision.get("reason") or "").strip() or None
             final_suggested = str(final_decision.get("suggested_url") or chosen or "").strip() or None
 
+            # Promote the local-search reason for the suggested URL when the
+            # confidence assessor didn't surface one — it gives the reviewer
+            # something specific to look at ("similar code (BG264943)").
+            if final_suggested and not final_reason:
+                final_reason = item_reasons.get(final_suggested) or None
+
             for source_item in grouped["items"]:
                 db_item = db.get(UniqueItem, source_item.id)
                 if not db_item:
                     continue
                 db_item.candidates = final_candidates
                 db_item.scores = scores
+                try:
+                    db_item.match_reasons = item_reasons
+                except Exception:
+                    pass
                 db_item.search_status = "done"
                 db_item.suggested_url = final_suggested
                 db_item.search_confidence = final_score

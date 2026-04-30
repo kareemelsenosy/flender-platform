@@ -62,6 +62,24 @@
     pointer-events: none;
   }
 
+  .image-card .match-reason {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    right: 4px;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    font-size: 0.6rem;
+    line-height: 1.1;
+    padding: 3px 5px;
+    border-radius: 3px;
+    text-align: center;
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .image-card.extra-selected {
     outline: 2px solid var(--primary);
     outline-offset: -2px;
@@ -715,6 +733,7 @@ function renderMain(key) {
         const extras = entry.additional_urls || [];
         const extraIdx = extras.indexOf(url);
         const isExtra = extraIdx >= 0;
+        const reasonText = (entry.match_reasons || {})[url] || '';
         // First 6 load immediately; rest are lazy (data-src) to avoid flooding the proxy
         const eager = i < 6;
         const cardImage = isLocalFile(url)
@@ -733,6 +752,7 @@ function renderMain(key) {
           ${cardImage}
           <div class="score ${conf.cls}">${conf.label}</div>
           <div class="card-num">${i+1}</div>
+          ${reasonText ? `<div class="match-reason" title="${escapeAttr(reasonText)}">${escapeAttr(reasonText)}</div>` : ''}
           ${isExtra ? `<div class="extra-badge">+${extraIdx+1}</div>` : ''}
           ${lensHref ? `<a href="${escapeAttr(lensHref)}" target="_blank" rel="noopener noreferrer" class="card-find-btn" title="Find this image on Google Lens" onclick="event.stopPropagation()">🔍</a>` : ''}
         </div>`;

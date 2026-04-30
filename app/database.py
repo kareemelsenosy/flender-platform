@@ -97,11 +97,19 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN source_sheet VARCHAR(255)"
                 ))
+            if "match_reasons_json" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN match_reasons_json TEXT DEFAULT '{}'"
+                ))
         if "search_cache" in insp.get_table_names():
             cache_cols = {c["name"] for c in insp.get_columns("search_cache")}
             if "search_version" not in cache_cols:
                 conn.execute(text(
                     "ALTER TABLE search_cache ADD COLUMN search_version INTEGER DEFAULT 1"
+                ))
+            if "match_reasons_json" not in cache_cols:
+                conn.execute(text(
+                    "ALTER TABLE search_cache ADD COLUMN match_reasons_json TEXT DEFAULT '{}'"
                 ))
         # Ensure email_verified column exists on users
         if "users" in insp.get_table_names():

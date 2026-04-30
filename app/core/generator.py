@@ -166,10 +166,12 @@ class OrderSheetGenerator:
         out_filename = f"{today}_{safe_brand}_{safe_input}_OrderSheet.xlsx"
         out_path = os.path.join(output_dir, out_filename)
 
-        # Image folders for saving
+        # Image folders for saving. Wrap in "_READY TO UPDATE" so the export
+        # drops into the Dropbox staging area (Dropbox/_READY TO UPDATE/...)
+        # without any manual moving by the user.
         images_dir = None
         if self.save_images:
-            images_dir = os.path.join(output_dir, "images")
+            images_dir = os.path.join(output_dir, "images", "_READY TO UPDATE")
             os.makedirs(images_dir, exist_ok=True)
 
         wb = Workbook()
@@ -687,21 +689,24 @@ class OrderSheetGenerator:
     def _save_image_file(self, img_data: bytes, base_images_dir: str, item: dict):
         """
         Save full-resolution image to folder.
-        Naming: {item_code}_{color_code}_1.jpg
-        Folder name = Item Group if available, else item_code.
+
+        Naming convention for the B2B importer:
+          • Folder name  = Item Group, verbatim (e.g. "BUT BA BG264943 Black")
+          • Highlight    = {item_code}_01.jpg     ← shown to customers
+          • Additional   = {item_code}_02.jpg, _03.jpg, …
+
+        The first image saved for an item is always _01 so the customer-
+        facing highlight image is deterministic regardless of colour code or
+        candidate ordering.
         """
         item_code = str(item.get("item_code") or "unknown").strip() or "unknown"
-        color_code = str(item.get("color_code") or "").strip()
         item_group = str(item.get("item_group") or "").strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
-        safe_color = re.sub(r"[^\w\-]", "_", color_code) if color_code else ""
 
         # Determine subfolder. SAP creates folders named exactly after the
         # Item Group (e.g. "BUT BA BG264943 Black"), so we preserve the
         # original spelling — including spaces — and only strip characters
-        # the filesystem can't store. Anything else means the folders SAP
-        # produces won't line up with what we export and the user has to
-        # rename by hand.
+        # the filesystem can't store.
         if item_group:
             folder_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", item_group).strip().rstrip(".")
             if not folder_name:
@@ -712,15 +717,12 @@ class OrderSheetGenerator:
         folder_path = os.path.join(base_images_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
-        # Build filename base with color
-        base_name = f"{safe_code}_{safe_color}" if safe_color else safe_code
-
-        # Find next available number
+        # Find next available 2-digit number; primary image is always _01.
         n = 1
-        while os.path.exists(os.path.join(folder_path, f"{base_name}_{n}.jpg")):
+        while os.path.exists(os.path.join(folder_path, f"{safe_code}_{n:02d}.jpg")):
             n += 1
 
-        path = os.path.join(folder_path, f"{base_name}_{n}.jpg")
+        path = os.path.join(folder_path, f"{safe_code}_{n:02d}.jpg")
 
         # Save as high-quality JPEG at full resolution
         try:
