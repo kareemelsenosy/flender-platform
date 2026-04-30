@@ -4,6 +4,67 @@
 <style>
   html, body { overflow: hidden !important; height: 100% !important; }
 
+  /* Drag-and-drop zone for the primary image slot */
+  .dropzone {
+    position: relative;
+    border: 2px dashed transparent;
+    border-radius: 8px;
+    transition: border-color .15s ease, background-color .15s ease;
+    cursor: pointer;
+  }
+  .dropzone:hover { border-color: var(--gray-200); }
+  .dropzone.drag-over {
+    border-color: var(--primary);
+    background-color: rgba(99, 102, 241, 0.06);
+  }
+  .dropzone .dropzone-hint {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.55);
+    color: #fff;
+    font-size: 0.6rem;
+    padding: 3px 7px;
+    border-radius: 12px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .dropzone:hover .dropzone-hint,
+  .dropzone.drag-over .dropzone-hint { opacity: 1; }
+  .dropzone.drag-over .dropzone-hint { background: var(--primary); }
+  .dropzone.uploading::after {
+    content: 'Uploading…';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.85);
+    color: var(--primary);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    z-index: 10;
+  }
+  .dropzone-empty {
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--gray-400);
+    border: 2px dashed var(--gray-200);
+    border-radius: 8px;
+    text-align: center;
+    padding: 24px;
+  }
+  .dropzone-empty-title { font-size: 0.95rem; font-weight: 600; color: var(--gray-500); }
+  .dropzone-empty-hint { font-size: 0.75rem; }
+
+
   /* Local file:// placeholder — shown instead of a blocked <img> */
   .thumb-placeholder.local-file {
     flex-direction: column;
@@ -675,8 +736,8 @@ function renderMain(key) {
       </div>
     </div>
 
-    ${selectedUrl ? `
-      <div class="selected-preview mb-6">
+    <div id="image-dropzone" class="selected-preview mb-6 dropzone" data-key="${escapeAttr(key)}" data-id="${entry.id}">
+      ${selectedUrl ? `
         ${isLocalFile(selectedUrl)
           ? localFileImage(selectedUrl, {
               alt: 'Selected image',
@@ -700,8 +761,16 @@ function renderMain(key) {
             </div>`).join('')}
           </div>
         ` : ''}
-      </div>
-    ` : '<div class="alert alert-info mb-4">No image selected. Click a candidate below or paste a URL.</div>'}
+      ` : `<div class="dropzone-empty">
+        <div class="dropzone-empty-title">Drop an image here</div>
+        <div class="dropzone-empty-hint">or click a candidate below · paste a URL · re-search</div>
+      </div>`}
+      <div class="dropzone-hint">Drop to replace</div>
+    </div>
+    <input type="file" id="image-drop-fallback" accept="image/*" style="display:none">
+    <div class="text-muted" style="font-size:0.7rem;margin-top:-12px;margin-bottom:12px;text-align:center">
+      Tip — drag any image from your computer onto the box above to use it as the highlight (saved as <code>${escapeHtml((item.item_code || '').replace(/[^A-Za-z0-9_\-]/g, '_'))}_01</code>).
+    </div>
 
     <div id="custom-url-input" style="display:none" class="mb-4">
       <div class="flex gap-2">
@@ -782,8 +851,88 @@ function renderMain(key) {
   const noImageBtn = document.getElementById('mark-no-image-btn');
   if (noImageBtn) noImageBtn.addEventListener('click', () => approveUrl(key, entry.id, ''));
 
+  // Drag-and-drop replacement
+  _wireDropzone(document.getElementById('image-dropzone'),
+                document.getElementById('image-drop-fallback'),
+                key, entry.id);
+
   // Lazy-load candidates that are off-screen
   _observeCandidates(document.getElementById('candidates-grid'));
+}
+
+function _wireDropzone(zone, fallbackInput, key, itemId) {
+  if (!zone) return;
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+
+  zone.addEventListener('dragenter', (e) => { stop(e); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragover',  (e) => { stop(e); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', (e) => { stop(e); if (e.target === zone) zone.classList.remove('drag-over'); });
+  zone.addEventListener('drop', async (e) => {
+    stop(e);
+    zone.classList.remove('drag-over');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) await uploadReplacement(file, key, itemId);
+  });
+
+  // Click-to-pick fallback (touch devices, restrictive browsers)
+  zone.addEventListener('click', (e) => {
+    if (e.target.closest('img, .image-card, button, a')) return;
+    if (fallbackInput) fallbackInput.click();
+  });
+  if (fallbackInput) {
+    fallbackInput.addEventListener('change', async () => {
+      const file = fallbackInput.files && fallbackInput.files[0];
+      if (file) await uploadReplacement(file, key, itemId);
+      fallbackInput.value = '';
+    });
+  }
+}
+
+async function uploadReplacement(file, key, itemId) {
+  if (!file.type.startsWith('image/')) {
+    alert('Please drop an image file.');
+    return;
+  }
+  const zone = document.getElementById('image-dropzone');
+  if (zone) zone.classList.add('uploading');
+
+  const fd = new FormData();
+  fd.append('id', String(itemId));
+  fd.append('file', file);
+
+  try {
+    const resp = await fetch(`/review/${SESSION_ID}/upload-replacement`, {
+      method: 'POST',
+      body: fd,
+      credentials: 'same-origin',
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      alert(data.error || 'Upload failed');
+      return;
+    }
+
+    // Patch local state so we don't have to round-trip /state
+    const entry = state[key] || {};
+    entry.candidates = [data.url, ...(entry.candidates || []).filter(u => u !== data.url)];
+    entry.scores = { ...(entry.scores || {}), [data.url]: 1.0 };
+    entry.match_reasons = { ...(entry.match_reasons || {}), [data.url]: 'manually dropped' };
+    entry.approved_url = data.url;
+    entry.suggested_url = data.url;
+    entry.review_status = 'approved';
+    entry.status = 'approved';
+    entry.auto_selected = false;
+    entry.search_confidence = 1.0;
+    entry.confidence_label = 'high';
+    entry.confidence_reason = 'manually dropped';
+    state[key] = entry;
+    renderMain(key);
+    if (typeof updateSidebar === 'function') updateSidebar();
+  } catch (err) {
+    alert('Upload failed: ' + err);
+  } finally {
+    if (zone) zone.classList.remove('uploading');
+  }
 }
 
 function showCustomUrlInput(key, itemId) {

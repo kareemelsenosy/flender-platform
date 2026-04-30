@@ -382,6 +382,7 @@ def review_item_detail(session_id: int, item_id: int, request: Request, db: DBSe
         },
         "candidates": item.candidates,
         "scores": item.scores,
+        "match_reasons": getattr(item, "match_reasons", None) or {},
         "approved_url": item.approved_url,
         "suggested_url": item.suggested_url,
         "additional_urls": item.additional_urls,
@@ -514,6 +515,115 @@ async def set_custom_url(session_id: int, request: Request, db: DBSession = Depe
     db.commit()
 
     return JSONResponse({"ok": True})
+
+
+@router.post("/review/{session_id}/upload-replacement")
+async def upload_replacement_image(
+    session_id: int,
+    request: Request,
+    db: DBSession = Depends(get_db),
+):
+    """Accept a single image dropped onto an item card and use it as the
+    approved image. Stored under uploads/user_X/session_Y_images/manual/.
+
+    The export pipeline will rename it to {item_code}_01.<ext> automatically,
+    so the user can drop in any file (any name) and still get the correct
+    folder/filename layout in the final ZIP.
+    """
+    from fastapi import UploadFile  # local import — uvicorn quirk
+    from app.services.file_safety import normalize_uploaded_name, unique_path
+
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    form = await request.form()
+    item_id_raw = form.get("id")
+    upload = form.get("file")
+    try:
+        item_id = int(item_id_raw)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "missing item id"}, status_code=400)
+    if not isinstance(upload, UploadFile):
+        return JSONResponse({"error": "missing file"}, status_code=400)
+
+    item = _get_owned_item(db, uid, session_id, item_id)
+    if not item:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+    _MAX_DROP_SIZE = 50 * 1024 * 1024  # 50 MB per drop is plenty
+    _CHUNK = 4 * 1024 * 1024
+
+    _display_name, safe_name = normalize_uploaded_name(upload.filename or "image", default="image")
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in _IMAGE_EXTS:
+        return JSONResponse({"error": f"Unsupported image type '{ext}'"}, status_code=415)
+
+    img_dir = UPLOAD_DIR / f"user_{uid}" / f"session_{session_id}_images" / "manual"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stream to disk in chunks. Drop is small but consistent with the upload
+    # streaming behaviour used in search_routes.py (avoids RAM spikes).
+    item_code = (item.item_code or "manual").strip() or "manual"
+    safe_code = "".join(c if c.isalnum() or c in "-_" else "_" for c in item_code)
+    dest = unique_path(img_dir, f"{safe_code}{ext}")
+    written = 0
+    try:
+        with open(dest, "wb") as out:
+            while True:
+                chunk = await upload.read(_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_DROP_SIZE:
+                    out.close()
+                    try:
+                        os.unlink(dest)
+                    except OSError:
+                        pass
+                    return JSONResponse({"error": "File exceeds 50 MB limit"}, status_code=413)
+                out.write(chunk)
+    except Exception as exc:
+        logger.exception(f"upload-replacement failed for item {item_id}: {exc}")
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        return JSONResponse({"error": "Could not save the file"}, status_code=500)
+
+    file_url = f"file://{os.path.abspath(dest)}"
+
+    candidates = item.candidates
+    if file_url not in candidates:
+        candidates.insert(0, file_url)
+        item.candidates = candidates
+
+    scores = item.scores
+    scores[file_url] = 1.0
+    item.scores = scores
+
+    try:
+        reasons = item.match_reasons
+        reasons[file_url] = "manually dropped"
+        item.match_reasons = reasons
+    except Exception:
+        pass
+
+    item.approved_url = file_url
+    item.suggested_url = file_url
+    item.review_status = "approved"
+    item.auto_selected = False
+    item.search_confidence = 1.0
+    item.confidence_label = "high"
+    item.confidence_reason = "manually dropped"
+    db.commit()
+
+    return JSONResponse({
+        "ok": True,
+        "url": file_url,
+        "filename": os.path.basename(dest),
+    })
 
 
 @router.post("/review/{session_id}/set-additional")

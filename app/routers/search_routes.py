@@ -407,10 +407,12 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 # ── STEP 5: AI vision = QUALITY GATE (filter), not re-ranker ──
                 # We want the final order to mirror Google Images as closely as
                 # possible. AI vision is the safety net that drops wrong-color /
-                # wrong-product / detail-crop / lifestyle hits entirely. Among
-                # the URLs AI keeps, we preserve the score-based order — which
-                # is now Google-position-dominant — so the user sees Google's
-                # #1 result first, with bad images filtered out.
+                # wrong-product / detail-crop / lifestyle hits entirely.
+                #
+                # Local files go through the same gate (ai_service supports
+                # file:// natively) so a folder full of look-alike products
+                # still gets the wrong colour / wrong product variants
+                # filtered out before the user sees them.
                 if use_ai and candidates:
                     web_urls = [u for u in candidates if not u.startswith("file://")]
                     local_urls = [u for u in candidates if u.startswith("file://")]
@@ -423,13 +425,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                             scores=scores,
                             prefer_vision=ai_primary_mode,
                         )
-                        # Drop AI's hard rejects entirely — they are not safe
-                        # to surface even at the bottom of the list.
                         kept_web = [u for u in ranked_web if u not in discarded]
-                        # Re-sort kept URLs by the Google-position-aware score
-                        # so the top result tracks Google's organic #1 unless
-                        # a higher-confidence brand-site / consensus hit beats
-                        # it. AI's rank is used only as a tie-breaker.
                         ai_position = {url: i for i, url in enumerate(kept_web)}
                         kept_web.sort(
                             key=lambda u: (
@@ -437,13 +433,46 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                                 ai_position.get(u, 99),
                             )
                         )
-                        candidates = local_urls + kept_web
-                        new_scores: dict[str, float] = {}
-                        for i, url in enumerate(candidates):
-                            base = scores.get(url, 0.5)
-                            position_bonus = max(0.0, 0.06 - i * 0.012)
-                            new_scores[url] = min(round(base + position_bonus, 2), 1.0)
-                        scores = new_scores
+                    else:
+                        kept_web = []
+
+                    # Vision pass for local candidates. Capped at 6 images so
+                    # the AI call stays fast; the local searcher already
+                    # returns its top-5 in score order.
+                    if local_urls and search_mode in ("local", "both"):
+                        local_for_vision = local_urls[:6]
+                        try:
+                            ranked_local, discarded_local = ai_rank_urls(
+                                local_for_vision,
+                                item_dict,
+                                brand_label,
+                                scores=scores,
+                                prefer_vision=True,
+                            )
+                            kept_local = [u for u in ranked_local if u not in discarded_local]
+                            # Anything past the first 6 wasn't shown to AI;
+                            # keep it at the bottom but trust filename score.
+                            tail = local_urls[6:]
+                            local_position = {url: i for i, url in enumerate(kept_local)}
+                            kept_local.sort(
+                                key=lambda u: (
+                                    -float(scores.get(u, 0.0) or 0.0),
+                                    local_position.get(u, 99),
+                                )
+                            )
+                            local_urls = kept_local + tail
+                            for u in discarded_local:
+                                match_reasons.pop(u, None)
+                        except Exception as exc:
+                            logger.warning(f"AI local-rank failed for {item_dict.get('item_code')}: {exc}")
+
+                    candidates = local_urls + kept_web
+                    new_scores: dict[str, float] = {}
+                    for i, url in enumerate(candidates):
+                        base = scores.get(url, 0.5)
+                        position_bonus = max(0.0, 0.06 - i * 0.012)
+                        new_scores[url] = min(round(base + position_bonus, 2), 1.0)
+                    scores = new_scores
 
                 # ── STEP 6: Save to cache — web search only ──────────────────
                 decision = searcher.assess_match_confidence(candidates, scores, item_dict)
