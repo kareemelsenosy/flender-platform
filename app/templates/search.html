@@ -337,7 +337,116 @@ async function handleContextFiles(files) {
   document.getElementById('context-file-input').value = '';
 }
 
-function _uploadImages() {
+function _uploadJsonFromText(text, fallback) {
+  try {
+    return JSON.parse(text || '{}');
+  } catch (_) {
+    const clean = String(text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return { error: clean ? `${fallback}: ${clean.slice(0, 240)}` : fallback };
+  }
+}
+
+function _formatUploadBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+function _setUploadProgress(loaded, total, label) {
+  const wrapEl  = document.getElementById('upload-progress-wrap');
+  const fillEl  = document.getElementById('upload-progress-fill');
+  const labelEl = document.getElementById('upload-progress-label');
+  const pctEl   = document.getElementById('upload-progress-pct');
+  const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+  wrapEl.style.display = 'block';
+  fillEl.style.width = pct + '%';
+  pctEl.textContent = pct + '%';
+  labelEl.textContent = label || `Uploading… ${_formatUploadBytes(loaded)} / ${_formatUploadBytes(total)}`;
+}
+
+async function _postChunkForm(url, formData) {
+  const resp = await fetch(url, { method: 'POST', body: formData });
+  const text = await resp.text();
+  const data = _uploadJsonFromText(text, `Upload failed with HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error(data.error || `Upload failed with HTTP ${resp.status}`);
+  return data;
+}
+
+async function _cancelChunkedUpload(uploadId) {
+  try {
+    const fd = new FormData();
+    fd.append('upload_id', uploadId);
+    await fetch(`/search/${sessionId}/upload-images/cancel`, { method: 'POST', body: fd });
+  } catch (_) {}
+}
+
+async function _uploadImagesChunked(totalBytes) {
+  const statusEl = document.getElementById('upload-status');
+  const wrapEl   = document.getElementById('upload-progress-wrap');
+  const files = Array.from(_pendingFiles || []);
+  const chunkSize = 4 * 1024 * 1024; // stay safely below common nginx/proxy caps
+  const uploadId = (
+    (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(36).slice(2)}`
+  ).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+
+  let uploadedBytes = 0;
+  statusEl.innerHTML = `<span style="color:var(--black);font-weight:600">Large upload detected</span> <span style="color:var(--gray-500)">Sending safe 4 MB chunks so nginx cannot block it.</span>`;
+
+  try {
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      const file = files[fileIndex];
+      const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(file.size, start + chunkSize);
+        const blob = file.slice(start, end);
+        const fd = new FormData();
+        fd.append('upload_id', uploadId);
+        fd.append('file_index', String(fileIndex));
+        fd.append('file_name', file.webkitRelativePath || file.name || `upload-${fileIndex}`);
+        fd.append('chunk_index', String(chunkIndex));
+        fd.append('total_chunks', String(totalChunks));
+        fd.append('chunk', blob, file.name || `chunk-${chunkIndex}`);
+
+        await _postChunkForm(`/search/${sessionId}/upload-images/chunk`, fd);
+        uploadedBytes += blob.size;
+        _setUploadProgress(
+          uploadedBytes,
+          totalBytes,
+          `Uploading ${fileIndex + 1}/${files.length}: ${file.name || 'image'} (${chunkIndex + 1}/${totalChunks})`
+        );
+      }
+    }
+
+    _setUploadProgress(totalBytes, totalBytes, 'Upload complete. Extracting ZIP / preparing images on server...');
+    document.getElementById('upload-progress-pct').textContent = '';
+    const finalizeFd = new FormData();
+    finalizeFd.append('upload_id', uploadId);
+    const data = await _postChunkForm(`/search/${sessionId}/upload-images/finalize`, finalizeFd);
+
+    wrapEl.style.display = 'none';
+    if (!data.image_count) {
+      showAlert('No images were found in the uploaded files. Make sure your ZIP contains JPG / PNG / WebP images in folders or subfolders.', 'No Images Found');
+      return null;
+    }
+
+    statusEl.innerHTML = `<span style="color:green;font-weight:600">✓ ${data.image_count} image${data.image_count !== 1 ? 's' : ''} ready</span>`;
+    _pendingFiles = null;
+    return data.folder_path;
+  } catch (err) {
+    await _cancelChunkedUpload(uploadId);
+    wrapEl.style.display = 'none';
+    showAlert(err?.message || 'Failed to upload images.', 'Upload Error');
+    return null;
+  }
+}
+
+function _uploadImagesLegacy() {
   return new Promise((resolve) => {
     if (!_pendingFiles || !_pendingFiles.length) { resolve(null); return; }
 
@@ -374,14 +483,15 @@ function _uploadImages() {
       wrapEl.style.display = 'none';
       if (xhr.status !== 200) {
         let msg = 'Failed to upload images.';
-        try { msg = JSON.parse(xhr.responseText).error || msg; } catch(_) {}
+        msg = _uploadJsonFromText(xhr.responseText, msg).error || msg;
         showAlert(msg, 'Upload Error');
         resolve(null);
         return;
       }
       let data;
       try { data = JSON.parse(xhr.responseText); } catch(_) {
-        showAlert('Unexpected server response.', 'Upload Error');
+        const parsed = _uploadJsonFromText(xhr.responseText, 'Unexpected server response.');
+        showAlert(parsed.error || 'Unexpected server response.', 'Upload Error');
         resolve(null);
         return;
       }
@@ -404,6 +514,14 @@ function _uploadImages() {
     xhr.open('POST', `/search/${sessionId}/upload-images`);
     xhr.send(formData);
   });
+}
+
+function _uploadImages() {
+  if (!_pendingFiles || !_pendingFiles.length) return Promise.resolve(null);
+  const files = Array.from(_pendingFiles);
+  const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+  const largeUpload = totalBytes > 20 * 1024 * 1024 || files.some(f => (f.size || 0) > 20 * 1024 * 1024);
+  return largeUpload ? _uploadImagesChunked(totalBytes) : _uploadImagesLegacy();
 }
 
 // ── SSE progress connection (shared by startSearch and auto-reconnect) ────────

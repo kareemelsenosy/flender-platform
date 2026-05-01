@@ -240,6 +240,68 @@ def test_upload_file_sanitizes_names_and_avoids_overwrite(
     assert files[0].filename == "unsafe name.csv"
 
 
+def test_chunked_local_image_upload_reassembles_zip_and_extracts_images(
+    client,
+    login_as,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+    db = test_app["database"].SessionLocal()
+    try:
+        sess = models.Session(
+            user_id=user["id"],
+            name="Chunked Local Upload",
+            source_type="excel_upload",
+            source_ref="chunked.xlsx",
+            status="mapping",
+        )
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+        session_id = sess.id
+    finally:
+        db.close()
+
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (18, 18), color=(40, 90, 180)).save(image_bytes, format="PNG")
+    zip_bytes = io.BytesIO()
+    with zipfile.ZipFile(zip_bytes, "w") as archive:
+        archive.writestr("nested/product.png", image_bytes.getvalue())
+        archive.writestr("ignore-me.txt", b"not an image")
+
+    payload = zip_bytes.getvalue()
+    upload_id = "chunkedtest01"
+    chunk_size = 19
+    chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+
+    for idx, chunk in enumerate(chunks):
+        response = client.post(
+            f"/search/{session_id}/upload-images/chunk",
+            data={
+                "upload_id": upload_id,
+                "file_index": "0",
+                "file_name": "images.zip",
+                "chunk_index": str(idx),
+                "total_chunks": str(len(chunks)),
+            },
+            files={"chunk": ("part.bin", chunk, "application/octet-stream")},
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+
+    finalize = client.post(
+        f"/search/{session_id}/upload-images/finalize",
+        data={"upload_id": upload_id},
+    )
+    assert finalize.status_code == 200
+    data = finalize.json()
+    assert data["image_count"] == 1
+    folder = Path(data["folder_path"])
+    assert folder.exists()
+    assert any(path.suffix.lower() == ".png" for path in folder.iterdir())
+
+
 def test_existing_searched_sessions_auto_approve_suggested_items_for_review_and_export(
     client,
     login_as,

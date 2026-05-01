@@ -12,7 +12,12 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+import re
+import shutil
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
@@ -966,6 +971,293 @@ async def upload_images_for_search(
 
 class _UploadTooLarge(Exception):
     """Raised internally when an upload exceeds the per-request size budget."""
+
+
+# ── Chunked image upload (avoids any single-request body-size limit) ─────────
+#
+# The plain /upload-images endpoint sends the whole ZIP/folder in one POST,
+# which any reverse proxy in the path (nginx, Cloudflare, etc.) can reject
+# with a 413 on its own size cap. Chunked upload slices each file client-side
+# into ~5 MB chunks so no single request gets near any cap. The server
+# reassembles on /finalize and runs the same extraction logic.
+
+_CHUNK_UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_CHUNK_UPLOAD_READ_SIZE = 4 * 1024 * 1024
+_MAX_UPLOAD_CHUNK_BYTES = 6 * 1024 * 1024
+
+
+def _chunked_upload_dir(uid: int, upload_id: str) -> Path:
+    return UPLOAD_DIR / f"user_{uid}" / "chunked_uploads" / upload_id
+
+
+def _process_uploaded_file(
+    tmp_path: str,
+    safe_name: str,
+    img_dir: Path,
+    extracted_bytes: int,
+    image_count: int,
+) -> tuple[int, int, JSONResponse | None, bool]:
+    """Process one spooled upload (image or ZIP) into img_dir.
+
+    Returns (new_image_count, new_extracted_bytes, error_response_or_None,
+    consumed). When `consumed` is True the caller must NOT unlink tmp_path
+    (it was moved into place)."""
+    ext = os.path.splitext(safe_name)[1].lower()
+    consumed = False
+    if ext == ".zip":
+        try:
+            with zipfile.ZipFile(tmp_path) as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    _zip_display, zip_safe_name = normalize_uploaded_name(info.filename, default="image")
+                    zext = os.path.splitext(zip_safe_name)[1].lower()
+                    if zext not in _IMAGE_EXTENSIONS:
+                        continue
+                    extracted_bytes += info.file_size
+                    if extracted_bytes > _MAX_IMAGE_UPLOAD:
+                        return image_count, extracted_bytes, JSONResponse(
+                            {"error": f"Extracted image size exceeds the "
+                                      f"{_MAX_IMAGE_UPLOAD // (1024 * 1024 * 1024)} GB ceiling."},
+                            status_code=413,
+                        ), consumed
+                    try:
+                        dest = unique_path(img_dir, zip_safe_name)
+                        with zf.open(info) as src, open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out, length=4 * 1024 * 1024)
+                        image_count += 1
+                    except OSError as exc:
+                        logger.error(f"Extract failed for {zip_safe_name}: {exc}")
+                        return image_count, extracted_bytes, JSONResponse(
+                            {"error": f"Disk filled up during extraction "
+                                      f"after {image_count} images. "
+                                      f"Free space on the server and retry."},
+                            status_code=507,
+                        ), consumed
+        except zipfile.BadZipFile:
+            logger.warning(f"Skipping bad ZIP: {safe_name}")
+    elif ext in _IMAGE_EXTENSIONS:
+        try:
+            dest = unique_path(img_dir, safe_name)
+            shutil.move(tmp_path, dest)
+            consumed = True
+            image_count += 1
+        except OSError as exc:
+            logger.error(f"Move failed for {safe_name}: {exc}")
+            return image_count, extracted_bytes, JSONResponse(
+                {"error": "Could not save the uploaded image."},
+                status_code=507,
+            ), consumed
+    return image_count, extracted_bytes, None, consumed
+
+
+@router.post("/search/{session_id}/upload-images/chunk")
+async def upload_images_chunk(
+    session_id: int,
+    request: Request,
+    upload_id: str = Form(...),
+    file_index: int = Form(...),
+    file_name: str = Form(...),
+    chunk_index: int = Form(...),
+    total_chunks: int = Form(...),
+    chunk: UploadFile = File(...),
+    db: DBSession = Depends(get_db),
+):
+    """Receive a single chunk of one file in a chunked upload."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    if not _CHUNK_UPLOAD_ID_RE.match(upload_id):
+        return JSONResponse({"error": "invalid upload id"}, status_code=400)
+    if file_index < 0 or chunk_index < 0 or total_chunks <= 0 or chunk_index >= total_chunks:
+        return JSONResponse({"error": "invalid chunk indices"}, status_code=400)
+
+    base = _chunked_upload_dir(uid, upload_id)
+    fdir = base / f"f{file_index:04d}"
+    fdir.mkdir(parents=True, exist_ok=True)
+
+    part_path = fdir / f"{chunk_index:06d}.part"
+    written = 0
+    try:
+        with open(part_path, "wb") as out:
+            while True:
+                data = await chunk.read(_CHUNK_UPLOAD_READ_SIZE)
+                if not data:
+                    break
+                written += len(data)
+                if written > _MAX_UPLOAD_CHUNK_BYTES:
+                    try:
+                        part_path.unlink()
+                    except OSError:
+                        pass
+                    return JSONResponse(
+                        {"error": "Upload chunk is too large. Please retry with a smaller chunk size."},
+                        status_code=413,
+                    )
+                out.write(data)
+    except OSError as exc:
+        logger.error(f"Chunk write failed ({upload_id} f{file_index} c{chunk_index}): {exc}")
+        return JSONResponse(
+            {"error": "Could not save chunk to disk (out of space?)."},
+            status_code=507,
+        )
+
+    # Record file metadata on the first chunk we see for this file.
+    meta_path = base / f"f{file_index:04d}.meta.json"
+    if not meta_path.exists():
+        _display, safe = normalize_uploaded_name(file_name, default="upload")
+        meta_path.write_text(json.dumps({
+            "name": safe,
+            "total_chunks": total_chunks,
+        }))
+
+    return JSONResponse({"ok": True})
+
+
+@router.post("/search/{session_id}/upload-images/finalize")
+async def upload_images_finalize(
+    session_id: int,
+    request: Request,
+    upload_id: str = Form(...),
+    db: DBSession = Depends(get_db),
+):
+    """Reassemble all chunks for `upload_id` and run the same extraction
+    pipeline as the legacy /upload-images endpoint."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    if not _CHUNK_UPLOAD_ID_RE.match(upload_id):
+        return JSONResponse({"error": "invalid upload id"}, status_code=400)
+
+    base = _chunked_upload_dir(uid, upload_id)
+    if not base.exists():
+        return JSONResponse({"error": "no chunks found for this upload"}, status_code=404)
+
+    img_dir = UPLOAD_DIR / f"user_{uid}" / f"session_{session_id}_images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    # Discover files in the upload from the *.meta.json sidecars.
+    file_metas: list[tuple[int, dict]] = []
+    for meta_file in sorted(base.glob("f*.meta.json")):
+        try:
+            file_index = int(meta_file.stem[1:5])
+        except ValueError:
+            continue
+        try:
+            file_metas.append((file_index, json.loads(meta_file.read_text())))
+        except (OSError, ValueError):
+            continue
+
+    if not file_metas:
+        shutil.rmtree(base, ignore_errors=True)
+        return JSONResponse({"error": "no files in this upload"}, status_code=400)
+
+    image_count = 0
+    total_bytes = 0
+    extracted_bytes = 0
+
+    try:
+        for file_index, info in file_metas:
+            safe_name = info.get("name") or "upload"
+            total_chunks = int(info.get("total_chunks") or 0)
+            fdir = base / f"f{file_index:04d}"
+            if total_chunks <= 0:
+                continue
+
+            # Reassemble chunks into a single temp file.
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False, dir=str(img_dir.parent), suffix=".upload"
+            )
+            tmp_path = tmp.name
+            try:
+                for ci in range(total_chunks):
+                    pp = fdir / f"{ci:06d}.part"
+                    if not pp.exists():
+                        return JSONResponse(
+                            {"error": f"missing chunk {ci} for {safe_name}; "
+                                      f"please re-upload."},
+                            status_code=400,
+                        )
+                    with open(pp, "rb") as r:
+                        while True:
+                            data = r.read(_CHUNK_UPLOAD_READ_SIZE)
+                            if not data:
+                                break
+                            total_bytes += len(data)
+                            if total_bytes > _MAX_IMAGE_UPLOAD:
+                                return JSONResponse(
+                                    {"error": f"Total upload exceeds the "
+                                              f"{_MAX_IMAGE_UPLOAD // (1024 * 1024 * 1024)} GB ceiling."},
+                                    status_code=413,
+                                )
+                            tmp.write(data)
+                    try:
+                        pp.unlink()
+                    except OSError:
+                        pass
+            finally:
+                tmp.close()
+
+            try:
+                image_count, extracted_bytes, err, consumed = _process_uploaded_file(
+                    tmp_path, safe_name, img_dir, extracted_bytes, image_count
+                )
+                if err is not None:
+                    return err
+            finally:
+                if not consumed and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+    if not image_count:
+        return JSONResponse({
+            "ok": True,
+            "folder_path": str(img_dir),
+            "image_count": 0,
+        })
+
+    logger.info(
+        f"Session {session_id}: chunked upload {upload_id} -> {image_count} images "
+        f"({total_bytes} received, {extracted_bytes} extracted) to {img_dir}"
+    )
+    return JSONResponse({
+        "ok": True,
+        "folder_path": str(img_dir),
+        "image_count": image_count,
+    })
+
+
+@router.post("/search/{session_id}/upload-images/cancel")
+async def upload_images_cancel(
+    session_id: int,
+    request: Request,
+    upload_id: str = Form(...),
+    db: DBSession = Depends(get_db),
+):
+    """Discard partial chunks for an aborted upload."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _CHUNK_UPLOAD_ID_RE.match(upload_id):
+        return JSONResponse({"error": "invalid upload id"}, status_code=400)
+    base = _chunked_upload_dir(uid, upload_id)
+    if base.exists():
+        shutil.rmtree(base, ignore_errors=True)
+    return JSONResponse({"ok": True})
 
 
 _CONTEXT_TEXT_EXTS = {".txt", ".md", ".csv", ".tsv", ".json", ".html", ".htm"}
