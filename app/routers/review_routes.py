@@ -25,6 +25,7 @@ from app.database import get_db
 from app.templates_config import templates
 from app.models import BrandSearchConfig, Session, UniqueItem
 from app.services.file_safety import normalize_folder_name
+from app.services.sap_code_backfill import backfill_sap_codes_for_session
 from app.services.ai_service import (
     ai_available,
     ai_build_search_queries,
@@ -823,6 +824,7 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
         return RedirectResponse("/", status_code=302)
 
     materialize_default_review_approvals(db, session_id)
+    backfill_sap_codes_for_session(db, sess, uid)
 
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
@@ -879,7 +881,7 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
     for item in items:
         safe_code = item.item_code.replace("/", "_").replace("\\", "_")
         color = (item.color_code or "").replace("/", "_").replace("\\", "_")
-        folder_name = normalize_folder_name(item.item_group, default=safe_code)
+        folder_name = normalize_folder_name(item.sap_code or item.item_group, default=safe_code)
         if item.approved_url:
             download_tasks.append((item.approved_url, folder_name, safe_code, color, "1"))
         for i, extra_url in enumerate(item.additional_urls):

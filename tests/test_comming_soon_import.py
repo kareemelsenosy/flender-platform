@@ -58,6 +58,7 @@ def test_google_sheets_import_persists_comming_soon_qty(test_app, make_user, mon
     try:
         item = db.query(test_app["models"].UniqueItem).filter_by(session_id=result["session_id"]).one()
         assert item.comming_soon_qty == "3"
+        assert item.sap_code == "SAP-001"
     finally:
         db.close()
 

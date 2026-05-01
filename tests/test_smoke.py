@@ -40,7 +40,8 @@ def test_saved_image_folder_names_use_spaces_but_file_names_keep_underscores(tmp
         str(images_root),
         {
             "item_code": "ACL-253-SC-447-001",
-            "item_group": "ACL_A_ACL-253-SC-447-001_Black",
+            "item_group": "ACCS",
+            "sap_code": "ACL_A_ACL-253-SC-447-001_Black",
         },
     )
 
@@ -286,7 +287,8 @@ def test_review_image_download_groups_images_by_normalized_item_group_folder(
         item = models.UniqueItem(
             session_id=sess.id,
             item_code="ACL-253-SC-447-001",
-            item_group="ACL_A_ACL-253-SC-447-001_Black",
+            item_group="ACCS",
+            sap_code="ACL_A_ACL-253-SC-447-001_Black",
             approved_url=f"file://{local_image_path.resolve()}",
             review_status="approved",
             search_status="done",

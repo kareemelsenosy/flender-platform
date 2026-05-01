@@ -144,6 +144,7 @@ def test_google_sheet_import_persists_selected_tab_order_and_source_sheet(
         )
         assert sess.config["selected_sheet_tabs"] == ["Tab A", "Tab B"]
         assert [item.source_sheet for item in items] == ["Tab A", "Tab B"]
+        assert [item.sap_code for item in items] == ["SAP-A", "SAP-B"]
     finally:
         db.close()
 
@@ -216,8 +217,76 @@ def test_google_sheet_import_deduplicates_across_tabs_by_source_sheet(
         assert len(items) == 2
         source_sheets = {item.source_sheet for item in items}
         assert source_sheets == {"Spring", "Summer"}
+        assert {item.sap_code for item in items} == {"SAP-001"}
         # color_codes must differ so the unique constraint isn't violated
         assert items[0].color_code != items[1].color_code
+    finally:
+        db.close()
+
+
+def test_backfill_sap_code_repairs_existing_google_sheet_sessions(
+    make_user,
+    test_app,
+    monkeypatch,
+    tmp_path,
+):
+    user = make_user()
+    models = test_app["models"]
+    backfill = importlib.import_module("app.services.sap_code_backfill")
+
+    class FakeSheetsReader:
+        def __init__(self, _cred_path):
+            pass
+
+        def fetch_spreadsheet(self, _spreadsheet_id):
+            return {"tabs": [{"title": "ReOrder_Dubai"}]}
+
+        def extract_items_from_tab(self, _tab):
+            return [{
+                "item_code": "ACL-253-SC-447-001",
+                "size": "M",
+                "color_name": "Black",
+                "sap_code": "ACL_A_ACL-253-SC-447-001_Black",
+            }]
+
+    cred_path = tmp_path / "google.json"
+    cred_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(backfill, "_credentials_path", lambda _uid: str(cred_path))
+    monkeypatch.setattr(backfill, "SheetsReader", FakeSheetsReader)
+    monkeypatch.setattr(backfill, "extract_spreadsheet_id", lambda _url: "sheet-123")
+
+    db = test_app["database"].SessionLocal()
+    try:
+        sess = models.Session(
+            user_id=user["id"],
+            name="Existing Google Session",
+            source_type="google_sheets",
+            source_ref="https://docs.google.com/spreadsheets/d/sheet-123/edit",
+            status="reviewing",
+        )
+        sess.config = {"selected_sheet_tabs": ["ReOrder_Dubai"]}
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+
+        item = models.UniqueItem(
+            session_id=sess.id,
+            item_code="ACL-253-SC-447-001",
+            color_name="Black",
+            color_code="Black|M|ReOrder_Dubai",
+            item_group="ACCS",
+            source_sheet="ReOrder_Dubai",
+            review_status="approved",
+            search_status="done",
+        )
+        item.sizes = ["M"]
+        db.add(item)
+        db.commit()
+
+        updated = backfill.backfill_sap_codes_for_session(db, sess, user["id"])
+        db.refresh(item)
+        assert updated == 1
+        assert item.sap_code == "ACL_A_ACL-253-SC-447-001_Black"
     finally:
         db.close()
 

@@ -701,12 +701,13 @@ class OrderSheetGenerator:
         candidate ordering.
         """
         item_code = str(item.get("item_code") or "unknown").strip() or "unknown"
-        item_group = str(item.get("item_group") or "").strip()
+        folder_code = str(item.get("sap_code") or item.get("item_group") or "").strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
 
-        # Folder names follow the Item Group code/classification and use
-        # single spaces. Image file names keep underscores: ITEMCODE_01.jpg.
-        folder_name = normalize_folder_name(item_group, default=safe_code)
+        # Folder names follow the SAP ItemCode / item group code when
+        # available, and use single spaces. Image file names keep underscores:
+        # ITEMCODE_01.jpg.
+        folder_name = normalize_folder_name(folder_code, default=safe_code)
 
         folder_path = os.path.join(base_images_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)

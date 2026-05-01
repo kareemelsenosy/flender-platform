@@ -22,6 +22,7 @@ from app.database import get_db
 from app.templates_config import templates
 from app.models import GeneratedFile, Session, UniqueItem
 from app.services.review_defaults import materialize_default_review_approvals
+from app.services.sap_code_backfill import backfill_sap_codes_for_session
 
 router = APIRouter()
 
@@ -82,6 +83,7 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
 
     materialize_default_review_approvals(db, session_id)
     _materialize_google_sheet_conversion_approvals(db, sess)
+    backfill_sap_codes_for_session(db, sess, uid)
 
     # Count approved items
     approved_count = db.query(UniqueItem).filter(
@@ -268,6 +270,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
 
     materialize_default_review_approvals(db, session_id)
     _materialize_google_sheet_conversion_approvals(db, sess)
+    backfill_sap_codes_for_session(db, sess, uid)
 
     # Already exporting?
     with _progress_lock:
@@ -320,6 +323,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "brand": item.brand or "",
                 "barcode": item.barcode or "",
                 "item_group": item.item_group or "",
+                "sap_code": item.sap_code or "",
                 "source_sheet": item.source_sheet or "",
                 "comming_soon_qty": item.comming_soon_qty if item.comming_soon_qty is not None else "",
             })
