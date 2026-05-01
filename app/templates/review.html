@@ -124,18 +124,31 @@
   }
 
   /* Checkbox + drag-reorder for candidate cards */
-  .image-card { transition: transform .12s ease, box-shadow .12s ease; }
+  .image-card { transition: transform .28s cubic-bezier(.2,.8,.2,1), box-shadow .15s ease, opacity .15s ease; }
   .image-card[draggable="true"] { cursor: grab; }
-  .image-card.dragging { opacity: 0.5; cursor: grabbing; }
-  .image-card.drop-target { outline: 3px dashed var(--primary); outline-offset: -3px; }
+  .image-card.dragging {
+    opacity: 0.6;
+    cursor: grabbing;
+    transform: scale(0.94);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+    z-index: 20;
+  }
+  .image-card.drop-target {
+    outline: 3px dashed var(--primary);
+    outline-offset: -3px;
+  }
 
+  /* Big centred checkbox over the candidate. Sits ABOVE the image (top
+     row of badges), centred between the rank badge (left) and the
+     confidence pill (right). */
   .image-card .card-checkbox {
     position: absolute;
-    top: 4px;
-    right: 28px;
-    width: 22px;
-    height: 22px;
-    z-index: 5;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 28px;
+    height: 28px;
+    z-index: 6;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -143,21 +156,27 @@
   }
   .image-card .card-checkbox-input {
     position: absolute;
-    opacity: 0;
+    inset: 0;
     width: 100%;
     height: 100%;
     margin: 0;
+    opacity: 0;
     cursor: pointer;
   }
   .image-card .card-checkbox-box {
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
     border: 2px solid #fff;
-    background: rgba(0,0,0,0.45);
-    border-radius: 4px;
-    box-shadow: 0 0 0 1px rgba(0,0,0,0.25);
-    transition: background .15s ease, border-color .15s ease;
+    background: rgba(0,0,0,0.55);
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 1px 3px rgba(0,0,0,0.3);
+    transition: background .18s ease, border-color .18s ease, transform .18s ease;
     pointer-events: none;
+    position: relative;
+  }
+  .image-card .card-checkbox:hover .card-checkbox-box {
+    border-color: var(--primary);
+    transform: scale(1.05);
   }
   .image-card .card-checkbox-input:checked + .card-checkbox-box {
     background: var(--primary);
@@ -165,30 +184,44 @@
   }
   .image-card .card-checkbox-input:checked + .card-checkbox-box::after {
     content: "";
-    display: block;
-    width: 5px;
-    height: 9px;
+    position: absolute;
+    left: 6px;
+    top: 2px;
+    width: 6px;
+    height: 11px;
     border: solid #fff;
-    border-width: 0 2px 2px 0;
+    border-width: 0 2.5px 2.5px 0;
     transform: rotate(45deg);
-    margin: 1px auto 0;
   }
 
-  .image-card .export-badge {
-    position: absolute;
-    bottom: 4px;
-    right: 4px;
-    background: rgba(0,0,0,0.7);
-    color: #fff;
-    font-size: 0.62rem;
-    font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 10px;
-    pointer-events: none;
-    letter-spacing: 0.4px;
+  /* Top-left rank badge — repurposed to show export order (1=_01,
+     2=_02, …) only for CHECKED cards. Unchecked cards get a dimmed
+     "—" placeholder. */
+  .image-card .card-num {
+    transition: background-color .2s ease, color .2s ease, transform .2s ease;
   }
-  .image-card .export-badge-primary {
+  .image-card.is-selected .card-num {
     background: var(--primary);
+    color: #fff;
+    font-size: 0.72rem;
+    width: 22px;
+    height: 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  .image-card.is-extra .card-num {
+    background: rgba(99, 102, 241, 0.85);
+    color: #fff;
+  }
+  .image-card.is-unselected .card-num {
+    background: rgba(0,0,0,0.35);
+    color: rgba(255,255,255,0.7);
+  }
+
+  /* Smaller bottom rank label is no longer needed — top-left already
+     shows the export rank — but we keep the styles in case a future
+     view wants to re-enable it. */
+  .image-card .export-badge {
+    display: none;
   }
 
   .image-card .match-reason {
@@ -864,48 +897,55 @@ function renderMain(key) {
       <span style="font-size:0.7rem;font-weight:400;color:var(--gray-400);margin-left:8px">Tick the box to include · Drag to reorder · Top-left card becomes _01</span>
     </h4>
     <div class="image-grid mb-4" id="candidates-grid">
-      ${candidates.map((url, i) => {
-        const sc = scores[url] || 0;
-        const conf = getConfidenceLabel(sc);
+      ${(() => {
+        // Order candidates so checked ones appear first (in export order),
+        // unchecked ones after. This makes the top-left of the grid the
+        // _01 highlight and matches "top-left card becomes _01".
         const extras = entry.additional_urls || [];
-        // A card is "selected for export" if it is the primary OR appears
-        // in additional_urls. The first checked card (visually) is _01.
-        const isPrimary = url === selectedUrl;
-        const isExtra = extras.indexOf(url) >= 0;
-        const isChecked = isPrimary || isExtra;
-        // Position in the export list: 1-based (_01 = primary, _02 = first extra, ...)
-        let exportPos = 0;
-        if (isPrimary) exportPos = 1;
-        else if (isExtra) exportPos = extras.indexOf(url) + 2;
-        const reasonText = (entry.match_reasons || {})[url] || '';
-        const eager = i < 6;
-        const cardImage = isLocalFile(url)
-          ? localFileImage(url, {
-              alt: `Candidate ${i + 1}`,
-              placeholderClass: 'candidate-local',
-              imgClass: eager ? '' : 'lazy-candidate',
-              lazy: !eager,
-            })
-          : eager
-            ? `<img src="${escapeAttr(proxyUrl(url))}" alt="" onerror="this.closest('.image-card').style.display='none'">`
-            : `<img data-src="${escapeAttr(proxyUrl(url))}" alt="" class="lazy-candidate" style="opacity:0;transition:opacity .2s" onerror="this.closest('.image-card').style.display='none'">`;
-        const lensHref = !isLocalFile(url) ? `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(url)}` : '';
-        return `
-        <div class="image-card ${isPrimary ? 'selected' : ''} ${(!isPrimary && isExtra) ? 'extra-selected' : ''}"
-             data-key="${escapeAttr(key)}" data-id="${entry.id}" data-url="${escapeAttr(url)}"
-             data-pos="${i}" draggable="true">
-          ${cardImage}
-          <label class="card-checkbox" title="Include in exported folder" onclick="event.stopPropagation()">
-            <input type="checkbox" class="card-checkbox-input" ${isChecked ? 'checked' : ''}>
-            <span class="card-checkbox-box" aria-hidden="true"></span>
-          </label>
-          <div class="score ${conf.cls}">${conf.label}</div>
-          <div class="card-num">${i+1}</div>
-          ${reasonText ? `<div class="match-reason" title="${escapeAttr(reasonText)}">${escapeAttr(reasonText)}</div>` : ''}
-          ${exportPos ? `<div class="export-badge ${exportPos === 1 ? 'export-badge-primary' : ''}">_${String(exportPos).padStart(2, '0')}</div>` : ''}
-          ${lensHref ? `<a href="${escapeAttr(lensHref)}" target="_blank" rel="noopener noreferrer" class="card-find-btn" title="Find this image on Google Lens" onclick="event.stopPropagation()">🔍</a>` : ''}
-        </div>`;
-      }).join('')}
+        const exportOrder = [];
+        if (selectedUrl) exportOrder.push(selectedUrl);
+        for (const u of extras) if (!exportOrder.includes(u)) exportOrder.push(u);
+        const remaining = candidates.filter(u => !exportOrder.includes(u));
+        const ordered = [...exportOrder, ...remaining];
+
+        return ordered.map((url, i) => {
+          const sc = scores[url] || 0;
+          const conf = getConfidenceLabel(sc);
+          const isPrimary = url === selectedUrl;
+          const isExtra = !isPrimary && extras.indexOf(url) >= 0;
+          const isChecked = isPrimary || isExtra;
+          // Export rank: 1 = _01, 2 = _02, … only for checked cards.
+          const exportRank = isChecked ? i + 1 : 0;
+          const reasonText = (entry.match_reasons || {})[url] || '';
+          const eager = i < 6;
+          const cardImage = isLocalFile(url)
+            ? localFileImage(url, {
+                alt: `Candidate ${i + 1}`,
+                placeholderClass: 'candidate-local',
+                imgClass: eager ? '' : 'lazy-candidate',
+                lazy: !eager,
+              })
+            : eager
+              ? `<img src="${escapeAttr(proxyUrl(url))}" alt="" draggable="false" onerror="this.closest('.image-card').style.display='none'">`
+              : `<img data-src="${escapeAttr(proxyUrl(url))}" alt="" draggable="false" class="lazy-candidate" style="opacity:0;transition:opacity .2s" onerror="this.closest('.image-card').style.display='none'">`;
+          const lensHref = !isLocalFile(url) ? `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(url)}` : '';
+          const stateClass = isPrimary ? 'is-selected selected' : (isExtra ? 'is-extra extra-selected' : 'is-unselected');
+          return `
+          <div class="image-card ${stateClass}"
+               data-key="${escapeAttr(key)}" data-id="${entry.id}" data-url="${escapeAttr(url)}"
+               draggable="true">
+            ${cardImage}
+            <label class="card-checkbox" title="${isChecked ? 'Remove from export folder' : 'Include in export folder'}">
+              <input type="checkbox" class="card-checkbox-input" ${isChecked ? 'checked' : ''}>
+              <span class="card-checkbox-box" aria-hidden="true"></span>
+            </label>
+            <div class="score ${conf.cls}">${conf.label}</div>
+            <div class="card-num">${exportRank ? exportRank : '·'}</div>
+            ${reasonText ? `<div class="match-reason" title="${escapeAttr(reasonText)}">${escapeAttr(reasonText)}</div>` : ''}
+            ${lensHref ? `<a href="${escapeAttr(lensHref)}" target="_blank" rel="noopener noreferrer" class="card-find-btn" title="Find this image on Google Lens" onclick="event.stopPropagation()">🔍</a>` : ''}
+          </div>`;
+        }).join('');
+      })()}
     </div>
 
     <button class="no-image-btn" id="mark-no-image-btn">
@@ -1115,6 +1155,7 @@ async function _persistExportSelection(key, itemId, primary, extras) {
 async function toggleExportInclusion(key, itemId, url, checked) {
   const entry = state[key];
   if (!entry) return;
+  const snapshot = _gridSnapshotByUrl();
   const primary = entry.approved_url || '';
   const extras = [...(entry.additional_urls || [])];
   const isPrimary = url === primary;
@@ -1152,20 +1193,65 @@ async function toggleExportInclusion(key, itemId, url, checked) {
   }
 
   const ok = await _persistExportSelection(key, itemId, newPrimary, newExtras);
-  if (ok) { renderMain(key); updateSidebar(); }
+  if (ok) {
+    renderMain(key);
+    updateSidebar();
+    _animateGridFromSnapshot(snapshot);
+  }
+}
+
+// FLIP animation: snapshot card positions BY URL (so we can match across
+// re-renders), animate the new DOM nodes from the old positions to where
+// they are now.
+function _gridSnapshotByUrl() {
+  const grid = document.getElementById('candidates-grid');
+  const map = new Map();
+  if (!grid) return map;
+  for (const child of grid.children) {
+    const url = child.dataset && child.dataset.url;
+    if (url) map.set(url, child.getBoundingClientRect());
+  }
+  return map;
+}
+
+function _animateGridFromSnapshot(snapshot) {
+  const grid = document.getElementById('candidates-grid');
+  if (!grid || !snapshot.size) return;
+  for (const child of grid.children) {
+    const url = child.dataset && child.dataset.url;
+    if (!url) continue;
+    const before = snapshot.get(url);
+    if (!before) continue;
+    const after = child.getBoundingClientRect();
+    const dx = before.left - after.left;
+    const dy = before.top - after.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    child.style.transition = 'none';
+    child.style.transform = `translate(${dx}px, ${dy}px)`;
+    void child.offsetWidth;
+    child.style.transition = 'transform .35s cubic-bezier(.2,.8,.2,1)';
+    child.style.transform = '';
+  }
+  setTimeout(() => {
+    for (const child of grid.children) {
+      child.style.transition = '';
+      child.style.transform = '';
+    }
+  }, 420);
 }
 
 async function reorderCards(key, itemId, srcUrl, targetUrl) {
   const entry = state[key];
   if (!entry || srcUrl === targetUrl) return;
 
-  // Build the current ordered export list: [primary, ...extras]
+  const snapshot = _gridSnapshotByUrl();
+
+  // Build the existing ordered export list: [primary, ...extras]
   const orderedSelected = [];
   if (entry.approved_url) orderedSelected.push(entry.approved_url);
   for (const u of (entry.additional_urls || [])) orderedSelected.push(u);
 
-  // If neither URL is currently checked, treat the drag as "include both
-  // and put srcUrl in front of targetUrl".
+  // Drag implicitly includes both src and target if not already selected.
   const ensureIn = (u) => { if (!orderedSelected.includes(u)) orderedSelected.push(u); };
   ensureIn(srcUrl); ensureIn(targetUrl);
 
@@ -1174,7 +1260,6 @@ async function reorderCards(key, itemId, srcUrl, targetUrl) {
     return;
   }
 
-  // Move srcUrl to the position of targetUrl; targetUrl shifts right.
   const without = orderedSelected.filter(u => u !== srcUrl);
   const targetIdx = without.indexOf(targetUrl);
   const inserted = [...without.slice(0, targetIdx), srcUrl, ...without.slice(targetIdx)];
@@ -1183,7 +1268,11 @@ async function reorderCards(key, itemId, srcUrl, targetUrl) {
   const newExtras = inserted.slice(1);
 
   const ok = await _persistExportSelection(key, itemId, newPrimary, newExtras);
-  if (ok) { renderMain(key); updateSidebar(); }
+  if (ok) {
+    renderMain(key);
+    updateSidebar();
+    _animateGridFromSnapshot(snapshot);
+  }
 }
 
 function showResearchPanel(key, itemId) {
@@ -1299,23 +1388,29 @@ async function startDownloadImages() {
 // Delegated handlers for image-cards.
 //   • Click on card body  → make this the primary (_01)
 //   • Click on checkbox   → toggle inclusion in the exported folder
+//                           (handled below as a `change` event so it
+//                           fires whether you click the input, the
+//                           label, or the visible square)
 //   • Drag a card         → drop on another to reorder; new top-left is _01
 document.getElementById('review-main').addEventListener('click', e => {
   const card = e.target.closest('.image-card[data-url]');
   if (!card) return;
-
-  // Checkbox toggles inclusion without changing primary
-  const checkbox = e.target.closest('.card-checkbox-input');
-  if (checkbox) {
-    e.stopPropagation();
-    toggleExportInclusion(card.dataset.key, parseInt(card.dataset.id), card.dataset.url, checkbox.checked);
-    return;
-  }
-  if (e.target.closest('.card-checkbox')) {
-    return;  // label click — let the checkbox event handle it
-  }
-
+  // Don't treat clicks inside the checkbox region as "approve as primary".
+  if (e.target.closest('.card-checkbox')) return;
+  if (e.target.closest('.card-find-btn')) return;
   approveUrl(card.dataset.key, parseInt(card.dataset.id), card.dataset.url);
+});
+
+// `change` fires on the input regardless of whether the user clicked the
+// label, the styled box, or the input directly — much more reliable than
+// a click handler on a visually-hidden input.
+document.getElementById('review-main').addEventListener('change', e => {
+  const checkbox = e.target.closest('.card-checkbox-input');
+  if (!checkbox) return;
+  const card = e.target.closest('.image-card[data-url]');
+  if (!card) return;
+  e.stopPropagation();
+  toggleExportInclusion(card.dataset.key, parseInt(card.dataset.id), card.dataset.url, checkbox.checked);
 });
 
 // ── Drag and drop reorder ────────────────────────────────────────────────────
