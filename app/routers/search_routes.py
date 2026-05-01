@@ -36,7 +36,10 @@ from app.templates_config import templates
 from app.models import BrandSearchConfig, SearchCache, Session, UniqueItem
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
-_MAX_IMAGE_UPLOAD = 1024 * 1024 * 1024  # 1 GB total
+# Per-request cap. The actual disk-budget check below verifies free space
+# before accepting; this constant just defends against pathological inputs.
+# Deliberately generous (10 GB) — brand image dumps can be multi-GB.
+_MAX_IMAGE_UPLOAD = 10 * 1024 * 1024 * 1024  # 10 GB
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -824,16 +827,30 @@ async def upload_images_for_search(
     total_bytes = 0
     extracted_bytes = 0
 
-    # Stream every upload to a temp file on disk in 4 MB chunks so a 600 MB
+    # Stream every upload to a temp file on disk in 4 MB chunks so a multi-GB
     # ZIP doesn't have to fit in RAM. ZIPs are then opened from the file
     # handle and entries are streamed out the same way.
     import tempfile
     import shutil
     _CHUNK = 4 * 1024 * 1024
 
-    async def _spool_to_disk(upload: UploadFile, remaining: int) -> tuple[str, int]:
-        """Write the upload to a NamedTemporaryFile, enforcing remaining-bytes
-        budget. Returns (path, written_bytes). Caller must unlink the path."""
+    def _free_bytes(path) -> int:
+        try:
+            return shutil.disk_usage(str(path)).free
+        except Exception:
+            return 0
+
+    def _human(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    async def _spool_to_disk(upload, remaining: int) -> tuple[str, int]:
+        """Stream the upload to a NamedTemporaryFile, enforcing the
+        remaining-bytes budget. Returns (path, written_bytes). Caller must
+        unlink the path."""
         tmp = tempfile.NamedTemporaryFile(delete=False, dir=str(img_dir.parent), suffix=".upload")
         written = 0
         try:
@@ -844,12 +861,25 @@ async def upload_images_for_search(
                 written += len(chunk)
                 if written > remaining:
                     tmp.close()
-                    os.unlink(tmp.name)
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
                     raise _UploadTooLarge()
                 tmp.write(chunk)
         finally:
             tmp.close()
         return tmp.name, written
+
+    # Refuse upfront if disk doesn't have enough headroom — better than
+    # crashing halfway through and leaving partial data.
+    free = _free_bytes(img_dir)
+    if free and free < 200 * 1024 * 1024:  # need at least 200 MB free
+        return JSONResponse(
+            {"error": f"Server is low on disk space ({_human(free)} free). "
+                      f"Free up space and try again."},
+            status_code=507,
+        )
 
     for upload in files:
         _display_name, safe_name = normalize_uploaded_name(upload.filename or "image", default="image")
@@ -858,7 +888,18 @@ async def upload_images_for_search(
         try:
             tmp_path, written = await _spool_to_disk(upload, _MAX_IMAGE_UPLOAD - total_bytes)
         except _UploadTooLarge:
-            return JSONResponse({"error": "Total upload size exceeds 1 GB limit"}, status_code=413)
+            return JSONResponse(
+                {"error": f"Total upload exceeds the {_human(_MAX_IMAGE_UPLOAD)} ceiling. "
+                          f"Split the folder into smaller batches."},
+                status_code=413,
+            )
+        except OSError as exc:
+            logger.error(f"Spool-to-disk failed for {safe_name}: {exc}")
+            return JSONResponse(
+                {"error": "Could not save the upload to disk (out of space?). "
+                          "Free up space on the server and try again."},
+                status_code=507,
+            )
 
         total_bytes += written
 
@@ -875,18 +916,39 @@ async def upload_images_for_search(
                                 continue
                             extracted_bytes += info.file_size
                             if extracted_bytes > _MAX_IMAGE_UPLOAD:
-                                return JSONResponse({"error": "Extracted image size exceeds 1 GB limit"}, status_code=413)
-                            dest = unique_path(img_dir, zip_safe_name)
-                            with zf.open(info) as src, open(dest, "wb") as out:
-                                shutil.copyfileobj(src, out, length=_CHUNK)
-                            image_count += 1
+                                return JSONResponse(
+                                    {"error": f"Extracted image size exceeds the "
+                                              f"{_human(_MAX_IMAGE_UPLOAD)} ceiling."},
+                                    status_code=413,
+                                )
+                            try:
+                                dest = unique_path(img_dir, zip_safe_name)
+                                with zf.open(info) as src, open(dest, "wb") as out:
+                                    shutil.copyfileobj(src, out, length=_CHUNK)
+                                image_count += 1
+                            except OSError as exc:
+                                # Out of space mid-extract — stop cleanly.
+                                logger.error(f"Extract failed for {zip_safe_name}: {exc}")
+                                return JSONResponse(
+                                    {"error": f"Disk filled up during extraction "
+                                              f"after {image_count} images. "
+                                              f"Free space on the server and retry."},
+                                    status_code=507,
+                                )
                 except zipfile.BadZipFile:
                     logger.warning(f"Skipping bad ZIP: {safe_name}")
             elif ext in _IMAGE_EXTENSIONS:
-                dest = unique_path(img_dir, safe_name)
-                shutil.move(tmp_path, dest)
-                tmp_path = ""  # consumed
-                image_count += 1
+                try:
+                    dest = unique_path(img_dir, safe_name)
+                    shutil.move(tmp_path, dest)
+                    tmp_path = ""  # consumed
+                    image_count += 1
+                except OSError as exc:
+                    logger.error(f"Move failed for {safe_name}: {exc}")
+                    return JSONResponse(
+                        {"error": "Could not save the uploaded image."},
+                        status_code=507,
+                    )
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:
@@ -894,7 +956,11 @@ async def upload_images_for_search(
                 except OSError:
                     pass
 
-    logger.info(f"Session {session_id}: uploaded {image_count} images to {img_dir}")
+    logger.info(
+        f"Session {session_id}: uploaded {image_count} images "
+        f"({_human(total_bytes)} received, {_human(extracted_bytes)} extracted) "
+        f"to {img_dir}"
+    )
     return JSONResponse({"ok": True, "folder_path": str(img_dir), "image_count": image_count})
 
 
