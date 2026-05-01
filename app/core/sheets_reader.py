@@ -193,6 +193,7 @@ class SheetsReader:
         last_gender = ""
         last_barcode = ""
         last_item_group = ""
+        last_item_group_code = ""
         last_wholesale_price = ""
         last_retail_price = ""
         last_image_url = ""
@@ -234,6 +235,12 @@ class SheetsReader:
                 last_gender = get_val("Gender")
                 last_barcode = get_val("Barcode")
                 last_item_group = get_val("Item Group")
+                last_item_group_code = get_val(
+                    "Item Group Code",
+                    "ItemGroupCode",
+                    "Item GroupCode",
+                    "ItemGroup Code",
+                )
                 last_wholesale_price = get_val("WHS Price")
                 last_retail_price = get_val("RRP Price")
                 last_image_url = image_url or last_image_url
@@ -260,6 +267,7 @@ class SheetsReader:
                 "gender": last_gender,
                 "barcode": row_barcode,
                 "item_group": last_item_group,
+                "item_group_code": last_item_group_code,
                 "wholesale_price": last_wholesale_price,
                 "retail_price": last_retail_price,
                 "qty_available": row_stock,

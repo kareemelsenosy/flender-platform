@@ -323,6 +323,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "brand": item.brand or "",
                 "barcode": item.barcode or "",
                 "item_group": item.item_group or "",
+                "item_group_code": item.item_group_code or "",
                 "sap_code": item.sap_code or "",
                 "source_sheet": item.source_sheet or "",
                 "comming_soon_qty": item.comming_soon_qty if item.comming_soon_qty is not None else "",

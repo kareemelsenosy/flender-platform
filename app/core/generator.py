@@ -692,21 +692,23 @@ class OrderSheetGenerator:
         Save full-resolution image to folder.
 
         Naming convention for the B2B importer:
-          • Folder name  = Item Group, verbatim (e.g. "BUT BA BG264943 Black")
-          • Highlight    = {item_code}_01.jpg     ← shown to customers
-          • Additional   = {item_code}_02.jpg, _03.jpg, …
+          • Folder name  = Item Group Code, with underscores converted to spaces
+          • Highlight    = {item_code}_01.jpg
+          • Additional   = {item_code}_02.jpg, _03.jpg, ...
 
         The first image saved for an item is always _01 so the customer-
         facing highlight image is deterministic regardless of colour code or
         candidate ordering.
         """
         item_code = str(item.get("item_code") or "unknown").strip() or "unknown"
-        folder_code = str(item.get("sap_code") or item.get("item_group") or "").strip()
+        folder_code = str(
+            item.get("item_group_code") or item.get("sap_code") or item.get("item_group") or ""
+        ).strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
 
-        # Folder names follow the SAP ItemCode / item group code when
-        # available, and use single spaces. Image file names keep underscores:
-        # ITEMCODE_01.jpg.
+        # Folder names follow Excel/Google "Item Group Code" first, then
+        # SAP ItemCode, and use single spaces. Image file names keep
+        # underscores: ITEMCODE_01.jpg.
         folder_name = normalize_folder_name(folder_code, default=safe_code)
 
         folder_path = os.path.join(base_images_dir, folder_name)

@@ -65,9 +65,13 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
         "item group", "group", "category", "product group",
         "department", "class", "sub category", "subcategory",
     ],
+    "item_group_code": [
+        "item group code", "itemgroupcode", "group code",
+        "product group code", "folder group code", "image folder code",
+    ],
     "sap_code": [
         "itemcode", "item code sap", "sap code", "sap item code",
-        "item group code", "folder code", "image folder", "b2b itemcode",
+        "folder code", "image folder", "b2b itemcode",
     ],
 }
 
@@ -279,6 +283,7 @@ class FileParser:
                     "gender": row.get("gender"),
                     "barcode": row.get("barcode"),
                     "item_group": row.get("item_group"),
+                    "item_group_code": row.get("item_group_code"),
                     "sap_code": row.get("sap_code"),
                     "pictures_url": row.get("pictures_url"),
                     "sizes": [],

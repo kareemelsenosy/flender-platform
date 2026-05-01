@@ -881,7 +881,10 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
     for item in items:
         safe_code = item.item_code.replace("/", "_").replace("\\", "_")
         color = (item.color_code or "").replace("/", "_").replace("\\", "_")
-        folder_name = normalize_folder_name(item.sap_code or item.item_group, default=safe_code)
+        folder_name = normalize_folder_name(
+            item.item_group_code or item.sap_code or item.item_group,
+            default=safe_code,
+        )
         if item.approved_url:
             download_tasks.append((item.approved_url, folder_name, safe_code, color, "1"))
         for i, extra_url in enumerate(item.additional_urls):

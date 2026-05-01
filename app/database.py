@@ -69,6 +69,10 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN item_group VARCHAR(500)"
                 ))
+            if "item_group_code" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN item_group_code VARCHAR(500)"
+                ))
             if "sap_code" not in cols:
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN sap_code VARCHAR(500)"

@@ -101,6 +101,7 @@ class UniqueItem(Base):
     qty_available = Column(Float)
     barcode = Column(String(255))
     item_group = Column(String(500))
+    item_group_code = Column(String(500))
     sap_code = Column(String(500))
     source_sheet = Column(String(255))
 
@@ -184,6 +185,7 @@ class UniqueItem(Base):
             "qty_available": self.qty_available,
             "barcode": self.barcode,
             "item_group": self.item_group,
+            "item_group_code": self.item_group_code,
             "sap_code": self.sap_code,
             "source_sheet": self.source_sheet,
             "comming_soon_qty": self.comming_soon_qty,

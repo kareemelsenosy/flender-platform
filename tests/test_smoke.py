@@ -41,7 +41,8 @@ def test_saved_image_folder_names_use_spaces_but_file_names_keep_underscores(tmp
         {
             "item_code": "ACL-253-SC-447-001",
             "item_group": "ACCS",
-            "sap_code": "ACL_A_ACL-253-SC-447-001_Black",
+            "item_group_code": "ACL_A_ACL-253-SC-447-001_Black",
+            "sap_code": "ACL253SC447001",
         },
     )
 
@@ -288,7 +289,8 @@ def test_review_image_download_groups_images_by_normalized_item_group_folder(
             session_id=sess.id,
             item_code="ACL-253-SC-447-001",
             item_group="ACCS",
-            sap_code="ACL_A_ACL-253-SC-447-001_Black",
+            item_group_code="ACL_A_ACL-253-SC-447-001_Black",
+            sap_code="ACL253SC447001",
             approved_url=f"file://{local_image_path.resolve()}",
             review_status="approved",
             search_status="done",

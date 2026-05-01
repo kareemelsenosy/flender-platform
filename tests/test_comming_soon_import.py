@@ -24,6 +24,7 @@ class _FakeSheetsReader:
                 "gender": "Men",
                 "barcode": "4068584443039",
                 "item_group": "Accessories",
+                "item_group_code": "CARHARTT I036363 Blue Wax",
                 "wholesale_price": "88.00 AED",
                 "retail_price": "185.00 AED",
                 "qty_available": "20",
@@ -58,6 +59,7 @@ def test_google_sheets_import_persists_comming_soon_qty(test_app, make_user, mon
     try:
         item = db.query(test_app["models"].UniqueItem).filter_by(session_id=result["session_id"]).one()
         assert item.comming_soon_qty == "3"
+        assert item.item_group_code == "CARHARTT I036363 Blue Wax"
         assert item.sap_code == "SAP-001"
     finally:
         db.close()

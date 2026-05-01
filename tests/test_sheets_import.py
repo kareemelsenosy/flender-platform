@@ -115,6 +115,7 @@ def test_google_sheet_import_persists_selected_tab_order_and_source_sheet(
                 "qty_available": "5",
                 "barcode": f"BAR-{title[-1]}",
                 "item_group": "Shoes",
+                "item_group_code": f"GRP-{title[-1]}",
                 "sap_code": f"SAP-{title[-1]}",
                 "image_url": "",
                 "dropbox_url": "",
@@ -144,6 +145,7 @@ def test_google_sheet_import_persists_selected_tab_order_and_source_sheet(
         )
         assert sess.config["selected_sheet_tabs"] == ["Tab A", "Tab B"]
         assert [item.source_sheet for item in items] == ["Tab A", "Tab B"]
+        assert [item.item_group_code for item in items] == ["GRP-A", "GRP-B"]
         assert [item.sap_code for item in items] == ["SAP-A", "SAP-B"]
     finally:
         db.close()
@@ -187,6 +189,7 @@ def test_google_sheet_import_deduplicates_across_tabs_by_source_sheet(
                 "qty_available": "5",
                 "barcode": "BAR-001",
                 "item_group": "Shoes",
+                "item_group_code": "GRP-001",
                 "sap_code": "SAP-001",
                 "image_url": "",
                 "dropbox_url": "",
@@ -217,6 +220,7 @@ def test_google_sheet_import_deduplicates_across_tabs_by_source_sheet(
         assert len(items) == 2
         source_sheets = {item.source_sheet for item in items}
         assert source_sheets == {"Spring", "Summer"}
+        assert {item.item_group_code for item in items} == {"GRP-001"}
         assert {item.sap_code for item in items} == {"SAP-001"}
         # color_codes must differ so the unique constraint isn't violated
         assert items[0].color_code != items[1].color_code
@@ -246,7 +250,8 @@ def test_backfill_sap_code_repairs_existing_google_sheet_sessions(
                 "item_code": "ACL-253-SC-447-001",
                 "size": "M",
                 "color_name": "Black",
-                "sap_code": "ACL_A_ACL-253-SC-447-001_Black",
+                "item_group_code": "ACL_A_ACL-253-SC-447-001_Black",
+                "sap_code": "ACL253SC447001",
             }]
 
     cred_path = tmp_path / "google.json"
@@ -275,6 +280,7 @@ def test_backfill_sap_code_repairs_existing_google_sheet_sessions(
             color_name="Black",
             color_code="Black|M|ReOrder_Dubai",
             item_group="ACCS",
+            item_group_code="",
             source_sheet="ReOrder_Dubai",
             review_status="approved",
             search_status="done",
@@ -286,7 +292,8 @@ def test_backfill_sap_code_repairs_existing_google_sheet_sessions(
         updated = backfill.backfill_sap_codes_for_session(db, sess, user["id"])
         db.refresh(item)
         assert updated == 1
-        assert item.sap_code == "ACL_A_ACL-253-SC-447-001_Black"
+        assert item.item_group_code == "ACL_A_ACL-253-SC-447-001_Black"
+        assert item.sap_code == "ACL253SC447001"
     finally:
         db.close()
 

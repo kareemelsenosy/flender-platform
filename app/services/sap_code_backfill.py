@@ -1,7 +1,7 @@
-"""Backfill SAP ItemCode values for older Google Sheet sessions.
+"""Backfill folder code fields for older Google Sheet sessions.
 
-Older imports read the Google Sheet ``ItemCode`` column but did not persist it
-on ``UniqueItem``. Export folder naming now depends on that value, so this
+Older imports did not persist the Google Sheet ``Item Group Code`` / ``ItemCode``
+columns on ``UniqueItem``. Export folder naming depends on those values, so this
 best-effort backfill lets already-reviewed sessions download correctly without
 redoing image review.
 """
@@ -33,7 +33,7 @@ def _item_sizes(item: UniqueItem) -> list[str]:
 
 
 def backfill_sap_codes_for_session(db: DBSession, sess: Session, user_id: int) -> int:
-    """Populate missing ``UniqueItem.sap_code`` from the original Google Sheet.
+    """Populate missing folder code fields from the original Google Sheet.
 
     Returns the number of updated rows. Any external/API/credential failure is
     intentionally swallowed because export should still continue with fallback
@@ -44,7 +44,10 @@ def backfill_sap_codes_for_session(db: DBSession, sess: Session, user_id: int) -
 
     missing_items = db.query(UniqueItem).filter(
         UniqueItem.session_id == sess.id,
-        (UniqueItem.sap_code.is_(None)) | (UniqueItem.sap_code == ""),
+        (
+            (UniqueItem.item_group_code.is_(None)) | (UniqueItem.item_group_code == "") |
+            (UniqueItem.sap_code.is_(None)) | (UniqueItem.sap_code == "")
+        ),
     ).all()
     if not missing_items:
         return 0
@@ -62,19 +65,21 @@ def backfill_sap_codes_for_session(db: DBSession, sess: Session, user_id: int) -
             selected = set(selected_tabs)
             tabs = [tab for tab in tabs if tab.get("title") in selected]
 
-        by_full_key: dict[tuple[str, str, str, str], str] = {}
-        by_simple_key: dict[tuple[str, str, str], set[str]] = {}
+        by_full_key: dict[tuple[str, str, str, str], dict[str, str]] = {}
+        by_simple_key: dict[tuple[str, str, str], list[dict[str, str]]] = {}
         for tab in tabs:
             tab_title = str(tab.get("title") or "").strip()
             for row in reader.extract_items_from_tab(tab):
                 sap_code = str(row.get("sap_code") or "").strip()
+                item_group_code = str(row.get("item_group_code") or "").strip()
                 item_code = str(row.get("item_code") or "").strip()
                 size = str(row.get("size") or "").strip()
                 color = str(row.get("color_name") or "").strip()
-                if not sap_code or not item_code:
+                if not (item_group_code or sap_code) or not item_code:
                     continue
-                by_full_key[(tab_title, item_code, color, size)] = sap_code
-                by_simple_key.setdefault((tab_title, item_code, size), set()).add(sap_code)
+                codes = {"item_group_code": item_group_code, "sap_code": sap_code}
+                by_full_key[(tab_title, item_code, color, size)] = codes
+                by_simple_key.setdefault((tab_title, item_code, size), []).append(codes)
 
         updated = 0
         for item in missing_items:
@@ -82,14 +87,21 @@ def backfill_sap_codes_for_session(db: DBSession, sess: Session, user_id: int) -
             item_code = str(item.item_code or "").strip()
             color = str(item.color_name or "").strip()
             for size in _item_sizes(item):
-                sap_code = by_full_key.get((tab_title, item_code, color, size))
-                if not sap_code:
-                    simple_matches = by_simple_key.get((tab_title, item_code, size), set())
+                codes = by_full_key.get((tab_title, item_code, color, size))
+                if not codes:
+                    simple_matches = by_simple_key.get((tab_title, item_code, size), [])
                     if len(simple_matches) == 1:
-                        sap_code = next(iter(simple_matches))
-                if sap_code:
-                    item.sap_code = sap_code
-                    updated += 1
+                        codes = simple_matches[0]
+                if codes:
+                    changed = False
+                    if not item.item_group_code and codes.get("item_group_code"):
+                        item.item_group_code = codes["item_group_code"]
+                        changed = True
+                    if not item.sap_code and codes.get("sap_code"):
+                        item.sap_code = codes["sap_code"]
+                        changed = True
+                    if changed:
+                        updated += 1
                     break
 
         if updated:
