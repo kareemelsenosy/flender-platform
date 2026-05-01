@@ -123,6 +123,74 @@
     pointer-events: none;
   }
 
+  /* Checkbox + drag-reorder for candidate cards */
+  .image-card { transition: transform .12s ease, box-shadow .12s ease; }
+  .image-card[draggable="true"] { cursor: grab; }
+  .image-card.dragging { opacity: 0.5; cursor: grabbing; }
+  .image-card.drop-target { outline: 3px dashed var(--primary); outline-offset: -3px; }
+
+  .image-card .card-checkbox {
+    position: absolute;
+    top: 4px;
+    right: 28px;
+    width: 22px;
+    height: 22px;
+    z-index: 5;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .image-card .card-checkbox-input {
+    position: absolute;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+  }
+  .image-card .card-checkbox-box {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #fff;
+    background: rgba(0,0,0,0.45);
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.25);
+    transition: background .15s ease, border-color .15s ease;
+    pointer-events: none;
+  }
+  .image-card .card-checkbox-input:checked + .card-checkbox-box {
+    background: var(--primary);
+    border-color: var(--primary);
+  }
+  .image-card .card-checkbox-input:checked + .card-checkbox-box::after {
+    content: "";
+    display: block;
+    width: 5px;
+    height: 9px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+    margin: 1px auto 0;
+  }
+
+  .image-card .export-badge {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 10px;
+    pointer-events: none;
+    letter-spacing: 0.4px;
+  }
+  .image-card .export-badge-primary {
+    background: var(--primary);
+  }
+
   .image-card .match-reason {
     position: absolute;
     bottom: 4px;
@@ -793,17 +861,23 @@ function renderMain(key) {
     </div>
 
     <h4 class="mb-3">Candidates (${candidates.length})
-      <span style="font-size:0.7rem;font-weight:400;color:var(--gray-400);margin-left:8px">Click = primary &middot; Right-click = add extra image</span>
+      <span style="font-size:0.7rem;font-weight:400;color:var(--gray-400);margin-left:8px">Tick the box to include · Drag to reorder · Top-left card becomes _01</span>
     </h4>
     <div class="image-grid mb-4" id="candidates-grid">
       ${candidates.map((url, i) => {
         const sc = scores[url] || 0;
         const conf = getConfidenceLabel(sc);
         const extras = entry.additional_urls || [];
-        const extraIdx = extras.indexOf(url);
-        const isExtra = extraIdx >= 0;
+        // A card is "selected for export" if it is the primary OR appears
+        // in additional_urls. The first checked card (visually) is _01.
+        const isPrimary = url === selectedUrl;
+        const isExtra = extras.indexOf(url) >= 0;
+        const isChecked = isPrimary || isExtra;
+        // Position in the export list: 1-based (_01 = primary, _02 = first extra, ...)
+        let exportPos = 0;
+        if (isPrimary) exportPos = 1;
+        else if (isExtra) exportPos = extras.indexOf(url) + 2;
         const reasonText = (entry.match_reasons || {})[url] || '';
-        // First 6 load immediately; rest are lazy (data-src) to avoid flooding the proxy
         const eager = i < 6;
         const cardImage = isLocalFile(url)
           ? localFileImage(url, {
@@ -817,12 +891,18 @@ function renderMain(key) {
             : `<img data-src="${escapeAttr(proxyUrl(url))}" alt="" class="lazy-candidate" style="opacity:0;transition:opacity .2s" onerror="this.closest('.image-card').style.display='none'">`;
         const lensHref = !isLocalFile(url) ? `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(url)}` : '';
         return `
-        <div class="image-card ${url === selectedUrl ? 'selected' : ''} ${isExtra ? 'extra-selected' : ''}" data-key="${escapeAttr(key)}" data-id="${entry.id}" data-url="${escapeAttr(url)}" data-extra="true">
+        <div class="image-card ${isPrimary ? 'selected' : ''} ${(!isPrimary && isExtra) ? 'extra-selected' : ''}"
+             data-key="${escapeAttr(key)}" data-id="${entry.id}" data-url="${escapeAttr(url)}"
+             data-pos="${i}" draggable="true">
           ${cardImage}
+          <label class="card-checkbox" title="Include in exported folder" onclick="event.stopPropagation()">
+            <input type="checkbox" class="card-checkbox-input" ${isChecked ? 'checked' : ''}>
+            <span class="card-checkbox-box" aria-hidden="true"></span>
+          </label>
           <div class="score ${conf.cls}">${conf.label}</div>
           <div class="card-num">${i+1}</div>
           ${reasonText ? `<div class="match-reason" title="${escapeAttr(reasonText)}">${escapeAttr(reasonText)}</div>` : ''}
-          ${isExtra ? `<div class="extra-badge">+${extraIdx+1}</div>` : ''}
+          ${exportPos ? `<div class="export-badge ${exportPos === 1 ? 'export-badge-primary' : ''}">_${String(exportPos).padStart(2, '0')}</div>` : ''}
           ${lensHref ? `<a href="${escapeAttr(lensHref)}" target="_blank" rel="noopener noreferrer" class="card-find-btn" title="Find this image on Google Lens" onclick="event.stopPropagation()">🔍</a>` : ''}
         </div>`;
       }).join('')}
@@ -985,30 +1065,125 @@ async function approveUrl(key, itemId, url) {
   renderMain(key);
 }
 
-async function toggleExtra(key, itemId, url) {
+// ── Export selection helpers ─────────────────────────────────────────────────
+// The exported folder always contains:
+//     {item_code}_01  ← entry.approved_url (primary)
+//     {item_code}_02  ← entry.additional_urls[0]
+//     {item_code}_03  ← entry.additional_urls[1]
+//     …
+// Toggling a checkbox adds/removes a candidate from that ordered list. If
+// nothing is currently primary and the user ticks a checkbox, the ticked
+// candidate becomes the primary.
+
+const _MAX_EXPORT_IMAGES = 12;
+
+async function _persistExportSelection(key, itemId, primary, extras) {
   const entry = state[key];
-  if (!entry) return;
-  let extras = [...(entry.additional_urls || [])];
-  const idx = extras.indexOf(url);
-  if (idx >= 0) {
-    extras.splice(idx, 1);
-  } else {
-    if (extras.length >= 3) extras.shift();
-    extras.push(url);
+  if (!entry) return false;
+
+  const ops = [];
+  if ((entry.approved_url || '') !== (primary || '')) {
+    ops.push(fetch(`/review/${SESSION_ID}/approve`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: itemId, key, url: primary || ''}),
+    }).then(r => r.json().catch(() => ({}))));
   }
-  const resp = await fetch(`/review/${SESSION_ID}/set-additional`, {
+  ops.push(fetch(`/review/${SESSION_ID}/set-additional`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({id: itemId, urls: extras}),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok || !data.ok) {
-    showAlert(data.error || 'Could not update extra images.', 'Update Failed');
+  }).then(r => r.json().catch(() => ({}))));
+
+  const results = await Promise.all(ops);
+  const failed = results.find(r => r && r.error);
+  if (failed) {
+    showAlert(failed.error || 'Could not update export selection.', 'Update Failed');
+    return false;
+  }
+  entry.approved_url = primary || '';
+  entry.suggested_url = primary || '';
+  entry.status = primary ? 'approved' : 'pending';
+  entry.review_status = primary ? 'approved' : 'pending';
+  entry.auto_selected = false;
+  entry.additional_urls = extras;
+  entry.details_loaded = true;
+  state[key] = entry;
+  return true;
+}
+
+async function toggleExportInclusion(key, itemId, url, checked) {
+  const entry = state[key];
+  if (!entry) return;
+  const primary = entry.approved_url || '';
+  const extras = [...(entry.additional_urls || [])];
+  const isPrimary = url === primary;
+  const extraIdx = extras.indexOf(url);
+
+  let newPrimary = primary;
+  let newExtras = extras;
+
+  if (checked) {
+    if (isPrimary || extraIdx >= 0) return;  // already included
+    if (!primary) {
+      newPrimary = url;  // first selection becomes the highlight
+    } else {
+      if (extras.length >= _MAX_EXPORT_IMAGES - 1) {
+        showAlert(`Up to ${_MAX_EXPORT_IMAGES} images per item — uncheck one to include another.`, 'Limit reached');
+        return;
+      }
+      newExtras = [...extras, url];
+    }
+  } else {
+    if (isPrimary) {
+      // Removing the primary → promote the first extra to primary if any
+      if (extras.length > 0) {
+        newPrimary = extras[0];
+        newExtras = extras.slice(1);
+      } else {
+        newPrimary = '';
+        newExtras = [];
+      }
+    } else if (extraIdx >= 0) {
+      newExtras = [...extras.slice(0, extraIdx), ...extras.slice(extraIdx + 1)];
+    } else {
+      return;  // wasn't included
+    }
+  }
+
+  const ok = await _persistExportSelection(key, itemId, newPrimary, newExtras);
+  if (ok) { renderMain(key); updateSidebar(); }
+}
+
+async function reorderCards(key, itemId, srcUrl, targetUrl) {
+  const entry = state[key];
+  if (!entry || srcUrl === targetUrl) return;
+
+  // Build the current ordered export list: [primary, ...extras]
+  const orderedSelected = [];
+  if (entry.approved_url) orderedSelected.push(entry.approved_url);
+  for (const u of (entry.additional_urls || [])) orderedSelected.push(u);
+
+  // If neither URL is currently checked, treat the drag as "include both
+  // and put srcUrl in front of targetUrl".
+  const ensureIn = (u) => { if (!orderedSelected.includes(u)) orderedSelected.push(u); };
+  ensureIn(srcUrl); ensureIn(targetUrl);
+
+  if (orderedSelected.length > _MAX_EXPORT_IMAGES) {
+    showAlert(`Up to ${_MAX_EXPORT_IMAGES} images per item.`, 'Limit reached');
     return;
   }
-  entry.details_loaded = true;
-  entry.additional_urls = extras;
-  renderMain(key);
+
+  // Move srcUrl to the position of targetUrl; targetUrl shifts right.
+  const without = orderedSelected.filter(u => u !== srcUrl);
+  const targetIdx = without.indexOf(targetUrl);
+  const inserted = [...without.slice(0, targetIdx), srcUrl, ...without.slice(targetIdx)];
+
+  const newPrimary = inserted[0] || '';
+  const newExtras = inserted.slice(1);
+
+  const ok = await _persistExportSelection(key, itemId, newPrimary, newExtras);
+  if (ok) { renderMain(key); updateSidebar(); }
 }
 
 function showResearchPanel(key, itemId) {
@@ -1121,17 +1296,60 @@ async function startDownloadImages() {
   }
 }
 
-// Delegated click/contextmenu handler for image-cards (avoids inline onclick escaping issues)
+// Delegated handlers for image-cards.
+//   • Click on card body  → make this the primary (_01)
+//   • Click on checkbox   → toggle inclusion in the exported folder
+//   • Drag a card         → drop on another to reorder; new top-left is _01
 document.getElementById('review-main').addEventListener('click', e => {
   const card = e.target.closest('.image-card[data-url]');
   if (!card) return;
+
+  // Checkbox toggles inclusion without changing primary
+  const checkbox = e.target.closest('.card-checkbox-input');
+  if (checkbox) {
+    e.stopPropagation();
+    toggleExportInclusion(card.dataset.key, parseInt(card.dataset.id), card.dataset.url, checkbox.checked);
+    return;
+  }
+  if (e.target.closest('.card-checkbox')) {
+    return;  // label click — let the checkbox event handle it
+  }
+
   approveUrl(card.dataset.key, parseInt(card.dataset.id), card.dataset.url);
 });
-document.getElementById('review-main').addEventListener('contextmenu', e => {
+
+// ── Drag and drop reorder ────────────────────────────────────────────────────
+let _dragCard = null;
+document.getElementById('review-main').addEventListener('dragstart', e => {
   const card = e.target.closest('.image-card[data-url]');
   if (!card) return;
+  _dragCard = card;
+  card.classList.add('dragging');
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', card.dataset.url); } catch (_) {}
+  }
+});
+document.getElementById('review-main').addEventListener('dragend', e => {
+  if (_dragCard) _dragCard.classList.remove('dragging');
+  document.querySelectorAll('.image-card.drop-target').forEach(c => c.classList.remove('drop-target'));
+  _dragCard = null;
+});
+document.getElementById('review-main').addEventListener('dragover', e => {
+  const card = e.target.closest('.image-card[data-url]');
+  if (!card || !_dragCard || card === _dragCard) return;
   e.preventDefault();
-  toggleExtra(card.dataset.key, parseInt(card.dataset.id), card.dataset.url);
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.image-card.drop-target').forEach(c => {
+    if (c !== card) c.classList.remove('drop-target');
+  });
+  card.classList.add('drop-target');
+});
+document.getElementById('review-main').addEventListener('drop', e => {
+  const target = e.target.closest('.image-card[data-url]');
+  if (!target || !_dragCard || target === _dragCard) return;
+  e.preventDefault();
+  reorderCards(_dragCard.dataset.key, parseInt(_dragCard.dataset.id), _dragCard.dataset.url, target.dataset.url);
 });
 
 // Keyboard navigation

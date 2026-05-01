@@ -628,9 +628,17 @@ async def upload_replacement_image(
     })
 
 
+_MAX_EXPORT_IMAGES = 12
+
+
 @router.post("/review/{session_id}/set-additional")
 async def set_additional_urls(session_id: int, request: Request, db: DBSession = Depends(get_db)):
-    """Set additional image URLs (for multi-image selection, up to 3)."""
+    """Set the ordered list of images to export beyond the primary highlight.
+
+    The first entry is exported as `_02`, the second as `_03`, etc. The
+    primary `_01` image is the item's `approved_url`. Cap of 12 per item
+    (one highlight + up to 11 additional).
+    """
     uid = get_current_user_id(request)
     if not uid:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -644,9 +652,11 @@ async def set_additional_urls(session_id: int, request: Request, db: DBSession =
         return JSONResponse({"error": "not found"}, status_code=404)
 
     clean_urls: list[str] = []
-    for raw in urls[:3]:
+    seen: set[str] = set()
+    for raw in urls[:_MAX_EXPORT_IMAGES]:
         normalized = _normalize_image_url(raw, uid=uid)
-        if normalized:
+        if normalized and normalized not in seen:
+            seen.add(normalized)
             clean_urls.append(normalized)
     item.additional_urls = clean_urls
     db.commit()

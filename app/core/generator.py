@@ -703,12 +703,16 @@ class OrderSheetGenerator:
         item_group = str(item.get("item_group") or "").strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
 
-        # Determine subfolder. SAP creates folders named exactly after the
-        # Item Group (e.g. "BUT BA BG264943 Black"), so we preserve the
-        # original spelling — including spaces — and only strip characters
-        # the filesystem can't store.
+        # Determine subfolder. SAP creates folders named with spaces between
+        # the segments (e.g. "BUT BA BG264943 Black", "DIM H DIMEHO2624
+        # Blossom"), and brand exports often arrive with underscores instead.
+        # We normalise to single spaces so the exported folder always lines
+        # up with what SAP creates, regardless of which separator the brand
+        # used in their Item Group column.
         if item_group:
-            folder_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", item_group).strip().rstrip(".")
+            folder_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", item_group)
+            folder_name = folder_name.replace("_", " ")
+            folder_name = re.sub(r"\s+", " ", folder_name).strip().rstrip(".")
             if not folder_name:
                 folder_name = safe_code
         else:
@@ -717,17 +721,64 @@ class OrderSheetGenerator:
         folder_path = os.path.join(base_images_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
-        # Find next available 2-digit number; primary image is always _01.
+        # Pick an extension that matches the source bytes so we never
+        # re-encode (PNG → JPEG with convert("RGB") was producing colour
+        # banding / ghosting on some Dime hoodie images). The B2B importer
+        # accepts any common image format under the right name.
+        ext = ".jpg"
+        if img_data[:8].startswith(b"\x89PNG\r\n\x1a\n"):
+            ext = ".png"
+        elif img_data[:4] == b"RIFF" and img_data[8:12] == b"WEBP":
+            ext = ".webp"
+        elif img_data[:3] == b"GIF":
+            ext = ".gif"
+        elif img_data[:2] == b"\xff\xd8":
+            ext = ".jpg"
+        else:
+            ext = ".jpg"  # unknown — try to convert via PIL below
+
+        # Find next available 2-digit number across any image extension; the
+        # primary image is always _01 regardless of suffix.
         n = 1
-        while os.path.exists(os.path.join(folder_path, f"{safe_code}_{n:02d}.jpg")):
+        while any(
+            os.path.exists(os.path.join(folder_path, f"{safe_code}_{n:02d}{x}"))
+            for x in (".jpg", ".jpeg", ".png", ".webp", ".gif")
+        ):
             n += 1
 
-        path = os.path.join(folder_path, f"{safe_code}_{n:02d}.jpg")
+        path = os.path.join(folder_path, f"{safe_code}_{n:02d}{ext}")
 
-        # Save as high-quality JPEG at full resolution
+        # Path 1 — known image format: write source bytes verbatim. No PIL
+        # round-trip means no colour shifts and no transparency artifacts.
+        if ext in (".jpg", ".png", ".webp", ".gif") and img_data[:2] in (
+            b"\xff\xd8", b"\x89P", b"RI", b"GI",
+        ):
+            try:
+                with open(path, "wb") as f:
+                    f.write(img_data)
+                return
+            except OSError:
+                pass
+
+        # Path 2 — exotic / corrupt header: try to decode with PIL,
+        # composite transparency onto white, save as JPEG.
         try:
-            img = PILImage.open(io.BytesIO(img_data)).convert("RGB")
-            img.save(path, format="JPEG", quality=95, optimize=True)
+            from PIL import ImageOps  # noqa: PLC0415
+            img = PILImage.open(io.BytesIO(img_data))
+            img = ImageOps.exif_transpose(img)
+            if img.mode in ("RGBA", "LA"):
+                bg = PILImage.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[-1])
+                img = bg
+            elif img.mode == "P":
+                img = img.convert("RGBA")
+                bg = PILImage.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[-1] if "A" in img.getbands() else None)
+                img = bg
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            jpg_path = os.path.join(folder_path, f"{safe_code}_{n:02d}.jpg")
+            img.save(jpg_path, format="JPEG", quality=95, optimize=True)
         except Exception:
             with open(path, "wb") as f:
                 f.write(img_data)
