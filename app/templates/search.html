@@ -48,17 +48,31 @@
     <div class="form-group" id="local-folder-group" style="display:{% if current_search_mode in ['local', 'both'] %}block{% else %}none{% endif %}">
       <label>Upload Image Folder</label>
       <div id="upload-drop-zone"
-           style="border:2px dashed var(--gray-300);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s"
-           onclick="document.getElementById('img-file-input').click()"
+           style="border:2px dashed var(--gray-300);border-radius:8px;padding:24px;text-align:center;transition:border-color .15s"
            ondragover="event.preventDefault();this.style.borderColor='var(--black)'"
            ondragleave="this.style.borderColor='var(--gray-300)'"
            ondrop="event.preventDefault();this.style.borderColor='var(--gray-300)';handleFileSelect(event.dataTransfer.files)">
         <div style="font-size:1.8rem;margin-bottom:6px">📂</div>
-        <p style="margin:0;font-weight:600;color:var(--gray-700)">Click or drag &amp; drop images here</p>
+        <p style="margin:0;font-weight:600;color:var(--gray-700)">Drag &amp; drop a ZIP, images, or a folder here</p>
         <p style="margin:4px 0 0;font-size:0.8rem;color:var(--gray-400)">JPG · PNG · WebP · GIF · BMP · ZIP archive · Up to 10 GB per upload</p>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:14px;flex-wrap:wrap">
+          <button type="button" class="btn btn-outline btn-sm"
+                  onclick="document.getElementById('img-folder-input').click()">
+            📁 Select a folder
+          </button>
+          <button type="button" class="btn btn-outline btn-sm"
+                  onclick="document.getElementById('img-file-input').click()">
+            🗂 Select files / ZIP
+          </button>
+        </div>
       </div>
+      <!-- Hidden inputs: one for individual files / ZIPs, one for whole folders.
+           The folder input uses webkitdirectory so the OS shows a folder picker
+           and recursively returns every file inside (preserving subfolders). -->
       <input type="file" id="img-file-input" multiple
              accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.zip"
+             style="display:none" onchange="handleFileSelect(this.files)">
+      <input type="file" id="img-folder-input" webkitdirectory directory multiple
              style="display:none" onchange="handleFileSelect(this.files)">
       <!-- Upload progress bar (hidden until upload starts) -->
       <div id="upload-progress-wrap" style="display:none;margin-top:12px">
@@ -232,14 +246,32 @@ if (sampleToggle) {
 
 function handleFileSelect(files) {
   if (!files || !files.length) return;
-  _pendingFiles = files;
+
+  // When the user picks a whole folder, the browser returns every file
+  // inside (including .DS_Store, hidden files, sidecar metadata). Filter
+  // to image / zip files only so the upload size matches what we'll
+  // actually use on the server.
+  const ALLOW = /\.(jpe?g|png|gif|webp|bmp|tiff?|zip)$/i;
+  const filtered = Array.from(files).filter(f => ALLOW.test(f.name) && !f.name.startsWith('.'));
+  if (!filtered.length) {
+    showAlert('No image or ZIP files were found in that selection.', 'Nothing to upload');
+    return;
+  }
+  const skipped = files.length - filtered.length;
+
+  _pendingFiles = filtered;
   _uploadedFolderPath = '';
-  const count = files.length;
-  let totalMB = 0;
-  for (const f of files) totalMB += f.size;
-  totalMB = (totalMB / 1024 / 1024).toFixed(1);
+  let totalBytes = 0;
+  for (const f of filtered) totalBytes += f.size;
+  const totalMB = (totalBytes / 1024 / 1024).toFixed(1);
+  const totalGB = (totalBytes / 1024 / 1024 / 1024).toFixed(2);
+  const sizeStr = totalBytes >= 1024 * 1024 * 1024 ? `${totalGB} GB` : `${totalMB} MB`;
+
   const statusEl = document.getElementById('upload-status');
-  statusEl.innerHTML = `<span style="color:var(--black);font-weight:600">✓ ${count} file(s) selected</span> <span style="color:var(--gray-400)">(${totalMB} MB)</span> — will upload when search starts`;
+  let msg = `<span style="color:var(--black);font-weight:600">✓ ${filtered.length} file${filtered.length !== 1 ? 's' : ''} selected</span> <span style="color:var(--gray-400)">(${sizeStr})</span>`;
+  if (skipped) msg += ` <span style="color:var(--gray-400)">— ${skipped} non-image file${skipped !== 1 ? 's' : ''} skipped</span>`;
+  msg += ' — will upload when search starts';
+  statusEl.innerHTML = msg;
   document.getElementById('upload-drop-zone').style.borderColor = 'var(--black)';
 }
 
