@@ -22,6 +22,8 @@ from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image as PILImage
 
+from app.services.file_safety import normalize_folder_name
+
 # ─── Styles ────────────────────────────────────────────────────────────────
 HEADER_FILL = PatternFill("solid", fgColor="1F2937")
 HEADER_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=9)
@@ -166,9 +168,8 @@ class OrderSheetGenerator:
         out_filename = f"{today}_{safe_brand}_{safe_input}_OrderSheet.xlsx"
         out_path = os.path.join(output_dir, out_filename)
 
-        # Image folders for saving. Wrap in "_READY TO UPDATE" so the export
-        # drops into the Dropbox staging area (Dropbox/_READY TO UPDATE/...)
-        # without any manual moving by the user.
+        # Keep Dropbox's staging folder exactly as requested. Product folders
+        # inside it use spaces, while image filenames keep underscores.
         images_dir = None
         if self.save_images:
             images_dir = os.path.join(output_dir, "images", "_READY TO UPDATE")
@@ -703,20 +704,9 @@ class OrderSheetGenerator:
         item_group = str(item.get("item_group") or "").strip()
         safe_code = re.sub(r"[^\w\-]", "_", item_code)
 
-        # Determine subfolder. SAP creates folders named with spaces between
-        # the segments (e.g. "BUT BA BG264943 Black", "DIM H DIMEHO2624
-        # Blossom"), and brand exports often arrive with underscores instead.
-        # We normalise to single spaces so the exported folder always lines
-        # up with what SAP creates, regardless of which separator the brand
-        # used in their Item Group column.
-        if item_group:
-            folder_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", item_group)
-            folder_name = folder_name.replace("_", " ")
-            folder_name = re.sub(r"\s+", " ", folder_name).strip().rstrip(".")
-            if not folder_name:
-                folder_name = safe_code
-        else:
-            folder_name = safe_code
+        # Folder names follow the Item Group code/classification and use
+        # single spaces. Image file names keep underscores: ITEMCODE_01.jpg.
+        folder_name = normalize_folder_name(item_group, default=safe_code)
 
         folder_path = os.path.join(base_images_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)

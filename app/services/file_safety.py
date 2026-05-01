@@ -33,3 +33,18 @@ def unique_path(base_dir: Path, filename: str) -> Path:
         path = base_dir / f"{stem}_{counter}{ext}"
         counter += 1
     return path
+
+
+def normalize_folder_name(name: str | None, default: str = "folder") -> str:
+    """Return a safe display folder name, using spaces instead of underscores.
+
+    This is for SAP/B2B image folders only. File names are handled separately
+    and may intentionally keep underscores, e.g. ``ITEMCODE_01.jpg``.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        raw = default
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", raw)
+    safe = safe.replace("_", " ")
+    safe = re.sub(r"\s+", " ", safe).strip().rstrip(".")
+    return safe[:180] or default

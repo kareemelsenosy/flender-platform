@@ -27,6 +27,28 @@ def _make_local_image(base_dir: Path, user_id: int, name: str = "sample.jpg") ->
     return path
 
 
+def test_saved_image_folder_names_use_spaces_but_file_names_keep_underscores(tmp_path):
+    from app.core.generator import OrderSheetGenerator
+
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (18, 18), color=(30, 120, 80)).save(image_bytes, format="PNG")
+
+    images_root = tmp_path / "images" / "_READY TO UPDATE"
+    generator = OrderSheetGenerator()
+    generator._save_image_file(
+        image_bytes.getvalue(),
+        str(images_root),
+        {
+            "item_code": "ACL-253-SC-447-001",
+            "item_group": "ACL_A_ACL-253-SC-447-001_Black",
+        },
+    )
+
+    expected_folder = images_root / "ACL A ACL-253-SC-447-001 Black"
+    assert expected_folder.is_dir()
+    assert (expected_folder / "ACL-253-SC-447-001_01.png").is_file()
+
+
 def test_core_smoke_flow_upload_mapping_search_review_export_and_downloads(
     client,
     login_as,
@@ -238,6 +260,48 @@ def test_upload_file_sanitizes_names_and_avoids_overwrite(
     assert all(".." not in str(path) for path in stored_paths)
     assert stored_paths[0] != stored_paths[1]
     assert files[0].filename == "unsafe name.csv"
+
+
+def test_review_image_download_groups_images_by_normalized_item_group_folder(
+    client,
+    login_as,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+    db = test_app["database"].SessionLocal()
+    local_image_path = _make_local_image(test_app["upload_dir"], user["id"], name="folder-check.jpg")
+    try:
+        sess = models.Session(
+            user_id=user["id"],
+            name="Folder Group Check",
+            source_type="csv_upload",
+            source_ref="folder.csv",
+            status="reviewing",
+        )
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+
+        item = models.UniqueItem(
+            session_id=sess.id,
+            item_code="ACL-253-SC-447-001",
+            item_group="ACL_A_ACL-253-SC-447-001_Black",
+            approved_url=f"file://{local_image_path.resolve()}",
+            review_status="approved",
+            search_status="done",
+        )
+        db.add(item)
+        db.commit()
+        session_id = sess.id
+    finally:
+        db.close()
+
+    response = client.get(f"/review/{session_id}/download-images")
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+    assert "ACL A ACL-253-SC-447-001 Black/ACL-253-SC-447-001_1.jpg" in names
 
 
 def test_chunked_local_image_upload_reassembles_zip_and_extracts_images(

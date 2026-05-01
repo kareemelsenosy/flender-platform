@@ -24,6 +24,7 @@ from app.core.searcher import ImageSearcher, item_sort_key, split_and_normalize_
 from app.database import get_db
 from app.templates_config import templates
 from app.models import BrandSearchConfig, Session, UniqueItem
+from app.services.file_safety import normalize_folder_name
 from app.services.ai_service import (
     ai_available,
     ai_build_search_queries,
@@ -840,11 +841,12 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
         return ".jpg"
 
     def _download_one(url_info):
-        url, safe_code, color, suffix = url_info
+        url, folder_name, safe_code, color, suffix = url_info
         if not url:
             return None
 
         base = f"{safe_code}_{color}" if color else safe_code
+        zip_prefix = f"{folder_name}/" if folder_name else ""
 
         # Local file uploaded to server — read directly from disk
         if url.startswith("file://"):
@@ -855,7 +857,7 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
                     content = f.read()
                 mime, _ = mimetypes.guess_type(path)
                 ext = _detect_ext(mime or "")
-                return (f"{base}_{suffix}{ext}", content)
+                return (f"{zip_prefix}{base}_{suffix}{ext}", content)
             except Exception:
                 return None
 
@@ -866,7 +868,7 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
             resp = requests.get(url, headers=_DL_HEADERS, timeout=15)
             if resp.status_code == 200:
                 ext = _detect_ext(resp.headers.get("content-type", ""))
-                fname = f"{base}_{suffix}{ext}"
+                fname = f"{zip_prefix}{base}_{suffix}{ext}"
                 return (fname, resp.content)
         except Exception:
             pass
@@ -877,10 +879,11 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
     for item in items:
         safe_code = item.item_code.replace("/", "_").replace("\\", "_")
         color = (item.color_code or "").replace("/", "_").replace("\\", "_")
+        folder_name = normalize_folder_name(item.item_group, default=safe_code)
         if item.approved_url:
-            download_tasks.append((item.approved_url, safe_code, color, "1"))
+            download_tasks.append((item.approved_url, folder_name, safe_code, color, "1"))
         for i, extra_url in enumerate(item.additional_urls):
-            download_tasks.append((extra_url, safe_code, color, str(i + 2)))
+            download_tasks.append((extra_url, folder_name, safe_code, color, str(i + 2)))
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
