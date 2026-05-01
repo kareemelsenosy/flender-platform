@@ -76,3 +76,23 @@ jobs:
             docker compose build --no-cache
             docker compose up -d
             docker image prune -f
+
+            # Sync nginx config if it changed and reload (best-effort: won't
+            # fail the whole deploy if sudo isn't available, just logs).
+            NGINX_DST="/etc/nginx/sites-available/ordersheet.flendergroup.com"
+            if [ -f nginx.conf ] && [ -f "$NGINX_DST" ]; then
+              if ! sudo -n cmp -s nginx.conf "$NGINX_DST" 2>/dev/null; then
+                echo "Updating nginx config..."
+                if sudo -n cp nginx.conf "$NGINX_DST" 2>/dev/null && \
+                   sudo -n nginx -t 2>/dev/null && \
+                   sudo -n systemctl reload nginx 2>/dev/null; then
+                  echo "✅ nginx reloaded with new config"
+                else
+                  echo "⚠️  Could not reload nginx automatically — needs manual:"
+                  echo "    sudo cp nginx.conf $NGINX_DST"
+                  echo "    sudo nginx -t && sudo systemctl reload nginx"
+                fi
+              else
+                echo "nginx config unchanged, skipping reload"
+              fi
+            fi
