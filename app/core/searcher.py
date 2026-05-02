@@ -492,7 +492,7 @@ _LETTER_SIZE_RANKS: dict[str, int] = {
     "XXXXL": 6, "4XL": 6,
     "XXXXXL": 7, "5XL": 7,
     "6XL": 8,
-    "OS": 9, "ONE SIZE": 9, "FREE": 9, "FREE SIZE": 9,
+    "OS": 9, "ONESIZE": 9, "ONE SIZE": 9, "FREE": 9, "FREESIZE": 9, "FREE SIZE": 9, "N/S": 9, "NS": 9,
 }
 
 
