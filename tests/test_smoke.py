@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import time
 import zipfile
 from pathlib import Path
@@ -49,6 +50,55 @@ def test_saved_image_folder_names_use_spaces_but_file_names_keep_underscores(tmp
     expected_folder = images_root / "ACL A ACL-253-SC-447-001 Black"
     assert expected_folder.is_dir()
     assert (expected_folder / "ACL-253-SC-447-001_01.png").is_file()
+
+
+def test_saved_webp_images_are_converted_to_jpg(tmp_path):
+    from app.core.generator import OrderSheetGenerator
+
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (18, 18), color=(30, 120, 80)).save(image_bytes, format="WEBP")
+
+    images_root = tmp_path / "images" / "_READY TO UPDATE"
+    generator = OrderSheetGenerator()
+    generator._save_image_file(
+        image_bytes.getvalue(),
+        str(images_root),
+        {
+            "item_code": "DIMEHO2628",
+            "item_group_code": "DIM_H_DIMEHO2628_Bronze_Green",
+        },
+    )
+
+    expected_folder = images_root / "DIM H DIMEHO2628 Bronze Green"
+    assert (expected_folder / "DIMEHO2628_01.jpg").is_file()
+    assert not (expected_folder / "DIMEHO2628_01.webp").exists()
+
+
+def test_generate_clears_stale_image_staging_folder_on_reexport(tmp_path):
+    from app.core.generator import OrderSheetGenerator
+
+    stale_file = tmp_path / "images" / "_READY TO UPDATE" / "DIM_H_DIMEHO2628_Bronze_Green" / "old.webp"
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_bytes(b"old")
+
+    generator = OrderSheetGenerator({"save_images_to_folder": True})
+    generator.generate(
+        items=[{
+            "item_code": "DIMEHO2628",
+            "style_name": "Hoodie",
+            "brand": "Dime",
+            "item_group": "HOODYS",
+            "item_group_code": "DIM_H_DIMEHO2628_Bronze_Green",
+            "size": "M",
+            "qty_available": 1,
+        }],
+        output_dir=str(tmp_path),
+        input_filename="stale-check.xlsx",
+        brand="Dime",
+    )
+
+    assert not stale_file.exists()
+    assert os.listdir(tmp_path / "images" / "_READY TO UPDATE") == []
 
 
 def test_core_smoke_flow_upload_mapping_search_review_export_and_downloads(
@@ -306,6 +356,52 @@ def test_review_image_download_groups_images_by_normalized_item_group_folder(
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = archive.namelist()
     assert "ACL A ACL-253-SC-447-001 Black/ACL-253-SC-447-001_1.jpg" in names
+
+
+def test_review_image_download_converts_local_webp_to_jpg(
+    client,
+    login_as,
+    test_app,
+):
+    user = login_as()
+    models = test_app["models"]
+    db = test_app["database"].SessionLocal()
+    local_image_path = test_app["upload_dir"] / f"user_{user['id']}" / "manual.webp"
+    local_image_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (24, 24), color=(90, 120, 80)).save(local_image_path, format="WEBP")
+    try:
+        sess = models.Session(
+            user_id=user["id"],
+            name="WebP Download Check",
+            source_type="csv_upload",
+            source_ref="folder.csv",
+            status="reviewing",
+        )
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+
+        item = models.UniqueItem(
+            session_id=sess.id,
+            item_code="DIMEHO2628",
+            item_group_code="DIM_H_DIMEHO2628_Bronze_Green",
+            approved_url=f"file://{local_image_path.resolve()}",
+            review_status="approved",
+            search_status="done",
+        )
+        db.add(item)
+        db.commit()
+        session_id = sess.id
+    finally:
+        db.close()
+
+    response = client.get(f"/review/{session_id}/download-images")
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        content = archive.read("DIM H DIMEHO2628 Bronze Green/DIMEHO2628_1.jpg")
+    assert "DIM H DIMEHO2628 Bronze Green/DIMEHO2628_1.jpg" in names
+    assert content[:2] == b"\xff\xd8"
 
 
 def test_chunked_local_image_upload_reassembles_zip_and_extracts_images(

@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -173,6 +174,11 @@ class OrderSheetGenerator:
         images_dir = None
         if self.save_images:
             images_dir = os.path.join(output_dir, "images", "_READY TO UPDATE")
+            # Re-exporting a session reuses the same output directory. Clear the
+            # image staging folder first so old underscore-style folders/files
+            # never get mixed into the fresh ZIP.
+            if os.path.isdir(images_dir):
+                shutil.rmtree(images_dir)
             os.makedirs(images_dir, exist_ok=True)
 
         wb = Workbook()
@@ -714,38 +720,28 @@ class OrderSheetGenerator:
         folder_path = os.path.join(base_images_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
-        # Pick an extension that matches the source bytes so we never
-        # re-encode (PNG → JPEG with convert("RGB") was producing colour
-        # banding / ghosting on some Dime hoodie images). The B2B importer
-        # accepts any common image format under the right name.
+        # The B2B importer accepts JPG/PNG reliably. Keep those formats as-is,
+        # but convert WebP/GIF/TIFF/BMP/unknown images to JPG.
         ext = ".jpg"
         if img_data[:8].startswith(b"\x89PNG\r\n\x1a\n"):
             ext = ".png"
-        elif img_data[:4] == b"RIFF" and img_data[8:12] == b"WEBP":
-            ext = ".webp"
-        elif img_data[:3] == b"GIF":
-            ext = ".gif"
         elif img_data[:2] == b"\xff\xd8":
             ext = ".jpg"
-        else:
-            ext = ".jpg"  # unknown — try to convert via PIL below
 
         # Find next available 2-digit number across any image extension; the
         # primary image is always _01 regardless of suffix.
         n = 1
         while any(
             os.path.exists(os.path.join(folder_path, f"{safe_code}_{n:02d}{x}"))
-            for x in (".jpg", ".jpeg", ".png", ".webp", ".gif")
+            for x in (".jpg", ".jpeg", ".png")
         ):
             n += 1
 
         path = os.path.join(folder_path, f"{safe_code}_{n:02d}{ext}")
 
-        # Path 1 — known image format: write source bytes verbatim. No PIL
-        # round-trip means no colour shifts and no transparency artifacts.
-        if ext in (".jpg", ".png", ".webp", ".gif") and img_data[:2] in (
-            b"\xff\xd8", b"\x89P", b"RI", b"GI",
-        ):
+        # Path 1 — JPG/PNG: write source bytes verbatim. No PIL round-trip
+        # means no colour shifts and no transparency artifacts.
+        if ext in (".jpg", ".png") and img_data[:2] in (b"\xff\xd8", b"\x89P"):
             try:
                 with open(path, "wb") as f:
                     f.write(img_data)

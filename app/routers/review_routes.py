@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
+from PIL import Image as PILImage, ImageOps
 
 from app.auth import get_current_user_id, get_current_user_id_db
 from app.config import GOOGLE_SEARCH_KEY, GOOGLE_CSE_ID, UPLOAD_DIR
@@ -42,6 +43,36 @@ _DL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
+
+
+def _image_bytes_for_b2b(content: bytes) -> tuple[bytes, str]:
+    """Return image bytes in a B2B-safe format.
+
+    Keep JPG/PNG unchanged. Convert WebP/GIF/BMP/TIFF/etc. to JPG because the
+    downstream importer has been unreliable with WebP and other formats.
+    """
+    if content[:2] == b"\xff\xd8":
+        return content, ".jpg"
+    if content[:8].startswith(b"\x89PNG\r\n\x1a\n"):
+        return content, ".png"
+
+    img = PILImage.open(io.BytesIO(content))
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGBA", "LA"):
+        bg = PILImage.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    elif img.mode == "P":
+        img = img.convert("RGBA")
+        bg = PILImage.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1] if "A" in img.getbands() else None)
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=95, optimize=True)
+    return out.getvalue(), ".jpg"
 
 
 def _make_upstream_http() -> requests.Session:
@@ -596,6 +627,31 @@ async def upload_replacement_image(
             pass
         return JSONResponse({"error": "Could not save the file"}, status_code=500)
 
+    try:
+        with open(dest, "rb") as src:
+            converted, supported_ext = _image_bytes_for_b2b(src.read())
+        if ext == ".jpeg":
+            ext = ".jpg"
+        if supported_ext != ext:
+            final_dest = unique_path(img_dir, f"{safe_code}{supported_ext}")
+            with open(final_dest, "wb") as out:
+                out.write(converted)
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+            dest = final_dest
+        elif converted:
+            # JPG/PNG stays as-is, but this also validates the bytes.
+            with open(dest, "wb") as out:
+                out.write(converted)
+    except Exception:
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        return JSONResponse({"error": "Could not read this image. Try JPG or PNG."}, status_code=415)
+
     file_url = f"file://{os.path.abspath(dest)}"
 
     candidates = item.candidates
@@ -834,14 +890,6 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
     # Download images concurrently for speed
     from concurrent.futures import ThreadPoolExecutor
 
-    def _detect_ext(ct: str) -> str:
-        ct = ct.lower()
-        if "png" in ct: return ".png"
-        if "webp" in ct: return ".webp"
-        if "gif" in ct: return ".gif"
-        if "svg" in ct: return ".svg"
-        return ".jpg"
-
     def _download_one(url_info):
         url, folder_name, safe_code, color, suffix = url_info
         if not url:
@@ -854,11 +902,9 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
         if url.startswith("file://"):
             path = url[7:]
             try:
-                import mimetypes
                 with open(path, "rb") as f:
                     content = f.read()
-                mime, _ = mimetypes.guess_type(path)
-                ext = _detect_ext(mime or "")
+                content, ext = _image_bytes_for_b2b(content)
                 return (f"{zip_prefix}{base}_{suffix}{ext}", content)
             except Exception:
                 return None
@@ -869,9 +915,9 @@ async def download_all_images(session_id: int, request: Request, db: DBSession =
         try:
             resp = requests.get(url, headers=_DL_HEADERS, timeout=15)
             if resp.status_code == 200:
-                ext = _detect_ext(resp.headers.get("content-type", ""))
+                content, ext = _image_bytes_for_b2b(resp.content)
                 fname = f"{zip_prefix}{base}_{suffix}{ext}"
-                return (fname, resp.content)
+                return (fname, content)
         except Exception:
             pass
         return None

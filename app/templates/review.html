@@ -360,6 +360,7 @@ let keys = [];
 let currentKey = null;
 let filter = 'all';
 let currentRenderToken = 0;
+let _activePasteTarget = null;
 
 function isLocalFile(url) {
   return url && url.startsWith('file://');
@@ -837,7 +838,7 @@ function renderMain(key) {
       </div>
     </div>
 
-    <div id="image-dropzone" class="selected-preview mb-6 dropzone" data-key="${escapeAttr(key)}" data-id="${entry.id}">
+    <div id="image-dropzone" class="selected-preview mb-6 dropzone" tabindex="0" data-key="${escapeAttr(key)}" data-id="${entry.id}">
       ${selectedUrl ? `
         ${isLocalFile(selectedUrl)
           ? localFileImage(selectedUrl, {
@@ -864,13 +865,13 @@ function renderMain(key) {
         ` : ''}
       ` : `<div class="dropzone-empty">
         <div class="dropzone-empty-title">Drop an image here</div>
-        <div class="dropzone-empty-hint">or click a candidate below · paste a URL · re-search</div>
+        <div class="dropzone-empty-hint">drop, click, or paste an image from a website</div>
       </div>`}
       <div class="dropzone-hint">Drop to replace</div>
     </div>
     <input type="file" id="image-drop-fallback" accept="image/*" style="display:none">
     <div class="text-muted" style="font-size:0.7rem;margin-top:-12px;margin-bottom:12px;text-align:center">
-      Tip — drag any image from your computer onto the box above to use it as the highlight (saved as <code>${escapeHtml((item.item_code || '').replace(/[^A-Za-z0-9_\-]/g, '_'))}_01</code>).
+      Tip — drag or paste any image onto the box above to use it as the highlight (saved as <code>${escapeHtml((item.item_code || '').replace(/[^A-Za-z0-9_\-]/g, '_'))}_01</code>). WebP is converted to JPG automatically.
     </div>
 
     <div id="custom-url-input" style="display:none" class="mb-4">
@@ -983,6 +984,7 @@ function renderMain(key) {
 function _wireDropzone(zone, fallbackInput, key, itemId) {
   if (!zone) return;
   const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  _activePasteTarget = { key, itemId };
 
   zone.addEventListener('dragenter', (e) => { stop(e); zone.classList.add('drag-over'); });
   zone.addEventListener('dragover',  (e) => { stop(e); zone.classList.add('drag-over'); });
@@ -1006,11 +1008,61 @@ function _wireDropzone(zone, fallbackInput, key, itemId) {
       fallbackInput.value = '';
     });
   }
+
+  zone.addEventListener('paste', (e) => handleImagePaste(e, key, itemId));
 }
 
-async function uploadReplacement(file, key, itemId) {
+function clipboardImageFile(e) {
+  const clipboard = e.clipboardData;
+  if (!clipboard) return null;
+  for (const file of Array.from(clipboard.files || [])) {
+    if (file && file.type && file.type.startsWith('image/')) return file;
+  }
+  for (const item of Array.from(clipboard.items || [])) {
+    if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) return file;
+    }
+  }
+  return null;
+}
+
+async function handleImagePaste(e, key, itemId) {
+  const target = e.target;
+  const tag = (target && target.tagName ? target.tagName : '').toLowerCase();
+  const isTyping = tag === 'input' || tag === 'textarea' || (target && target.isContentEditable);
+  const file = clipboardImageFile(e);
+
+  if (file) {
+    e.preventDefault();
+    e.stopPropagation();
+    await uploadReplacement(file, key, itemId, 'manually pasted');
+    return;
+  }
+
+  if (isTyping) return;
+
+  let text = (e.clipboardData && e.clipboardData.getData('text/plain') || '').trim();
+  if (!/^https?:\/\/\S+$/i.test(text)) {
+    const html = (e.clipboardData && e.clipboardData.getData('text/html') || '').trim();
+    const imgMatch = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+    if (imgMatch) text = imgMatch[1];
+  }
+  if (/^https?:\/\/\S+$/i.test(text)) {
+    e.preventDefault();
+    e.stopPropagation();
+    await submitCustomUrl(key, itemId, text);
+  }
+}
+
+document.addEventListener('paste', (e) => {
+  if (!_activePasteTarget || !currentKey) return;
+  handleImagePaste(e, _activePasteTarget.key, _activePasteTarget.itemId);
+});
+
+async function uploadReplacement(file, key, itemId, reason = 'manually dropped') {
   if (!file.type.startsWith('image/')) {
-    alert('Please drop an image file.');
+    alert('Please drop or paste an image file.');
     return;
   }
   const zone = document.getElementById('image-dropzone');
@@ -1036,7 +1088,7 @@ async function uploadReplacement(file, key, itemId) {
     const entry = state[key] || {};
     entry.candidates = [data.url, ...(entry.candidates || []).filter(u => u !== data.url)];
     entry.scores = { ...(entry.scores || {}), [data.url]: 1.0 };
-    entry.match_reasons = { ...(entry.match_reasons || {}), [data.url]: 'manually dropped' };
+    entry.match_reasons = { ...(entry.match_reasons || {}), [data.url]: reason };
     entry.approved_url = data.url;
     entry.suggested_url = data.url;
     entry.review_status = 'approved';
@@ -1044,7 +1096,7 @@ async function uploadReplacement(file, key, itemId) {
     entry.auto_selected = false;
     entry.search_confidence = 1.0;
     entry.confidence_label = 'high';
-    entry.confidence_reason = 'manually dropped';
+    entry.confidence_reason = reason;
     state[key] = entry;
     renderMain(key);
     if (typeof updateSidebar === 'function') updateSidebar();
@@ -1060,8 +1112,9 @@ function showCustomUrlInput(key, itemId) {
   document.getElementById('custom-url-field').focus();
 }
 
-async function submitCustomUrl(key, itemId) {
-  const url = document.getElementById('custom-url-field').value.trim();
+async function submitCustomUrl(key, itemId, urlOverride = '') {
+  const field = document.getElementById('custom-url-field');
+  const url = (urlOverride || (field ? field.value : '')).trim();
   if (!url) return;
   const resp = await fetch(`/review/${SESSION_ID}/set-url`, {
     method: 'POST',
