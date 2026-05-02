@@ -831,7 +831,8 @@ function renderMain(key) {
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
         ${canApplyGroup ? `<button class="btn btn-primary btn-sm" id="apply-group-btn">Apply to Group (${groupKeys.length})</button>` : ''}
-        <button class="btn btn-outline btn-sm" id="custom-url-toggle">Paste URL</button>
+        <button class="btn btn-primary btn-sm" id="clipboard-image-btn" title="Copy an image or image URL from another website, then click this">Paste Image / URL</button>
+        <button class="btn btn-outline btn-sm" id="custom-url-toggle">Type URL</button>
         <button class="btn btn-outline btn-sm" id="research-toggle" style="border-color:var(--primary);color:var(--primary)">Re-Search</button>
         <a href="${googleHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem" title="${canReverseSearch ? 'Find this exact image on Google Lens' : 'Search Google Images'}">${googleLabel}</a>
         <a href="${bingHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem" title="${canReverseSearch ? 'Find this exact image on Bing Visual Search' : 'Search Bing Images'}">${bingLabel}</a>
@@ -865,13 +866,13 @@ function renderMain(key) {
         ` : ''}
       ` : `<div class="dropzone-empty">
         <div class="dropzone-empty-title">Drop an image here</div>
-        <div class="dropzone-empty-hint">drop, click, or paste an image from a website</div>
+        <div class="dropzone-empty-hint">or copy an image/image URL and click Paste Image / URL</div>
       </div>`}
       <div class="dropzone-hint">Drop to replace</div>
     </div>
     <input type="file" id="image-drop-fallback" accept="image/*" style="display:none">
     <div class="text-muted" style="font-size:0.7rem;margin-top:-12px;margin-bottom:12px;text-align:center">
-      Tip — drag or paste any image onto the box above to use it as the highlight (saved as <code>${escapeHtml((item.item_code || '').replace(/[^A-Za-z0-9_\-]/g, '_'))}_01</code>). WebP is converted to JPG automatically.
+      Tip — copy an image from a website, then click <strong>Paste Image / URL</strong>. You can also drag a file here or type a URL. WebP is converted to JPG automatically.
     </div>
 
     <div id="custom-url-input" style="display:none" class="mb-4">
@@ -957,6 +958,9 @@ function renderMain(key) {
   const customUrlToggle = document.getElementById('custom-url-toggle');
   if (customUrlToggle) customUrlToggle.addEventListener('click', () => showCustomUrlInput(key, entry.id));
 
+  const clipboardImageBtn = document.getElementById('clipboard-image-btn');
+  if (clipboardImageBtn) clipboardImageBtn.addEventListener('click', () => pasteImageOrUrlFromClipboard(key, entry.id));
+
   const applyGroupBtn = document.getElementById('apply-group-btn');
   if (applyGroupBtn) applyGroupBtn.addEventListener('click', () => approveGroup(key));
 
@@ -1025,6 +1029,61 @@ function clipboardImageFile(e) {
     }
   }
   return null;
+}
+
+function extensionFromMime(type) {
+  const clean = String(type || '').toLowerCase();
+  if (clean.includes('png')) return 'png';
+  if (clean.includes('webp')) return 'webp';
+  if (clean.includes('gif')) return 'gif';
+  if (clean.includes('jpeg') || clean.includes('jpg')) return 'jpg';
+  return 'png';
+}
+
+async function pasteImageOrUrlFromClipboard(key, itemId) {
+  const btn = document.getElementById('clipboard-image-btn');
+  const original = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Reading clipboard...';
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.read) {
+      const clipboardItems = await navigator.clipboard.read();
+      for (const item of clipboardItems) {
+        const imageType = (item.types || []).find(t => String(t).startsWith('image/'));
+        if (!imageType) continue;
+        const blob = await item.getType(imageType);
+        const file = new File(
+          [blob],
+          `clipboard.${extensionFromMime(imageType || blob.type)}`,
+          { type: imageType || blob.type || 'image/png' },
+        );
+        await uploadReplacement(file, key, itemId, 'clipboard image');
+        return;
+      }
+    }
+
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (/^https?:\/\/\S+$/i.test(text)) {
+        await submitCustomUrl(key, itemId, text);
+        return;
+      }
+    }
+
+    showCustomUrlInput(key, itemId);
+    alert('I could not find an image in the clipboard. Paste the image URL in the box that opened, or drag the file onto the preview.');
+  } catch (err) {
+    showCustomUrlInput(key, itemId);
+    alert('Clipboard access was blocked by the browser. Paste the image URL in the box that opened, or drag the image file onto the preview.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = original || 'Paste Image / URL';
+    }
+  }
 }
 
 async function handleImagePaste(e, key, itemId) {
