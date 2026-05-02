@@ -477,6 +477,40 @@ _SIZE_SUFFIX_RE = re.compile(r"(?i)^(.+?-[WMUKBGT])-\d{1,2}(?:\.\d+)?$")
 _TRAILING_SIZE_TOKEN_RE = re.compile(r"(?i)^(.+?)-(?:eu|us|uk)?\d{1,2}(?:\.\d+)?$")
 _SIZE_NUMERIC_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
+# Canonical ordering for letter-based apparel sizes. Anything not in this map
+# falls back to alphabetical, but the common cases (S, M, L, XL, ...) need an
+# explicit rank — alphabetical puts L before M before S before XL, which is
+# wrong on order sheets.
+_LETTER_SIZE_RANKS: dict[str, int] = {
+    "XXXS": -3, "XXS": -2, "XS": -1,
+    "S": 0, "S/M": 0,
+    "M": 1, "M/L": 1,
+    "L": 2, "L/XL": 2,
+    "XL": 3,
+    "XXL": 4, "2XL": 4,
+    "XXXL": 5, "3XL": 5,
+    "XXXXL": 6, "4XL": 6,
+    "XXXXXL": 7, "5XL": 7,
+    "6XL": 8,
+    "OS": 9, "ONE SIZE": 9, "FREE": 9, "FREE SIZE": 9,
+}
+
+
+def _letter_size_rank(size_str: str) -> float:
+    """Return a numeric rank for letter-only apparel sizes (XS<S<M<L<XL...).
+    Returns +inf for sizes that aren't letter codes so numeric sizes are
+    handled by the numeric branch instead.
+    """
+    if not size_str:
+        return float("inf")
+    key = re.sub(r"\s+", " ", size_str.strip().upper())
+    if key in _LETTER_SIZE_RANKS:
+        return _LETTER_SIZE_RANKS[key]
+    compact = key.replace(" ", "").replace("-", "")
+    if compact in _LETTER_SIZE_RANKS:
+        return _LETTER_SIZE_RANKS[compact]
+    return float("inf")
+
 # Search source families — lets us tell "Google result" from "Bing result" from "brand site result"
 _GOOGLE_SOURCE_NAMES = frozenset({
     "google",
@@ -559,14 +593,21 @@ def item_sort_key(
     base_code = normalize_base_item_code(item_code, item_group, style_name)
     color_label = (color_name or color_code or "").strip()
     size_str = str(size or "").strip()
-    size_match = _SIZE_NUMERIC_RE.search(size_str)
-    size_num = float(size_match.group(1)) if size_match else float("inf")
+    letter_rank = _letter_size_rank(size_str)
+    if letter_rank != float("inf"):
+        # Pure letter size (e.g. "S", "XL", "2XL") — skip numeric branch so
+        # the digit in "2XL" doesn't get treated as size 2.
+        size_num = float("inf")
+    else:
+        size_match = _SIZE_NUMERIC_RE.search(size_str)
+        size_num = float(size_match.group(1)) if size_match else float("inf")
     return (
         (brand or "").strip().lower(),
         (style_name or item_group or "").strip().lower(),
         base_code.lower(),
         color_label.lower(),
         size_num,
+        letter_rank,
         size_str.lower(),
         (item_code or "").strip().lower(),
     )
