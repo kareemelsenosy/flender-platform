@@ -447,10 +447,15 @@ async def download_file(token: str, request: Request, db: DBSession = Depends(ge
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         return _download_error_page(
             "Download link expired",
-            "Download links are kept for 24 hours. Please re-export to get a fresh link.",
+            "Download links are kept for 24 hours after the last download. Please re-export to get a fresh link.",
             410,
             session_id=gen.session_id,
         )
+
+    # Sliding expiry: each successful download bumps the link forward 24h,
+    # so users actively reviewing/correcting images don't lose access.
+    gen.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    db.commit()
 
     return FileResponse(
         gen.file_path,
@@ -492,10 +497,14 @@ async def download_zip(token: str, request: Request, db: DBSession = Depends(get
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         return _download_error_page(
             "Download link expired",
-            "Download links are kept for 24 hours. Please re-export to get a fresh link.",
+            "Download links are kept for 24 hours after the last download. Please re-export to get a fresh link.",
             410,
             session_id=gen.session_id,
         )
+
+    # Sliding expiry: each successful download bumps the link forward 24h.
+    gen.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    db.commit()
 
     return FileResponse(
         gen.file_path,
