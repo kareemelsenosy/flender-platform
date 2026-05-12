@@ -172,7 +172,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             file_path=out_path,
             filename=os.path.basename(out_path),
             image_folder_path=images_folder,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
         )
         db.add(gen_file)
 
@@ -202,7 +202,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
                     token=zip_token,
                     file_path=zip_path,
                     filename="images.zip",
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
                 )
                 db.add(zip_gen)
                 db.commit()
@@ -385,23 +385,72 @@ def cleanup_expired_files(db_session) -> int:
     return deleted
 
 
+def _download_error_page(title: str, message: str, status_code: int,
+                          session_id: int | None = None) -> HTMLResponse:
+    """Return an HTML error page for failed downloads.
+
+    Browsers initiate downloads via top-level navigation; if we return a JSON
+    body the browser saves it to disk (with a .json extension, since the
+    Content-Type is application/json) and the download manager reports it as
+    a failed transfer ("Site wasn't available"). An HTML response renders in
+    the tab instead, so the user sees a real error and a path forward.
+    """
+    re_export = ""
+    if session_id is not None:
+        re_export = (
+            f'<a href="/generate/{session_id}" '
+            f'style="display:inline-block;margin-top:16px;padding:10px 18px;'
+            f'background:#000;color:#fff;border-radius:6px;text-decoration:none;'
+            f'font-weight:600">Re-export this session</a>'
+        )
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:520px;margin:80px auto;padding:0 24px;color:#111">
+  <h1 style="font-size:1.5rem;margin-bottom:12px">{title}</h1>
+  <p style="color:#444;line-height:1.5">{message}</p>
+  {re_export}
+  <p style="margin-top:20px"><a href="/" style="color:#2563eb">← Back to dashboard</a></p>
+</body></html>"""
+    return HTMLResponse(html, status_code=status_code)
+
+
 @router.get("/download/{token}")
 async def download_file(token: str, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
     if not uid:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return RedirectResponse(f"/login?next=/download/{token}", status_code=302)
 
     gen = db.query(GeneratedFile).filter(GeneratedFile.token == token).first()
-    if not gen or not os.path.exists(gen.file_path):
-        return JSONResponse({"error": "File not found or expired"}, status_code=404)
+    if not gen:
+        return _download_error_page(
+            "Download unavailable",
+            "This download link is invalid or has been removed. Please re-export the session to get a fresh link.",
+            404,
+        )
+    if not os.path.exists(gen.file_path):
+        return _download_error_page(
+            "Export file missing",
+            "The exported file is no longer on the server (the storage may have been reset on redeploy). Please re-export to regenerate it.",
+            404,
+            session_id=gen.session_id,
+        )
 
     # Verify ownership
     sess = db.query(Session).filter(Session.id == gen.session_id, Session.user_id == uid).first()
     if not sess:
-        return JSONResponse({"error": "forbidden"}, status_code=403)
+        return _download_error_page(
+            "Not allowed",
+            "You don't have access to this download.",
+            403,
+        )
 
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        return JSONResponse({"error": "Download link expired"}, status_code=410)
+        return _download_error_page(
+            "Download link expired",
+            "Download links are kept for 24 hours. Please re-export to get a fresh link.",
+            410,
+            session_id=gen.session_id,
+        )
 
     return FileResponse(
         gen.file_path,
@@ -414,19 +463,39 @@ async def download_file(token: str, request: Request, db: DBSession = Depends(ge
 async def download_zip(token: str, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
     if not uid:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return RedirectResponse(f"/login?next=/download-zip/{token}", status_code=302)
 
     gen = db.query(GeneratedFile).filter(GeneratedFile.token == token).first()
-    if not gen or not os.path.exists(gen.file_path):
-        return JSONResponse({"error": "File not found or expired"}, status_code=404)
+    if not gen:
+        return _download_error_page(
+            "Download unavailable",
+            "This image ZIP link is invalid or has been removed. Please re-export the session to get a fresh link.",
+            404,
+        )
+    if not os.path.exists(gen.file_path):
+        return _download_error_page(
+            "Image ZIP missing",
+            "The image ZIP is no longer on the server (the storage may have been reset on redeploy). Please re-export to regenerate it.",
+            404,
+            session_id=gen.session_id,
+        )
 
     # Verify ownership
     sess = db.query(Session).filter(Session.id == gen.session_id, Session.user_id == uid).first()
     if not sess:
-        return JSONResponse({"error": "forbidden"}, status_code=403)
+        return _download_error_page(
+            "Not allowed",
+            "You don't have access to this download.",
+            403,
+        )
 
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        return JSONResponse({"error": "Download link expired"}, status_code=410)
+        return _download_error_page(
+            "Download link expired",
+            "Download links are kept for 24 hours. Please re-export to get a fresh link.",
+            410,
+            session_id=gen.session_id,
+        )
 
     return FileResponse(
         gen.file_path,
