@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const open = getOpenSession();
+    const open = await getOpenSession();
     return NextResponse.json(open);
   } catch (error) {
     console.error('Current session error:', error);

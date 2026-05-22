@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
-import fs from 'fs';
-import path from 'path';
-import { getDb, SessionRow } from '@/lib/db';
+import { query, queryOne, SessionRow } from '@/lib/db';
+import { putFile } from '@/lib/storage';
 import { buildFilename, getFileExtension } from '@/lib/utils';
 
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
-    if (!fs.existsSync(UPLOADS_DIR)) {
-      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-    }
-
     const formData = await request.formData();
     const session_id = formData.get('session_id') as string;
     const customer = formData.get('customer') as string;
@@ -37,8 +32,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'All fields are required (at least 1 brand)' }, { status: 400 });
     }
 
-    const db = getDb();
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(session_id) as SessionRow | undefined;
+    const session = await queryOne<SessionRow>(
+      'SELECT * FROM sessions WHERE id = $1', [session_id]
+    );
     if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 400 });
     }
@@ -52,9 +48,6 @@ export async function POST(request: NextRequest) {
     }
 
     const id = uuidv4();
-    const recordDir = path.join(UPLOADS_DIR, id);
-    fs.mkdirSync(recordDir, { recursive: true });
-
     const savedFilenames: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
@@ -64,36 +57,38 @@ export async function POST(request: NextRequest) {
         ? buildFilename(brands, type, ext)
         : buildFilename(brands, type, ext, i + 1);
 
-      const filePath = path.join(recordDir, filename);
       const arrayBuffer = await file.arrayBuffer();
-      fs.writeFileSync(filePath, Buffer.from(arrayBuffer));
+      await putFile(id, filename, Buffer.from(arrayBuffer), file.type || undefined);
       savedFilenames.push(filename);
     }
 
     const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO records (id, session_id, customer, brands, num_posts, type, content_type, content_source, date, files, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      session_id,
-      customer,
-      JSON.stringify(brands),
-      files.length,
-      type,
-      content_type,
-      content_source,
-      date,
-      JSON.stringify(savedFilenames),
-      now
+    await query(
+      `INSERT INTO records
+         (id, session_id, customer, brands, num_posts, type, content_type, content_source, date, files, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        id,
+        session_id,
+        customer,
+        JSON.stringify(brands),
+        files.length,
+        type,
+        content_type,
+        content_source,
+        date,
+        JSON.stringify(savedFilenames),
+        now,
+      ]
     );
 
-    db.prepare('INSERT OR IGNORE INTO customers (name) VALUES (?)').run(customer);
-    const insertBrand = db.prepare('INSERT OR IGNORE INTO brands (name) VALUES (?)');
-    for (const b of brands) insertBrand.run(b);
+    await query('INSERT INTO customers (name) VALUES ($1) ON CONFLICT DO NOTHING', [customer]);
+    for (const b of brands) {
+      await query('INSERT INTO brands (name) VALUES ($1) ON CONFLICT DO NOTHING', [b]);
+    }
 
-    const record = db.prepare('SELECT * FROM records WHERE id = ?').get(id);
+    const record = await queryOne('SELECT * FROM records WHERE id = $1', [id]);
     return NextResponse.json(record, { status: 201 });
   } catch (error) {
     console.error('Upload error:', error);

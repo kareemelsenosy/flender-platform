@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
-import fs from 'fs';
-import path from 'path';
-import { getDb, SessionRow } from '@/lib/db';
+import { query, queryOne, SessionRow } from '@/lib/db';
+import { getFile } from '@/lib/storage';
 import { slugifySessionName } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
-
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 
 interface RecordRow {
   id: string;
@@ -26,13 +23,15 @@ interface RecordRow {
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb();
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(params.id) as SessionRow | undefined;
+    const session = await queryOne<SessionRow>(
+      'SELECT * FROM sessions WHERE id = $1', [params.id]
+    );
     if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
 
-    const records = db
-      .prepare('SELECT * FROM records WHERE session_id = ? ORDER BY created_at DESC')
-      .all(params.id) as RecordRow[];
+    const records = await query<RecordRow>(
+      'SELECT * FROM records WHERE session_id = $1 ORDER BY created_at DESC',
+      [params.id]
+    );
 
     const zip = new JSZip();
     const rootName = `Session_${slugifySessionName(session.name)}`;
@@ -64,19 +63,17 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     const xlsxBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
     root.file('records.xlsx', xlsxBuf);
 
-    // Files grouped by customer/date
+    // Files grouped by customer/date — pulled from object storage
     for (const r of records) {
       const files = (() => { try { return JSON.parse(r.files) as string[]; } catch { return []; } })();
-      const recordDir = path.join(UPLOADS_DIR, r.id);
-      if (!fs.existsSync(recordDir)) continue;
+      if (files.length === 0) continue;
 
       const customerFolder = root.folder(r.customer)!;
       const dateFolder = customerFolder.folder(r.date)!;
 
       for (const filename of files) {
-        const filePath = path.join(recordDir, filename);
-        if (fs.existsSync(filePath)) {
-          const data = fs.readFileSync(filePath);
+        const data = await getFile(r.id, filename);
+        if (data) {
           dateFolder.file(filename, data);
         }
       }

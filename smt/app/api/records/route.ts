@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { query, queryOne, getOpenSession } from '@/lib/db';
+import { deletePrefix } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
-import { getDb, getOpenSession } from '@/lib/db';
-import fs from 'fs';
-import path from 'path';
-
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 
 export async function GET(request: NextRequest) {
   try {
-    const db = getDb();
     const { searchParams } = new URL(request.url);
 
     const customer = searchParams.get('customer') || undefined;
@@ -20,39 +16,41 @@ export async function GET(request: NextRequest) {
     const open = searchParams.get('open');
 
     const conditions: string[] = [];
-    const values: string[] = [];
+    const values: unknown[] = [];
+    const ph = () => `$${values.length}`; // call AFTER pushing the value
 
     if (customer) {
-      conditions.push('LOWER(customer) LIKE LOWER(?)');
       values.push(`%${customer}%`);
+      conditions.push(`LOWER(customer) LIKE LOWER(${ph()})`);
     }
     if (brand) {
       // brands is a JSON array string — substring match is fine for filtering
-      conditions.push('LOWER(brands) LIKE LOWER(?)');
       values.push(`%${brand}%`);
+      conditions.push(`LOWER(brands) LIKE LOWER(${ph()})`);
     }
     if (startDate) {
-      conditions.push('date >= ?');
       values.push(startDate);
+      conditions.push(`date >= ${ph()}`);
     }
     if (endDate) {
-      conditions.push('date <= ?');
       values.push(endDate);
+      conditions.push(`date <= ${ph()}`);
     }
     if (sessionId) {
-      conditions.push('session_id = ?');
       values.push(sessionId);
+      conditions.push(`session_id = ${ph()}`);
     } else if (open === 'true') {
-      const openSession = getOpenSession();
+      const openSession = await getOpenSession();
       if (!openSession) return NextResponse.json([]);
-      conditions.push('session_id = ?');
       values.push(openSession.id);
+      conditions.push(`session_id = ${ph()}`);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const records = db
-      .prepare(`SELECT * FROM records ${whereClause} ORDER BY created_at DESC`)
-      .all(...values);
+    const records = await query(
+      `SELECT * FROM records ${whereClause} ORDER BY created_at DESC`,
+      values
+    );
 
     return NextResponse.json(records);
   } catch (error) {
@@ -70,22 +68,18 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Record ID required' }, { status: 400 });
     }
 
-    const db = getDb();
-    const record = db.prepare('SELECT * FROM records WHERE id = ?').get(id) as {
-      id: string;
-      files: string;
-    } | undefined;
+    const record = await queryOne<{ id: string; files: string }>(
+      'SELECT * FROM records WHERE id = $1',
+      [id]
+    );
 
     if (!record) {
       return NextResponse.json({ error: 'Record not found' }, { status: 404 });
     }
 
-    const recordDir = path.join(UPLOADS_DIR, id);
-    if (fs.existsSync(recordDir)) {
-      fs.rmSync(recordDir, { recursive: true, force: true });
-    }
-
-    db.prepare('DELETE FROM records WHERE id = ?').run(id);
+    // Remove the record's stored files, then the row
+    await deletePrefix(id);
+    await query('DELETE FROM records WHERE id = $1', [id]);
 
     return NextResponse.json({ success: true });
   } catch (error) {

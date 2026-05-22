@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
-import { getDb } from '@/lib/db';
+import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,11 +39,11 @@ export async function GET(req: NextRequest) {
     const mm = String(month).padStart(2, '0');
     const yyyy = String(year);
 
-    const db = getDb();
     // dates stored as DD-MM-YYYY
-    const records = db
-      .prepare(`SELECT * FROM records WHERE substr(date, 4, 2) = ? AND substr(date, 7, 4) = ? ORDER BY customer ASC, date ASC`)
-      .all(mm, yyyy) as RecordRow[];
+    const records = await query<RecordRow>(
+      `SELECT * FROM records WHERE substr(date, 4, 2) = $1 AND substr(date, 7, 4) = $2 ORDER BY customer ASC, date ASC`,
+      [mm, yyyy]
+    );
 
     // ── Aggregate by Customer ────────────────────────────────────────────────
     interface CustomerAgg {

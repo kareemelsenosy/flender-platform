@@ -1,21 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-import { getDb, SessionRow } from '@/lib/db';
+import { query, queryOne, SessionRow } from '@/lib/db';
+import { deletePrefix } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
-
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb();
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(params.id) as SessionRow | undefined;
+    const session = await queryOne<SessionRow>('SELECT * FROM sessions WHERE id = $1', [params.id]);
     if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
 
-    const records = db
-      .prepare('SELECT * FROM records WHERE session_id = ? ORDER BY created_at DESC')
-      .all(params.id);
+    const records = await query(
+      'SELECT * FROM records WHERE session_id = $1 ORDER BY created_at DESC',
+      [params.id]
+    );
 
     return NextResponse.json({ ...session, records });
   } catch (error) {
@@ -26,15 +23,17 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 
 export async function PATCH(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb();
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(params.id) as SessionRow | undefined;
+    const session = await queryOne<SessionRow>('SELECT * FROM sessions WHERE id = $1', [params.id]);
     if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     if (session.status === 'closed') {
       return NextResponse.json({ error: 'Session already closed' }, { status: 400 });
     }
     const now = new Date().toISOString();
-    db.prepare("UPDATE sessions SET status = 'closed', closed_at = ? WHERE id = ?").run(now, params.id);
-    const updated = db.prepare('SELECT * FROM sessions WHERE id = ?').get(params.id);
+    await query(
+      "UPDATE sessions SET status = 'closed', closed_at = $1 WHERE id = $2",
+      [now, params.id]
+    );
+    const updated = await queryOne<SessionRow>('SELECT * FROM sessions WHERE id = $1', [params.id]);
     return NextResponse.json(updated);
   } catch (error) {
     console.error('Session close error:', error);
@@ -44,18 +43,20 @@ export async function PATCH(_req: NextRequest, { params }: { params: { id: strin
 
 export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb();
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(params.id) as SessionRow | undefined;
+    const session = await queryOne<SessionRow>('SELECT * FROM sessions WHERE id = $1', [params.id]);
     if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
 
-    // Find record ids to delete their upload dirs
-    const records = db.prepare('SELECT id FROM records WHERE session_id = ?').all(params.id) as { id: string }[];
+    // Remove the stored files for every record in this session
+    const records = await query<{ id: string }>(
+      'SELECT id FROM records WHERE session_id = $1',
+      [params.id]
+    );
     for (const r of records) {
-      const dir = path.join(UPLOADS_DIR, r.id);
-      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      await deletePrefix(r.id);
     }
 
-    db.prepare('DELETE FROM sessions WHERE id = ?').run(params.id);
+    // FK ON DELETE CASCADE removes the records rows
+    await query('DELETE FROM sessions WHERE id = $1', [params.id]);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Session delete error:', error);

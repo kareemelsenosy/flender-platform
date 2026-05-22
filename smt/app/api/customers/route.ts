@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
+import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
-import { getDb } from '@/lib/db';
 
 export async function GET() {
   try {
-    const db = getDb();
-    const customers = db.prepare('SELECT name FROM customers ORDER BY name ASC').all() as { name: string }[];
+    const customers = await query<{ name: string }>(
+      'SELECT name FROM customers ORDER BY name ASC'
+    );
     return NextResponse.json(customers.map((c) => c.name));
   } catch (error) {
     console.error('Customers fetch error:', error);
