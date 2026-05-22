@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FLENDER — AI Tools</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Bebas+Neue&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+      background: #fafafa;
+      color: #1f1f1f;
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ───────────────────────────────────────────── */
+    .hub-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 20px 40px;
+      background: #fff;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .hub-brand { display: flex; flex-direction: column; }
+    .hub-brand-name {
+      font-family: 'Bebas Neue', 'Arial Narrow', sans-serif;
+      font-weight: 400; letter-spacing: 5px; font-size: 1.7rem;
+      color: #111; line-height: 1;
+    }
+    .hub-brand-tag {
+      font-size: 0.72rem; letter-spacing: 0.5px;
+      color: #9a9a9a; margin-top: 3px;
+    }
+    .hub-user { display: flex; align-items: center; gap: 16px; }
+    .hub-user-info { text-align: right; }
+    .hub-user-name { font-size: 0.86rem; font-weight: 600; color: #1f1f1f; }
+    .hub-user-email { font-size: 0.74rem; color: #9a9a9a; }
+    .hub-avatar {
+      width: 38px; height: 38px; border-radius: 50%;
+      background: #111; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.9rem;
+    }
+    .hub-logout {
+      padding: 8px 16px; border: 1px solid #e4e4e4; background: #fff;
+      border-radius: 999px; font-family: inherit; font-size: 0.8rem;
+      font-weight: 600; color: #555; cursor: pointer; text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .hub-logout:hover { background: #111; color: #fff; border-color: #111; }
+
+    /* ── Body ──────────────────────────────────────────────── */
+    .hub-body { max-width: 940px; margin: 0 auto; padding: 56px 40px 64px; }
+    .hub-greeting {
+      font-family: 'Bebas Neue', 'Arial Narrow', sans-serif;
+      font-weight: 400; letter-spacing: 2px; font-size: 2.6rem;
+      color: #111; line-height: 1.05; margin-bottom: 6px;
+    }
+    .hub-sub { font-size: 0.98rem; color: #777; margin-bottom: 40px; }
+    .hub-section-label {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 1.2px;
+      text-transform: uppercase; color: #b0b0b0; margin-bottom: 16px;
+    }
+
+    /* ── Tool cards ────────────────────────────────────────── */
+    .hub-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 22px;
+    }
+    .tool-card {
+      display: flex; flex-direction: column;
+      background: #fff; border: 1px solid #ededed;
+      border-radius: 16px; padding: 28px;
+      text-decoration: none; color: inherit;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .tool-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 14px 32px rgba(0,0,0,0.09);
+      border-color: #ddd;
+    }
+    .tool-card-top {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .tool-icon {
+      width: 54px; height: 54px; border-radius: 13px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .tool-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.4px;
+      color: #1a7f4b; background: #e7f6ee;
+      padding: 4px 10px; border-radius: 999px;
+    }
+    .tool-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #1a7f4b; }
+    .tool-name {
+      font-size: 1.22rem; font-weight: 700; color: #111;
+      margin-bottom: 7px; letter-spacing: -0.01em;
+    }
+    .tool-desc {
+      font-size: 0.88rem; line-height: 1.55; color: #777;
+      margin-bottom: 22px; flex: 1;
+    }
+    .tool-open {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      padding: 11px 18px; border-radius: 10px;
+      background: #f3f3f3; color: #111;
+      font-weight: 700; font-size: 0.86rem;
+      transition: background 0.18s ease, color 0.18s ease;
+    }
+    .tool-card:hover .tool-open { background: #111; color: #fff; }
+
+    .hub-foot {
+      margin-top: 52px; text-align: center;
+      font-size: 0.74rem; color: #b8b8b8;
+    }
+  </style>
+</head>
+<body>
+  <!-- Top bar -->
+  <header class="hub-topbar">
+    <div class="hub-brand">
+      <span class="hub-brand-name">FLENDER</span>
+      <span class="hub-brand-tag">AI Tools</span>
+    </div>
+    <div class="hub-user">
+      <div class="hub-user-info">
+        <div class="hub-user-name">{{ user.username }}</div>
+        {% if user.email %}<div class="hub-user-email">{{ user.email }}</div>{% endif %}
+      </div>
+      <div class="hub-avatar">{{ (user.username[0] | upper) if user.username else 'U' }}</div>
+      <a href="/logout" class="hub-logout">Sign out</a>
+    </div>
+  </header>
+
+  <!-- Body -->
+  <main class="hub-body">
+    <h1 class="hub-greeting">Welcome back, {{ user.username }}</h1>
+    <p class="hub-sub">Choose a tool to get started — each one opens in a new tab.</p>
+
+    <p class="hub-section-label">Available Tools · {{ tools | length }}</p>
+
+    <div class="hub-grid">
+      {% for tool in tools %}
+      <a class="tool-card" href="{{ tool.url }}" target="_blank" rel="noopener noreferrer">
+        <div class="tool-card-top">
+          <div class="tool-icon" style="background: {{ tool.accent_soft }};">
+            {% if tool.icon == 'sheet' %}
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+                 stroke="{{ tool.accent }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/>
+            </svg>
+            {% else %}
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+                 stroke="{{ tool.accent }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3" fill="{{ tool.accent }}" stroke="none"/>
+              <path d="M7 7a7 7 0 0 0 0 10 M17 7a7 7 0 0 1 0 10 M4 4a11 11 0 0 0 0 16 M20 4a11 11 0 0 1 0 16"/>
+            </svg>
+            {% endif %}
+          </div>
+          <span class="tool-badge"><span class="tool-badge-dot"></span>Live</span>
+        </div>
+        <div class="tool-name">{{ tool.name }}</div>
+        <div class="tool-desc">{{ tool.description }}</div>
+        <div class="tool-open">
+          Open Tool
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 17 L17 7 M9 7h8v8"/>
+          </svg>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+
+    <p class="hub-foot">Confidential — For FLENDER GROUP internal use only</p>
+  </main>
+</body>
+</html>

@@ -176,6 +176,7 @@ async def server_error_handler(request: Request, exc):
 from app.routers import (  # noqa: E402
     api_routes,
     auth_routes,
+    hub_routes,
     upload_routes,
     mapping_routes,
     search_routes,
@@ -187,6 +188,7 @@ from app.routers import (  # noqa: E402
 
 app.include_router(api_routes.router)
 app.include_router(auth_routes.router)
+app.include_router(hub_routes.router)
 app.include_router(upload_routes.router)
 app.include_router(mapping_routes.router)
 app.include_router(search_routes.router)

@@ -79,7 +79,7 @@ async def generate_page(session_id: int, request: Request, db: DBSession = Depen
 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess:
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/order-sheet", status_code=302)
 
     materialize_default_review_approvals(db, session_id)
     _materialize_google_sheet_conversion_approvals(db, sess)

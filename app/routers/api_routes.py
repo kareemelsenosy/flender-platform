@@ -5,6 +5,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DBSession
 
@@ -192,7 +193,7 @@ async def health_check(db: DBSession = Depends(get_db)):
 
 @router.get("/dashboard")
 async def dashboard_redirect():
-    return RedirectResponse("/", status_code=302)
+    return RedirectResponse("/order-sheet", status_code=302)
 
 
 @router.get("/api/notifications/poll")
@@ -366,7 +367,19 @@ async def ai_assistant_chat_api(request: Request, db: DBSession = Depends(get_db
     if item_context:
         context["item"] = item_context
 
-    result = ai_assistant_chat(message, context)
+    try:
+        result = await run_in_threadpool(ai_assistant_chat, message, context)
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "ai_available": ai_available(),
+                "ai_status": ai_runtime_status(),
+                "error": "ai_chat_failed",
+                "detail": str(exc)[:300],
+            },
+            status_code=502,
+        )
     return JSONResponse({
         "ok": True,
         "ai_available": ai_available(),
