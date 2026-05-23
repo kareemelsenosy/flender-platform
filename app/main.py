@@ -184,6 +184,7 @@ from app.routers import (  # noqa: E402
     generate_routes,
     sheets_routes,
     settings_routes,
+    smt_proxy,
 )
 
 app.include_router(api_routes.router)
@@ -196,3 +197,6 @@ app.include_router(review_routes.router)
 app.include_router(generate_routes.router)
 app.include_router(sheets_routes.router)
 app.include_router(settings_routes.router)
+# Reverse-proxy /smt/* to the SMT container. Mounted last so it doesn't
+# shadow any first-party route.
+app.include_router(smt_proxy.router)

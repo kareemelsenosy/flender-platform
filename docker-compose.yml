@@ -38,6 +38,9 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL:-https://ordersheet.flendergroup.com}
       PORT: "8000"
+      # /smt/* is reverse-proxied from FastAPI to this internal address.
+      # No host nginx changes are needed to route SMT traffic.
+      SMT_BACKEND_URL: http://smt:3000
     volumes:
       - app_uploads:/app/uploads
       - app_output:/app/output
@@ -78,9 +81,10 @@ services:
   smt:
     build: ./smt
     restart: unless-stopped
-    ports:
-      # Bind to localhost only — all public traffic goes through nginx at /smt
-      - "127.0.0.1:3001:3000"
+    # No public port — the FastAPI `app` container proxies /smt/* internally
+    # via the docker network using hostname `smt:3000`.
+    expose:
+      - "3000"
     depends_on:
       smt-db:
         condition: service_healthy
