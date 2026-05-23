@@ -18,9 +18,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Non-root user
-RUN useradd -m -u 1000 appuser
-
 # Production dependencies only
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
@@ -29,7 +26,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/next.config.mjs ./next.config.mjs
 
-USER appuser
+# node:20-slim already ships a `node` user at UID 1000 — reuse it rather than
+# creating a duplicate. Ownership is fixed up so npm can write caches at runtime.
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 3000
 
 CMD ["npm", "start"]
