@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Database, HardDrive, Save, FileText } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 const cardStyle: React.CSSProperties = {
   backgroundColor: '#FFFFFF',
@@ -55,8 +56,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/customers').then((r) => r.json()).catch(() => []),
-      fetch('/api/brands').then((r) => r.json()).catch(() => []),
+      apiFetch('/api/customers').then((r) => r.json()).catch(() => []),
+      apiFetch('/api/brands').then((r) => r.json()).catch(() => []),
     ])
       .then(([c, b]) => {
         setCustomers(Array.isArray(c) ? c : []);

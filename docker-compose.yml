@@ -37,7 +37,6 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL:-https://ordersheet.flendergroup.com}
-      SMT_URL: ${SMT_URL:-https://smt.flendergroup.com}
       PORT: "8000"
     volumes:
       - app_uploads:/app/uploads
@@ -80,7 +79,8 @@ services:
     build: ./smt
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      # Bind to localhost only — all public traffic goes through nginx at /smt
+      - "127.0.0.1:3001:3000"
     depends_on:
       smt-db:
         condition: service_healthy

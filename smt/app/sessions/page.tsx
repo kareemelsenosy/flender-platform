@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Layers, Download, Trash2, Eye, Plus, Loader2 } from 'lucide-react';
 import { triggerDownload } from '@/lib/utils';
+import { apiFetch } from '@/lib/api';
 
 interface Session {
   id: string;
@@ -38,7 +39,7 @@ export default function SessionsPage() {
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch('/api/sessions').then((r) => r.json()).then(setSessions)
+    apiFetch('/api/sessions').then((r) => r.json()).then(setSessions)
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -51,7 +52,7 @@ export default function SessionsPage() {
     if (!newName.trim()) return;
     setBusy(true); setErr(null);
     try {
-      const res = await fetch('/api/sessions', {
+      const res = await apiFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName.trim() }),
@@ -73,7 +74,7 @@ export default function SessionsPage() {
     if (!confirm(`Close session "${s.name}"?`)) return;
     setBusy(true); setErr(null);
     try {
-      const res = await fetch(`/api/sessions/${s.id}`, { method: 'PATCH' });
+      const res = await apiFetch(`/api/sessions/${s.id}`, { method: 'PATCH' });
       if (!res.ok) {
         const e = await res.json();
         throw new Error(e.error || 'Failed');
@@ -91,7 +92,7 @@ export default function SessionsPage() {
     if (!confirm(`Delete session "${s.name}" and all associated files? This cannot be undone.`)) return;
     setBusy(true); setErr(null);
     try {
-      const res = await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/sessions/${s.id}`, { method: 'DELETE' });
       if (!res.ok) {
         const e = await res.json();
         throw new Error(e.error || 'Failed');

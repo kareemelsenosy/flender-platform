@@ -5,6 +5,7 @@ import Link from 'next/link';
 import UploadZone from '@/components/UploadZone';
 import MetadataForm from '@/components/MetadataForm';
 import { CheckCircle, AlertTriangle, X, Layers, LayoutDashboard } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 interface FormPayload {
   customer: string;
@@ -32,7 +33,7 @@ export default function UploadPage() {
 
   const refreshSession = useCallback(() => {
     setSessionLoading(true);
-    fetch('/api/sessions/current')
+    apiFetch('/api/sessions/current')
       .then((r) => r.json())
       .then((data) => setSession(data || null))
       .catch(() => setSession(null))
@@ -70,7 +71,7 @@ export default function UploadPage() {
           data.append('files[]', file);
         }
 
-        const res = await fetch('/api/upload', { method: 'POST', body: data });
+        const res = await apiFetch('/api/upload', { method: 'POST', body: data });
         if (!res.ok) {
           const err = await res.json();
           throw new Error(err.error || 'Upload failed');

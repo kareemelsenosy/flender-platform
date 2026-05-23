@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import RecordsTable, { type Filters } from '@/components/RecordsTable';
 import { ChevronDown } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 interface SessionStub {
   id: string;
@@ -29,7 +30,7 @@ export default function RecordsPage() {
   const [selectedSession, setSelectedSession] = useState<string>('');
 
   useEffect(() => {
-    fetch('/api/sessions').then((r) => r.json()).then(setSessions).catch(() => {});
+    apiFetch('/api/sessions').then((r) => r.json()).then(setSessions).catch(() => {});
   }, []);
 
   return (

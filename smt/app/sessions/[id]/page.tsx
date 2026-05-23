@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { ArrowLeft, Download, Layers, Loader2 } from 'lucide-react';
 import RecordsTable from '@/components/RecordsTable';
 import { triggerDownload } from '@/lib/utils';
+import { apiFetch } from '@/lib/api';
 
 interface SessionDetail {
   id: string;
@@ -26,7 +27,7 @@ export default function SessionDetailPage() {
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
-    fetch(`/api/sessions/${id}`)
+    apiFetch(`/api/sessions/${id}`)
       .then((r) => r.json())
       .then(setSession)
       .catch(() => {})
@@ -40,7 +41,7 @@ export default function SessionDetailPage() {
     if (!confirm(`Close session "${session.name}" and download the export?`)) return;
     setBusy(true); setErr(null);
     try {
-      const res = await fetch(`/api/sessions/${session.id}`, { method: 'PATCH' });
+      const res = await apiFetch(`/api/sessions/${session.id}`, { method: 'PATCH' });
       if (!res.ok) {
         const e = await res.json();
         throw new Error(e.error || 'Failed');

@@ -13,6 +13,11 @@ from sqlalchemy.orm import Session as DBSession
 from app.auth import get_current_user_id
 from app.config import SMT_URL
 from app.database import get_db
+
+# SMT is served under the same domain at /smt by nginx. SMT_URL is only used
+# as a fallback when an absolute URL is needed; the tile uses the path so the
+# session cookie carries across naturally.
+SMT_HUB_LINK = "/smt"
 from app.models import User
 from app.templates_config import templates
 
@@ -41,7 +46,7 @@ def _tools() -> list[dict]:
                 "Upload partner Instagram screenshots, auto-rename and organise "
                 "them, and export session ZIPs plus monthly activity reports."
             ),
-            "url": SMT_URL,
+            "url": SMT_HUB_LINK,
             "icon": "radio",
             "accent": "#2D6FF7",
             "accent_soft": "#eaf1ff",

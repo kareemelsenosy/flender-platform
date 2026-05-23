@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
 import { ChevronDown, Loader2, CheckCircle, Upload, X } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 interface MetadataFormProps {
   onSubmit: (data: FormPayload) => Promise<void>;
@@ -291,8 +292,8 @@ export default function MetadataForm({
   const [contentSource, setContentSource] = useState('');
 
   useEffect(() => {
-    fetch('/api/customers').then((r) => r.json()).then(setCustomers).catch(console.error);
-    fetch('/api/brands').then((r) => r.json()).then(setBrandOptions).catch(console.error);
+    apiFetch('/api/customers').then((r) => r.json()).then(setCustomers).catch(console.error);
+    apiFetch('/api/brands').then((r) => r.json()).then(setBrandOptions).catch(console.error);
   }, []);
 
   useEffect(() => {

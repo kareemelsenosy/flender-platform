@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Trash2, ChevronUp, ChevronDown, ChevronsUpDown, Search,
 } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -188,7 +189,7 @@ export default function RecordsTable({ onFiltersChange, sessionId, readOnly }: R
       if (filters.startDate) params.set('startDate', filters.startDate);
       if (filters.endDate)   params.set('endDate',   filters.endDate);
       if (sessionId)         params.set('session_id', sessionId);
-      const res  = await fetch(`/api/records?${params}`);
+      const res  = await apiFetch(`/api/records?${params}`);
       const data = await res.json();
       setRecords(data);
     } catch (err) {
@@ -211,7 +212,7 @@ export default function RecordsTable({ onFiltersChange, sessionId, readOnly }: R
     if (!confirm('Delete this record and all associated files? This cannot be undone.')) return;
     setDeleting(id);
     try {
-      await fetch(`/api/records?id=${id}`, { method: 'DELETE' });
+      await apiFetch(`/api/records?id=${id}`, { method: 'DELETE' });
       setRecords((prev) => prev.filter((r) => r.id !== id));
     } catch (err) { console.error(err); }
     finally { setDeleting(null); }

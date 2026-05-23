@@ -7,6 +7,7 @@ import StatCard from '@/components/StatCard';
 import UploadChart from '@/components/UploadChart';
 import TopBrandsList from '@/components/TopBrandsList';
 import { triggerDownload } from '@/lib/utils';
+import { apiFetch } from '@/lib/api';
 
 interface RecordItem {
   id: string;
@@ -107,7 +108,7 @@ export default function DashboardPage() {
 
   const loadSession = useCallback(() => {
     setSessionLoading(true);
-    fetch('/api/sessions/current')
+    apiFetch('/api/sessions/current')
       .then((r) => r.json())
       .then((d) => setSession(d || null))
       .catch(() => setSession(null))
@@ -116,7 +117,7 @@ export default function DashboardPage() {
 
   const loadRecords = useCallback(() => {
     setLoading(true);
-    fetch('/api/records')
+    apiFetch('/api/records')
       .then((r) => r.json())
       .then((data) => setRecords(data))
       .catch(() => {})
@@ -129,7 +130,7 @@ export default function DashboardPage() {
     if (!newName.trim()) return;
     setBusy(true); setErr(null);
     try {
-      const res = await fetch('/api/sessions', {
+      const res = await apiFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName.trim() }),
@@ -152,7 +153,7 @@ export default function DashboardPage() {
     if (!confirm(`Close session "${session.name}" and download the export?`)) return;
     setBusy(true); setErr(null);
     try {
-      const res = await fetch(`/api/sessions/${session.id}`, { method: 'PATCH' });
+      const res = await apiFetch(`/api/sessions/${session.id}`, { method: 'PATCH' });
       if (!res.ok) {
         const e = await res.json();
         throw new Error(e.error || 'Failed to close');

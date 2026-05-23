@@ -1,14 +1,19 @@
 import { format, parse } from 'date-fns';
+import { BASE_PATH } from './api';
 
 /**
  * Trigger a file download from a URL by simulating an anchor click.
  * This is more reliable than window.open() which gets popup-blocked
  * and doesn't always respect Content-Disposition headers.
+ *
+ * Absolute paths starting with `/api/` are auto-prefixed with the
+ * Next.js basePath so they route correctly when SMT lives under /smt.
  */
 export function triggerDownload(url: string, filename?: string): void {
   if (typeof document === 'undefined') return;
+  const finalUrl = url.startsWith('/api/') ? `${BASE_PATH}${url}` : url;
   const a = document.createElement('a');
-  a.href = url;
+  a.href = finalUrl;
   if (filename) a.download = filename;
   a.style.display = 'none';
   document.body.appendChild(a);
