@@ -108,9 +108,10 @@ BRAND_DOMAINS: dict[str, str] = {
     "another cotton lab": "anothercottonlab.com",
     "thisisneverthat": "thisisneverthat.com",
     "amrag": "amrag.com",
-    "am rag": "amrag.com",
-    "american rag": "amrag.com",
-    "american rag cie": "amrag.com",
+    # Other spellings of American Rag intentionally omitted — users who type
+    # "American Rag Cie" etc. as a brand likely have their own per-user
+    # BrandSearchConfig (e.g. americanrag.ae for the regional store) which
+    # should win without competing with a hard-coded default.
     # Sportswear / Footwear
     "hoka": "hoka.com",
     "hoka one one": "hoka.com",
