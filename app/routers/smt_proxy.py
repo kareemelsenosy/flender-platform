@@ -22,13 +22,15 @@ logger = logging.getLogger(__name__)
 
 SMT_BACKEND_URL = os.getenv("SMT_BACKEND_URL", "http://smt:3000").rstrip("/")
 
-# Hop-by-hop headers must not be forwarded (RFC 7230 § 6.1). Content-Encoding
-# and Content-Length are stripped so the downstream gzip middleware and the
-# streaming response length aren't double-counted.
+# Hop-by-hop headers must not be forwarded (RFC 7230 § 6.1). Content-Length is
+# stripped because we're streaming chunked and the length is no longer known
+# upfront. Content-Encoding is INTENTIONALLY preserved: if upstream gzipped
+# the body, Starlette's GZipMiddleware sees that header and skips a second
+# pass, avoiding double-compression.
 _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade",
-    "content-encoding", "content-length",
+    "content-length",
 }
 
 _client: httpx.AsyncClient | None = None
