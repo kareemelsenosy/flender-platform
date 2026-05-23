@@ -1,10 +1,27 @@
 # FLENDER Platform
 
-A full-stack web application for managing fashion order sheets — import from Google Sheets or Excel/CSV, run AI-powered product image search, review and curate images, then export a formatted 23-column Excel order sheet.
+A monorepo for FLENDER's internal AI tools. After logging in at the shared
+**AI Tools hub**, users pick which tool to open.
+
+## Tools in this repo
+
+| Path | Tool | URL (production) |
+|------|------|------------------|
+| `app/` (FastAPI) | **Order Sheet Generator** — Google Sheets / Excel ↔ formatted order sheets with embedded images | `ordersheet.flendergroup.com` |
+| `smt/` (Next.js) | **Social Media Tracker** — Instagram monitoring, auto-rename + organise screenshots, session ZIP exports, monthly reports | `smt.flendergroup.com` |
+
+Both tools share the same login and user database. The hub is served by the
+FastAPI app at `/`, and the Order Sheet tool lives at `/order-sheet`.
+
+For SMT deployment specifics see [`smt/DEPLOYMENT.md`](smt/DEPLOYMENT.md).
 
 ---
 
-## Features
+## Order Sheet Generator
+
+A full-stack web application for managing fashion order sheets — import from Google Sheets or Excel/CSV, run AI-powered product image search, review and curate images, then export a formatted 23-column Excel order sheet.
+
+### Features
 
 - **Multi-source import** — Upload `.xlsx` / `.csv` files or paste Google Sheets URLs (single or batch)
 - **Parallel processing** — Multiple imports and image searches run simultaneously with live progress bars
