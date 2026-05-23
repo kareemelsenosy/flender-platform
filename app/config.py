@@ -41,6 +41,10 @@ EMAIL_VERIFICATION_REQUIRED = _env_bool(
 )
 INTERNAL_API_ENABLED = _env_bool("INTERNAL_API_ENABLED", False)
 
+# URL of the Social Media Tracker tool — shown as a tile on the AI Tools hub.
+# Local dev default; in production set SMT_URL=https://smt.flendergroup.com
+SMT_URL = os.getenv("SMT_URL", "http://localhost:3000")
+
 # Ensure dirs exist
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

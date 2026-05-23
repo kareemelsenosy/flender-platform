@@ -34,7 +34,11 @@
 
       <nav class="sidebar-nav">
         <div class="sidebar-section">
-          <a href="/" class="sidebar-link {% if request.url.path == '/' %}active{% endif %}">
+          <a href="/" class="sidebar-link">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            All Tools
+          </a>
+          <a href="/order-sheet" class="sidebar-link {% if request.url.path == '/order-sheet' %}active{% endif %}">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
             Dashboard
           </a>
@@ -77,8 +81,8 @@
     display:flex; flex-direction:column; gap:10px; align-items:flex-end; pointer-events:none;
   "></div>
 
-  {% set _assistant_hidden = request.url.path in ['/login', '/register', '/forgot-password'] or request.url.path.startswith('/reset-password') %}
-  {% if not _assistant_hidden %}
+  {% set _assistant_hidden = request.url.path in ['/login', '/register', '/forgot-password'] or request.url.path.startswith('/reset-password') or request.url.path.startswith('/verify-email') %}
+  {% if not _assistant_hidden and request.session.get('user_id') %}
   <button id="ai-assistant-toggle" class="ai-assistant-toggle" type="button">
     <span class="ai-assistant-toggle-dot"></span>
     <span class="ai-assistant-toggle-text">AI Copilot</span>
@@ -1038,7 +1042,8 @@
     try {
       const resp = await fetch('/api/ai-assistant/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({
           message,
           page_path: location.pathname + location.search,
@@ -1047,8 +1052,16 @@
           page_context: pageContext,
         }),
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'AI request failed');
+      let data = {};
+      const ctype = resp.headers.get('content-type') || '';
+      if (ctype.includes('application/json')) {
+        try { data = await resp.json(); } catch (_) { data = {}; }
+      } else {
+        const raw = await resp.text();
+        data = { error: `Server returned ${resp.status}`, detail: raw.slice(0, 200) };
+      }
+      if (resp.status === 401) throw new Error('Your session expired. Please refresh and log in again.');
+      if (!resp.ok) throw new Error(data.detail || data.error || `AI request failed (${resp.status})`);
 
       assistantState.latestApplyPayload = {
         search_instructions: String(data.search_instructions || '').trim(),

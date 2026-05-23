@@ -22,6 +22,31 @@ router = APIRouter()
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
+async def _stream_upload_to_disk(file: UploadFile, dest: pathlib.Path, max_size: int) -> int:
+    """Stream-write an UploadFile to disk, aborting if it exceeds max_size.
+
+    Returns the number of bytes written. Removes the partial file on overflow
+    and raises ValueError so callers can return a 413.
+    """
+    written = 0
+    chunk_size = 1024 * 1024  # 1 MB
+    with open(dest, "wb") as out:
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_size:
+                out.close()
+                try:
+                    dest.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                raise ValueError("upload_too_large")
+            out.write(chunk)
+    return written
+
+
 def _owned_upload_path(uid: int, file_path: str) -> pathlib.Path | None:
     try:
         resolved = pathlib.Path(file_path).resolve()
@@ -32,7 +57,7 @@ def _owned_upload_path(uid: int, file_path: str) -> pathlib.Path | None:
         return None
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/order-sheet", response_class=HTMLResponse)
 async def dashboard(request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id(request)
     if not uid:
@@ -62,19 +87,16 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     display_name, safe_name = normalize_uploaded_name(file.filename or "upload")
     ext = os.path.splitext(safe_name)[1].lower()
     if ext not in (".xlsx", ".xls", ".csv"):
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/order-sheet", status_code=302)
 
-    # Read with size limit
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        return RedirectResponse("/", status_code=302)
-
-    # Save file to disk
+    # Save file to disk (stream-write with size cap so large uploads don't OOM)
     session_dir = UPLOAD_DIR / f"user_{uid}"
     session_dir.mkdir(parents=True, exist_ok=True)
     file_path = unique_path(session_dir, safe_name)
-    with open(file_path, "wb") as f:
-        f.write(content)
+    try:
+        await _stream_upload_to_disk(file, file_path, MAX_UPLOAD_SIZE)
+    except ValueError:
+        return RedirectResponse("/order-sheet", status_code=302)
 
     # Create session
     ext = os.path.splitext(safe_name)[1].lower()
@@ -123,12 +145,10 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     # Avoid name collisions when uploading multiple files
     file_path = unique_path(session_dir, safe_name)
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
+    try:
+        await _stream_upload_to_disk(file, file_path, MAX_UPLOAD_SIZE)
+    except ValueError:
         return JSONResponse({"error": "File too large (max 50MB)"}, status_code=413)
-
-    with open(file_path, "wb") as f:
-        f.write(content)
 
     source_type = "csv_upload" if ext == ".csv" else "excel_upload"
     sess = Session(
@@ -191,4 +211,4 @@ async def delete_session(session_id: int, request: Request, db: DBSession = Depe
             return JSONResponse({"ok": True})
     elif is_ajax:
         return JSONResponse({"ok": True})  # idempotent — already gone
-    return RedirectResponse("/", status_code=302)
+    return RedirectResponse("/order-sheet", status_code=302)

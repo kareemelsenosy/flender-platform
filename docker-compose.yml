@@ -1,4 +1,5 @@
 services:
+  # ── Order Sheet platform — database ─────────────────────────────────────────
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -14,6 +15,7 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Order Sheet platform + AI Tools hub (FastAPI) ───────────────────────────
   app:
     build: .
     restart: unless-stopped
@@ -42,9 +44,63 @@ services:
       - app_data:/app/data
       - app_credentials:/app/credentials
 
+  # ── Social Media Tracker — isolated database ────────────────────────────────
+  smt-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: smt
+      POSTGRES_USER: smt
+      POSTGRES_PASSWORD: ${SMT_DB_PASSWORD:?Set SMT_DB_PASSWORD in .env}
+    volumes:
+      - smt_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smt"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Social Media Tracker — object storage (S3-compatible) ───────────────────
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - minio_data:/data
+    ports:
+      # Admin console — bound to localhost only (not public)
+      - "127.0.0.1:9001:9001"
+
+  # ── Social Media Tracker (Next.js) ──────────────────────────────────────────
+  smt:
+    build: ./smt
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only — all public traffic goes through nginx at /smt
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      smt-db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://smt:${SMT_DB_PASSWORD}@smt-db:5432/smt
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: ${SMT_S3_BUCKET:-smt-uploads}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_FORCE_PATH_STYLE: "true"
+      NODE_ENV: production
+
 volumes:
   postgres_data:
   app_uploads:
   app_output:
   app_data:
   app_credentials:
+  smt_postgres_data:
+  minio_data:

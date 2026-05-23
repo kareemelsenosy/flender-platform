@@ -9,6 +9,12 @@ venv/
 dist/
 build/
 
+# ── Node.js / Next.js (smt/ tool) ─────────────────────────────────────────────
+node_modules/
+.next/
+out/
+next-env.d.ts
+
 # ── Environment / secrets ─────────────────────────────────────────────────────
 .env
 *.env

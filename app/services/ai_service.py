@@ -215,7 +215,11 @@ def _call_claude(prompt: str, max_tokens: int = 1024) -> str | None:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text
+        for block in (message.content or []):
+            text = getattr(block, "text", None)
+            if text:
+                return text
+        return None
 
     return _run_ai_call("claude", "text", _do_call)
 

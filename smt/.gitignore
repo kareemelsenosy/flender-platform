@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+next-env.d.ts
+
+# Runtime data — never commit (user uploads + database)
+data/
+uploads/
+*.db
+*.db-journal
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Logs / OS
+*.log
+.DS_Store

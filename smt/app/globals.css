@@ -1,0 +1,124 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap');
+
+:root {
+  /* Colors */
+  --color-bg: #F7F8FA;
+  --color-surface: #FFFFFF;
+  --color-border: #EAECF0;
+  --color-text-primary: #101828;
+  --color-text-secondary: #475467;
+  --color-text-muted: #98A2B3;
+
+  /* Brand */
+  --color-primary: #2D6FF7;
+  --color-primary-hover: #1A5FE8;
+  --color-primary-light: #EFF4FF;
+  --color-primary-gradient: linear-gradient(135deg, #2D6FF7 0%, #4F8AFF 100%);
+
+  /* Semantic */
+  --color-accent: #FF5C35;
+  --color-success: #12B76A;
+  --color-success-light: #ECFDF3;
+  --color-warning: #F79009;
+  --color-warning-light: #FFFAEB;
+  --color-danger: #F04438;
+  --color-danger-light: #FEF3F2;
+
+  /* Shape */
+  --radius-card: 16px;
+  --radius-input: 10px;
+  --radius-pill: 9999px;
+
+  /* Shadows */
+  --shadow-card: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.04);
+  --shadow-hover: 0 4px 16px rgba(16,24,40,0.08), 0 2px 6px rgba(16,24,40,0.04);
+  --shadow-dropdown: 0 8px 32px rgba(16,24,40,0.12), 0 2px 8px rgba(16,24,40,0.06);
+
+  /* Fonts */
+  --font-display: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  --font-body: 'Inter', -apple-system, sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-weight: 400;
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+
+/* Focus ring */
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 3px rgba(45,111,247,0.1) !important;
+}
+
+/* Autofill */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-text-primary);
+  -webkit-box-shadow: 0 0 0px 1000px #FFFFFF inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+select option {
+  background-color: #FFFFFF;
+  color: var(--color-text-primary);
+}
+
+/* Animations */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slide-up {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: calc(400px + 100%) 0; }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.25s ease-out;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #f0f2f5 25%, #e4e7eb 50%, #f0f2f5 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 8px;
+}
+
+/* Date picker */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 0.4;
+  cursor: pointer;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 0.7;
+}

@@ -60,10 +60,10 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess or not sess.uploaded_file:
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/order-sheet", status_code=302)
     file_path = _owned_uploaded_path(uid, sess.uploaded_file.file_path)
     if not file_path:
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/order-sheet", status_code=302)
 
     # Parse file to get headers
     parser = FileParser()
@@ -161,10 +161,10 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
 
     sess = db.query(Session).filter(Session.id == session_id, Session.user_id == uid).first()
     if not sess or not sess.uploaded_file:
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/order-sheet", status_code=302)
     file_path = _owned_uploaded_path(uid, sess.uploaded_file.file_path)
     if not file_path:
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/order-sheet", status_code=302)
 
     form = await request.form()
 
