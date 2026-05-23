@@ -109,6 +109,10 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN match_reasons_json TEXT DEFAULT '{}'"
                 ))
+            if "source_order" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE unique_items ADD COLUMN source_order INTEGER"
+                ))
         if "search_cache" in insp.get_table_names():
             cache_cols = {c["name"] for c in insp.get_columns("search_cache")}
             if "search_version" not in cache_cols:

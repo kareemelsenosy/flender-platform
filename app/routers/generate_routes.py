@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 import threading
 import uuid
@@ -277,22 +278,36 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         if session_id in _progress:
             return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
 
-    # Approved items — grouped so similar styles are adjacent (brand -> style -> base code -> color)
+    # Approved items. By default the export preserves the original source-sheet
+    # order (rows imported earlier first). Toggle `regroup_by_brand` in the
+    # session config to fall back to the legacy brand/style/code/color sort.
     items = db.query(UniqueItem).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.review_status == "approved",
     ).all()
-    items = sorted(
-        items,
-        key=lambda it: item_sort_key(
-            brand=it.brand,
-            style_name=it.style_name,
-            item_code=it.item_code,
-            item_group=it.item_group,
-            color_name=it.color_name,
-            color_code=it.color_code,
-        ),
-    )
+    preserve_source_order = not bool(sess.config.get("regroup_by_brand"))
+    if preserve_source_order:
+        # NULL source_order goes last so legacy items still appear, ordered by id.
+        items = sorted(
+            items,
+            key=lambda it: (
+                0 if it.source_order is not None else 1,
+                it.source_order if it.source_order is not None else it.id,
+                it.id,
+            ),
+        )
+    else:
+        items = sorted(
+            items,
+            key=lambda it: item_sort_key(
+                brand=it.brand,
+                style_name=it.style_name,
+                item_code=it.item_code,
+                item_group=it.item_group,
+                color_name=it.color_name,
+                color_code=it.color_code,
+            ),
+        )
 
     if not items:
         return JSONResponse({"error": "No approved items"}, status_code=400)
@@ -327,22 +342,32 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "sap_code": item.sap_code or "",
                 "source_sheet": item.source_sheet or "",
                 "comming_soon_qty": item.comming_soon_qty if item.comming_soon_qty is not None else "",
+                "source_order": item.source_order,
             })
 
-    # Final export order should mirror the cleaner sample sheets:
-    # brand -> style -> base item code -> color -> numeric size.
-    item_dicts = sorted(
-        item_dicts,
-        key=lambda it: item_sort_key(
-            brand=it.get("brand"),
-            style_name=it.get("style_name"),
-            item_code=it.get("item_code"),
-            item_group=it.get("item_group"),
-            color_name=it.get("color_name"),
-            color_code=it.get("color_code"),
-            size=it.get("size"),
-        ),
-    )
+    # `items` was already sorted above (source order or brand sort). Preserve
+    # that order here; just keep sizes grouped under their parent item.
+    if preserve_source_order:
+        item_dicts.sort(key=lambda it: (
+            0 if it.get("source_order") is not None else 1,
+            it.get("source_order") if it.get("source_order") is not None else 0,
+            # Numeric-ish size as a tie-breaker so 7, 7.5, 8 follow naturally.
+            float(re.sub(r"[^\d.]", "", str(it.get("size") or "") or "0") or 0)
+                if re.search(r"\d", str(it.get("size") or "")) else 0,
+        ))
+    else:
+        item_dicts = sorted(
+            item_dicts,
+            key=lambda it: item_sort_key(
+                brand=it.get("brand"),
+                style_name=it.get("style_name"),
+                item_code=it.get("item_code"),
+                item_group=it.get("item_group"),
+                color_name=it.get("color_name"),
+                color_code=it.get("color_code"),
+                size=it.get("size"),
+            ),
+        )
 
     brand = (items[0].brand or "") if items else ""
     currency = sess.config.get("currency", "")

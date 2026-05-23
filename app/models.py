@@ -104,6 +104,10 @@ class UniqueItem(Base):
     item_group_code = Column(String(500))
     sap_code = Column(String(500))
     source_sheet = Column(String(255))
+    # Row index in the source sheet/file, captured at import time so the export
+    # can preserve the user's original ordering instead of re-sorting by brand
+    # /style/etc. NULL for legacy rows imported before this column existed.
+    source_order = Column(Integer)
 
     # Search & review state
     search_status = Column(String(20), default="pending")  # pending, done

@@ -107,6 +107,10 @@ BRAND_DOMAINS: dict[str, str] = {
     "huf": "hufworldwide.com",
     "another cotton lab": "anothercottonlab.com",
     "thisisneverthat": "thisisneverthat.com",
+    "amrag": "amrag.com",
+    "am rag": "amrag.com",
+    "american rag": "amrag.com",
+    "american rag cie": "amrag.com",
     # Sportswear / Footwear
     "hoka": "hoka.com",
     "hoka one one": "hoka.com",
@@ -421,6 +425,14 @@ _PREFERRED_PRODUCT_SHOT_TERMS = {
     "packshot", "product", "pair", "pairs", "profile", "side", "lateral",
     "front", "catalog", "studio",
 }
+# Strong "this is a clean catalog/flatlay shot" signals. We boost these
+# separately from generic product-shot terms because they're the user's
+# preferred angle for the order sheet.
+_FLAT_CATALOG_SHOT_TERMS = {
+    "flat", "flatlay", "flat-lay", "lay-flat", "laydown", "lay-down",
+    "isolated", "cutout", "cut-out", "white-background", "white background",
+    "on-white", "transparent", "packshot",
+}
 _DETAIL_SHOT_TERMS = {
     "detail", "details", "closeup", "zoom", "macro", "crop", "cropped", "texture",
 }
@@ -461,6 +473,10 @@ _PACKSHOT_URL_PATTERNS = (
     "_hero.", "-primary.", "-front.", "_front.", "-side.", "_side.",
     "-product.", "_product.", "-pair.", "-studio.", "_01.", "-01.",
     "/01/", "/primary/", "/main/", "/hero/", "/packshots/",
+    # Flat-lay / catalog URL hints
+    "/flat/", "/flatlay/", "/flat-lay/", "/laydown/",
+    "-flat.", "_flat.", "-flatlay.", "-laydown.", "-laid-flat.",
+    "-white.", "-white-bg.", "_white.", "-on-white.", "-isolated.",
 )
 # Matches "-N.ext" or "_N.ext" or "-NN.ext" at end of URL — secondary image
 # carousel position. We only penalize when N >= 3 (first 2 are usually primary
@@ -1637,6 +1653,31 @@ class ImageSearcher:
         tasks["ddg"] = lambda q=full_query: self._duckduckgo_search(q)
         tasks["yahoo"] = lambda q=full_query: self._yahoo_images_scrape(q)
 
+        # Authenticated B2B catalogs — only fire for brands we have a logged-in
+        # client for, and only when credentials are configured. The client
+        # returns plain URLs which we wrap as SearchHit for the standard
+        # aggregation pipeline.
+        try:
+            from app.core import b2b_carhartt
+            if b2b_carhartt.is_carhartt_brand(brand) and b2b_carhartt.is_enabled():
+                sku = (item_code or "").strip()
+                if sku:
+                    def _carhartt_b2b(sku=sku):
+                        urls = b2b_carhartt.find_images_for_sku(sku)
+                        return [
+                            SearchHit(
+                                url=u,
+                                page_url=f"https://b2b.carhartt-wip.com/reorder_en/catalogsearch/result/?q={sku}",
+                                title=f"Carhartt WIP B2B — {sku}",
+                                description="packshot product catalog",
+                            )
+                            for u in urls
+                        ]
+                    tasks["carhartt_b2b"] = _carhartt_b2b
+        except Exception:
+            # B2B client is best-effort — never block the main search pipeline.
+            pass
+
         # Fire all sources at the same time
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
             futures = {pool.submit(fn): key for key, fn in tasks.items()}
@@ -1921,10 +1962,25 @@ class ImageSearcher:
 
         if any(p in lower for p in _CDN_PATTERNS) or any(p in lower for p in _PRODUCT_PATHS):
             score += 0.10
+        # Authenticated B2B catalog images are always real product packshots —
+        # boost them above anonymous web results.
+        if "b2b.carhartt-wip.com/media/catalog/product/" in url.lower():
+            score += 0.25
         if "mm.bing.net" in url.lower() or "th.bing.com" in url.lower():
             score -= 0.12
         if any(term in text_tokens for term in _PREFERRED_PRODUCT_SHOT_TERMS):
             score += 0.12
+        # Extra boost when the image is explicitly tagged as a flat/catalog
+        # shot — these are the cleanest angles for an order sheet.
+        flat_hit = (
+            any(term in text_tokens for term in _FLAT_CATALOG_SHOT_TERMS)
+            or "flat lay" in lower
+            or "flat-lay" in lower
+            or "white background" in lower
+            or "on white" in lower
+        )
+        if flat_hit:
+            score += 0.18 if ctx.get("strict_query") else 0.12
         if any(term in text_tokens for term in _DETAIL_SHOT_TERMS) or "close-up" in lower:
             score -= 0.22 if ctx.get("strict_query") else 0.14
         if any(term in text_tokens for term in _OUTSOLE_SHOT_TERMS):

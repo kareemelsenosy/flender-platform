@@ -70,7 +70,7 @@
   <h4 class="mb-2">How it works</h4>
   <ol style="padding-left:20px;font-size:0.85rem;color:var(--gray-500);line-height:1.8">
     <li>Add one or more Google Sheets URLs above</li>
-    <li>Select which tabs/sheets to import (all tabs selected by default)</li>
+    <li>Pick which tabs/sheets to import — none are selected by default, click to add the ones you want (or use Select all)</li>
     <li>Toggle "Save images" to include images from =IMAGE() formulas and Dropbox links</li>
     <li>Each added Google Sheet imports <strong>simultaneously</strong> as its own result</li>
     <li>Selected tabs within the same sheet stay together in that sheet's import and export back out as separate workbook tabs</li>
@@ -165,17 +165,28 @@ async function previewTabs(rowId, url) {
     const tabs = data.tabs || [];
     // Store tab names in JS — never embed arbitrary strings in HTML attributes
     _tabAllNames[url] = tabs;
-    _tabSelections[url] = [...tabs]; // all selected by default
+    _tabSelections[url] = []; // none selected by default — user picks actively
     tabsEl.innerHTML = `<div style="font-size:0.75rem;font-weight:600;margin-bottom:6px;color:var(--gray-500)">${escapeHtml(data.title || 'Spreadsheet')} — Select tabs to import:</div>
-      <div id="tabcb-${rowId}" style="display:flex;flex-wrap:wrap;gap:6px"></div>`;
+      <div id="tabcb-${rowId}" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"></div>
+      <div style="margin-top:6px;font-size:0.7rem;color:var(--gray-400)">Tip: click a tab to include it, or use Select all.</div>`;
     // Build checkboxes in JS to safely handle any tab name characters
     const container = document.getElementById(`tabcb-${rowId}`);
+    // "Select all" pill
+    const selAllBtn = document.createElement('button');
+    selAllBtn.type = 'button';
+    selAllBtn.textContent = 'Select all';
+    selAllBtn.style.cssText = 'font-size:0.72rem;background:var(--gray-100);border:1px solid var(--gray-300);padding:3px 8px;border-radius:20px;cursor:pointer';
+    selAllBtn.addEventListener('click', () => {
+      container.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; });
+      updateTabSel(rowId, url);
+    });
+    container.appendChild(selAllBtn);
     tabs.forEach((name, idx) => {
       const lbl = document.createElement('label');
       lbl.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;background:white;border:1px solid var(--gray-300);padding:3px 8px;border-radius:20px';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = true;
+      cb.checked = false;  // tabs start unchecked — user opts in
       cb.dataset.idx = idx;
       cb.addEventListener('change', () => updateTabSel(rowId, url));
       lbl.appendChild(cb);
@@ -413,6 +424,13 @@ function animateJob(idx, t0) {
 async function importAll() {
   const urls = getUrls();
   if(!urls.length){showAlert('Please enter at least one Google Sheets URL.','Missing URL');return;}
+
+  // Require at least one tab per URL — tabs default to unchecked now.
+  const urlsMissingTabs = urls.filter(u => !(_tabSelections[u] && _tabSelections[u].length));
+  if (urlsMissingTabs.length) {
+    showAlert('Please select at least one tab to import for each Google Sheet.', 'No tabs selected');
+    return;
+  }
 
   const saveImages = document.getElementById('save-images').checked;
   const searchMissing = document.getElementById('search-missing').checked;

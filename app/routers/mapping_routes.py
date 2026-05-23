@@ -229,7 +229,7 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
     db.query(UniqueItem).filter(UniqueItem.session_id == sess.id).delete()
 
     # Save unique items to DB with size normalization
-    for item in unique_items:
+    for _item_idx, item in enumerate(unique_items):
         sizes = item.get("sizes", [])
         # Size normalization: split "32;33;34" or "S/M/L" into individual sizes
         normalized_sizes = _normalize_sizes(sizes)
@@ -250,6 +250,7 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             item_group_code=item.get("item_group_code"),
             sap_code=item.get("sap_code"),
             pictures_url=item.get("pictures_url"),
+            source_order=_item_idx,
         )
         ui.sizes = normalized_sizes
         db.add(ui)

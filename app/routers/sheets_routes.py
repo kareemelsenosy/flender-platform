@@ -170,7 +170,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         # Store each row as its own UniqueItem (no aggregation).
         # color_code = color|size|source_sheet so items from different tabs with
         # the same SKU+color+size don't collide on the unique constraint.
-        for row in all_rows:
+        for _row_idx, row in enumerate(all_rows):
             size = row["size"]
             color = row["color_name"]
             _src = row.get("source_sheet") or ""
@@ -191,6 +191,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                 sap_code=row.get("sap_code", ""),
                 source_sheet=row.get("source_sheet", ""),
                 comming_soon_qty=row.get("comming_soon_qty", ""),
+                source_order=_row_idx,
             )
             ui.sizes = [size] if size else []
             ui.pictures_url = row.get("pictures_url") or ""
@@ -215,7 +216,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
             db.add(sess)
             db.commit()
             total_items = 0
-            for row in all_rows:
+            for _row_idx, row in enumerate(all_rows):
                 try:
                     size = row["size"]
                     color = row["color_name"]
@@ -237,6 +238,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
                         sap_code=row.get("sap_code", ""),
                         source_sheet=row.get("source_sheet", ""),
                         comming_soon_qty=row.get("comming_soon_qty", ""),
+                        source_order=_row_idx,
                     )
                     ui2.sizes = [size] if size else []
                     ui2.pictures_url = row.get("pictures_url") or ""

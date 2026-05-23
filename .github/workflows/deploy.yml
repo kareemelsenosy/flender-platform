@@ -47,11 +47,13 @@ jobs:
           SMT_DB_PASSWORD:     ${{ secrets.SMT_DB_PASSWORD }}
           MINIO_ROOT_USER:     ${{ secrets.MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          CARHARTT_B2B_USER:   ${{ secrets.CARHARTT_B2B_USER }}
+          CARHARTT_B2B_PASS:   ${{ secrets.CARHARTT_B2B_PASS }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: CLAUDE_API_KEY,SMT_DB_PASSWORD,MINIO_ROOT_USER,MINIO_ROOT_PASSWORD
+          envs: CLAUDE_API_KEY,SMT_DB_PASSWORD,MINIO_ROOT_USER,MINIO_ROOT_PASSWORD,CARHARTT_B2B_USER,CARHARTT_B2B_PASS
           script_stop: true
           script: |
             set -e
@@ -62,6 +64,7 @@ jobs:
             # on the server — the existing .env stays untouched and supplies
             # the keys it already has (POSTGRES_PASSWORD, SECRET_KEY, etc.).
             export CLAUDE_API_KEY SMT_DB_PASSWORD MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+            export CARHARTT_B2B_USER CARHARTT_B2B_PASS
 
             docker compose pull
             docker compose build --no-cache

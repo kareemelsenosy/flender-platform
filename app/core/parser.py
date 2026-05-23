@@ -133,6 +133,48 @@ def _find_header_row(df_raw: pd.DataFrame) -> int:
     return best_row
 
 
+_SIZE_LETTER_TOKENS = {
+    "xs", "s", "m", "l", "xl", "xxl", "xxxl",
+    "2xl", "3xl", "4xl", "5xl",
+    "os", "onesize", "one size", "freesize", "free size",
+}
+
+
+def _looks_like_size_header(header: str) -> bool:
+    """True if a column header looks like a single garment/shoe size."""
+    if not header:
+        return False
+    h = re.sub(r"\s+", " ", str(header).strip().lower())
+    if not h:
+        return False
+    # Numeric sizes: "7", "7.5", "10", "10.5", "42", "44"
+    if re.fullmatch(r"\d{1,3}([.,]5)?", h):
+        return True
+    # Letter sizes
+    if h in _SIZE_LETTER_TOKENS:
+        return True
+    # Prefixed sizes: "EU 42", "US 9.5", "UK 7", "Size 9"
+    if re.fullmatch(r"(eu|us|uk|de|fr|jp|size)\s*\d{1,3}([.,]5)?", h):
+        return True
+    return False
+
+
+def _detect_size_columns(headers: list[str], used_headers: set[str]) -> list[str]:
+    """Find a block of column headers that represent per-size quantity columns.
+
+    Used when the source has sizes laid horizontally (one column per size) rather
+    than a separate `size` + `quantity` pair. Returns the matching column names
+    in their original order, or an empty list if no such block is present.
+    """
+    available = [h for h in headers if h and h not in used_headers]
+    size_cols = [h for h in available if _looks_like_size_header(h)]
+    # Need a real block — at least 3 size-looking columns, otherwise it's
+    # probably a coincidence (e.g. a single "M" column means "Medium" something).
+    if len(size_cols) < 3:
+        return []
+    return size_cols
+
+
 def _coerce_numeric(value: Any) -> Any:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
@@ -246,25 +288,59 @@ class FileParser:
             raise ValueError(f"Unsupported file type: {ext}")
 
     def _build_rows(self, df: pd.DataFrame, col_map: dict[str, str | None]) -> list[dict]:
-        rows = []
+        # Detect sheets where sizes are laid horizontally (one column per size).
+        # Only treat them as size columns if the file lacks both an explicit
+        # `size` column and a `qty_available` column — otherwise the existing
+        # path already handles per-row sizes correctly.
+        size_columns: list[str] = []
+        if not col_map.get("size") and not col_map.get("qty_available"):
+            used = {v for v in col_map.values() if v}
+            size_columns = _detect_size_columns(list(df.columns), used)
+
+        rows: list[dict] = []
         for _, raw_row in df.iterrows():
-            row: dict[str, Any] = {}
+            base: dict[str, Any] = {}
             for std_key, orig_header in col_map.items():
                 if orig_header and orig_header in raw_row.index:
                     value = raw_row[orig_header]
                     value = None if (isinstance(value, float) and pd.isna(value)) else str(value).strip()
                     if std_key in ("wholesale_price", "retail_price", "qty_available"):
                         value = _coerce_numeric(value)
-                    row[std_key] = value
+                    base[std_key] = value
                 else:
-                    row[std_key] = None
+                    base[std_key] = None
 
-            if not row.get("item_code"):
+            if not base.get("item_code"):
                 continue
 
-            row["_raw"] = {str(k): str(v).strip() if pd.notna(v) else ""
-                          for k, v in raw_row.items()}
-            rows.append(row)
+            raw_dict = {str(k): str(v).strip() if pd.notna(v) else ""
+                        for k, v in raw_row.items()}
+
+            if size_columns:
+                # Emit one row per size that has a positive quantity. Each
+                # output row carries the same item metadata but a distinct
+                # (size, qty_available) pair, so the downstream dedupe
+                # collects every available size on the item.
+                emitted_any = False
+                for col in size_columns:
+                    qty = _coerce_numeric(raw_row.get(col))
+                    if not qty or qty <= 0:
+                        continue
+                    row = dict(base)
+                    row["size"] = str(col).strip()
+                    row["qty_available"] = qty
+                    row["_raw"] = raw_dict
+                    rows.append(row)
+                    emitted_any = True
+                # If no size column had a qty, still emit the item so it
+                # doesn't silently disappear from the import.
+                if not emitted_any:
+                    row = dict(base)
+                    row["_raw"] = raw_dict
+                    rows.append(row)
+            else:
+                base["_raw"] = raw_dict
+                rows.append(base)
         return rows
 
     def _dedupe(self, rows: list[dict]) -> list[dict]:
