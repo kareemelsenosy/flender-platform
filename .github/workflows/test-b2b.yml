@@ -1,0 +1,39 @@
+name: Test Carhartt B2B login
+
+on:
+  workflow_dispatch:
+    inputs:
+      sku:
+        description: "SKU to search for (Carhartt item code)"
+        required: false
+        default: "I013507.3T6XX"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try B2B login + search inside the app container
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: false
+          script: |
+            set -uxo pipefail
+            SKU='${{ inputs.sku }}'
+            docker exec -e SKU="$SKU" flender-platform-app-1 python3 -c "
+            import os, json
+            print('CARHARTT_B2B_USER present:', bool(os.getenv('CARHARTT_B2B_USER')))
+            print('CARHARTT_B2B_PASS present:', bool(os.getenv('CARHARTT_B2B_PASS')))
+            from app.core.b2b_carhartt import _client, is_enabled, find_images_for_sku
+            print('is_enabled:', is_enabled())
+            sku = os.environ['SKU']
+            print(f'Logging in & searching for {sku!r} ...')
+            urls = find_images_for_sku(sku)
+            print('login_ok:', _client._login_ok)
+            print('login_attempted:', _client._login_attempted)
+            print(f'returned {len(urls)} URL(s):')
+            for u in urls[:10]:
+                print(' -', u)
+            "
