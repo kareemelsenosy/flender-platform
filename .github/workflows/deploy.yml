@@ -68,13 +68,15 @@ jobs:
 
             docker compose pull
             docker compose build --no-cache
-            # Clean up any stopped/renamed leftover containers from a previous
-            # failed deploy — they hold onto names that the new "up" needs.
-            docker container prune -f
-            # `--force-recreate` avoids "container name already in use"
-            # conflicts that have happened when an old SMT container is
-            # left behind in a renamed state after build retries.
-            docker compose up -d --remove-orphans --force-recreate
+            # Stop & remove the project's containers cleanly, then bring them
+            # back up. This avoids two prior failure modes:
+            #   1) "container name already in use" when a renamed orphan
+            #      from a failed build holds the name a new container needs.
+            #   2) "removal of container ... is already in progress" when
+            #      `docker container prune` raced with `up --force-recreate`.
+            # Brief downtime (a few seconds) for a fully reliable deploy.
+            docker compose down --remove-orphans
+            docker compose up -d
             docker image prune -f
 
             # /smt/* is reverse-proxied by FastAPI (see app/routers/smt_proxy.py).
