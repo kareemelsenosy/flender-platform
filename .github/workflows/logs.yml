@@ -1,0 +1,39 @@
+name: Server diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      lines:
+        description: "Tail length"
+        required: false
+        default: "500"
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tail logs + container state
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: false
+          script: |
+            set -uxo pipefail
+            echo "=== docker ps ==="
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.RestartCount}}' 2>/dev/null || docker ps
+            echo
+            echo "=== disk ==="
+            df -h /
+            docker exec flender-platform-app-1 sh -c 'du -sh /app/output 2>/dev/null' || true
+            echo
+            echo "=== app container memory limit / usage ==="
+            docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.CPUPerc}}'
+            echo
+            echo "=== app logs (last ${{ inputs.lines }} lines) ==="
+            docker logs --tail ${{ inputs.lines }} flender-platform-app-1 2>&1 | tail -${{ inputs.lines }}
+            echo
+            echo "=== dmesg OOM kills ==="
+            sudo -n dmesg 2>/dev/null | grep -iE "killed|oom|out of memory" | tail -20 || \
+              echo "(no sudo, skipping dmesg)"
