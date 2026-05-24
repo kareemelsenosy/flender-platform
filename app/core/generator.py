@@ -623,13 +623,28 @@ class OrderSheetGenerator:
             except Exception as exc:
                 logger.info("image load failed for gi=%s: %s", gi, exc)
                 continue
-            if pil_open.mode in ("RGBA", "LA", "P"):
-                pil_rgba = pil_open.convert("RGBA")
-                bg = PILImage.new("RGB", pil_rgba.size, (208, 208, 208))
-                bg.paste(pil_rgba, mask=pil_rgba.split()[3])
-                raw_img = bg
-            else:
+
+            # Composite transparent/palette images onto the same grey the
+            # cell uses (D0D0D0). The previous `paste(rgba, mask=alpha)`
+            # mishandled premultiplied-alpha sources — opaque pixels got
+            # copied verbatim even when their RGB had been multiplied down
+            # to near-black — which is why some embedded images ended up
+            # with pure-black corners instead of the grey background. Real
+            # alpha-blending via Image.alpha_composite fixes that.
+            if pil_open.mode == "P":
+                pil_open = (pil_open.convert("RGBA")
+                            if "transparency" in pil_open.info
+                            else pil_open.convert("RGB"))
+            elif pil_open.mode == "LA":
+                pil_open = pil_open.convert("RGBA")
+
+            if pil_open.mode == "RGBA":
+                bg_rgba = PILImage.new("RGBA", pil_open.size, (208, 208, 208, 255))
+                raw_img = PILImage.alpha_composite(bg_rgba, pil_open).convert("RGB")
+            elif pil_open.mode != "RGB":
                 raw_img = pil_open.convert("RGB")
+            else:
+                raw_img = pil_open
 
             display_img = raw_img.copy()
             display_img.thumbnail((self.img_size[0], display_h), PILImage.LANCZOS)
