@@ -3,6 +3,7 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}  # allow manual re-runs from the Actions UI / gh CLI
 
 jobs:
   test:
