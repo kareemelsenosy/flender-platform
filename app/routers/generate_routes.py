@@ -287,15 +287,32 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     ).all()
     preserve_source_order = not bool(sess.config.get("regroup_by_brand"))
     if preserve_source_order:
-        # NULL source_order goes last so legacy items still appear, ordered by id.
-        items = sorted(
-            items,
-            key=lambda it: (
-                0 if it.source_order is not None else 1,
-                it.source_order if it.source_order is not None else it.id,
-                it.id,
-            ),
-        )
+        # All rows of the same SKU must stay adjacent — the picture-embed
+        # logic in generator.py walks consecutively and merges cells per
+        # contiguous item_code group. We sort each item by:
+        #   (earliest source_order seen for its item_code, item_code, source_order)
+        # so the GROUP appears at the position of its first row in the
+        # source sheet, but the rows within the group never interleave
+        # with another SKU.
+        first_seen: dict[str, float] = {}
+        for it in items:
+            code = it.item_code or ""
+            order = it.source_order if it.source_order is not None else float("inf")
+            prev = first_seen.get(code)
+            if prev is None or order < prev:
+                first_seen[code] = order
+
+        def _ord_key(it):
+            code = it.item_code or ""
+            grp_pos = first_seen.get(code, float("inf"))
+            own_pos = it.source_order if it.source_order is not None else it.id
+            return (
+                0 if grp_pos != float("inf") else 1,
+                grp_pos if grp_pos != float("inf") else it.id,
+                code,
+                own_pos,
+            )
+        items = sorted(items, key=_ord_key)
     else:
         items = sorted(
             items,
@@ -333,6 +350,7 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "qty_available": item.qty_available,
                 "size": str(size or ""),  # single size per row
                 "approved_url": item.approved_url or "",
+                "suggested_url": item.suggested_url or "",
                 "pictures_url": item.pictures_url or "",
                 "additional_urls": item.additional_urls,
                 "brand": item.brand or "",
@@ -348,13 +366,33 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     # `items` was already sorted above (source order or brand sort). Preserve
     # that order here; just keep sizes grouped under their parent item.
     if preserve_source_order:
-        item_dicts.sort(key=lambda it: (
-            0 if it.get("source_order") is not None else 1,
-            it.get("source_order") if it.get("source_order") is not None else 0,
-            # Numeric-ish size as a tie-breaker so 7, 7.5, 8 follow naturally.
-            float(re.sub(r"[^\d.]", "", str(it.get("size") or "") or "0") or 0)
-                if re.search(r"\d", str(it.get("size") or "")) else 0,
-        ))
+        # Use the same "group by item_code, position by earliest source_order"
+        # logic so picture-embed sees contiguous SKU runs.
+        dict_first_seen: dict[str, float] = {}
+        for d in item_dicts:
+            code = d.get("item_code") or ""
+            order = d.get("source_order")
+            order_v = float(order) if order is not None else float("inf")
+            prev = dict_first_seen.get(code)
+            if prev is None or order_v < prev:
+                dict_first_seen[code] = order_v
+
+        def _dict_ord_key(d):
+            code = d.get("item_code") or ""
+            grp_pos = dict_first_seen.get(code, float("inf"))
+            own_pos = d.get("source_order")
+            own_pos_v = float(own_pos) if own_pos is not None else float("inf")
+            size_raw = str(d.get("size") or "")
+            size_num = (float(re.sub(r"[^\d.]", "", size_raw) or 0)
+                        if re.search(r"\d", size_raw) else 0)
+            return (
+                0 if grp_pos != float("inf") else 1,
+                grp_pos if grp_pos != float("inf") else 0,
+                code,
+                own_pos_v,
+                size_num,
+            )
+        item_dicts.sort(key=_dict_ord_key)
     else:
         item_dicts = sorted(
             item_dicts,

@@ -6,6 +6,7 @@ product groups, merged cells, and Row helper columns.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import shutil
@@ -67,9 +68,39 @@ _DL_HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
+logger = logging.getLogger(__name__)
+
 IMAGE_PX = 150
 IMAGE_PT = IMAGE_PX * 0.75
 TEXT_ROW_H = 22
+
+
+def _best_image_url_for_group(items: list[dict], start: int, end: int) -> str:
+    """Pick the first usable image URL across rows in a product group.
+
+    Falls back through approved_url → suggested_url → pictures_url so an item
+    still gets a picture in the export even when only one of those is set
+    (e.g. legacy items that hold the URL on `pictures_url`).
+    """
+    for key in ("approved_url", "suggested_url", "pictures_url"):
+        for i in range(start, end + 1):
+            url = items[i].get(key) or ""
+            if not isinstance(url, str):
+                continue
+            url = url.strip()
+            if not url:
+                continue
+            # `pictures_url` is often a Dropbox folder link — only embed it if
+            # it looks directly downloadable (the Dropbox-to-direct conversion
+            # for /scl/fi/ links happens later in _download_image).
+            if key == "pictures_url" and not (
+                url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
+                or "dropboxusercontent.com" in url
+                or "dl=1" in url
+            ):
+                continue
+            return url
+    return ""
 
 
 def detect_currency_symbol(items: list[dict], currency_override: str = "") -> str:
@@ -645,7 +676,7 @@ class OrderSheetGenerator:
                 groups.append({
                     "start": start,
                     "end": i - 1,
-                    "image_url": items[start].get("approved_url", ""),
+                    "image_url": _best_image_url_for_group(items, start, i - 1),
                     "group_index": len(groups),
                 })
                 start = i
@@ -655,7 +686,7 @@ class OrderSheetGenerator:
         groups.append({
             "start": start,
             "end": len(items) - 1,
-            "image_url": items[start].get("approved_url", ""),
+            "image_url": _best_image_url_for_group(items, start, len(items) - 1),
             "group_index": len(groups),
         })
 
@@ -681,16 +712,28 @@ class OrderSheetGenerator:
         if not url.startswith("http"):
             return None
 
+        # Dropbox sharing URLs need to be turned into direct downloads, otherwise
+        # we get an HTML preview page instead of the image bytes.
+        dl_url = url
+        if "dropbox.com" in dl_url or "dropboxusercontent.com" in dl_url:
+            if "dl=0" in dl_url:
+                dl_url = dl_url.replace("dl=0", "dl=1")
+            elif "dl=1" not in dl_url:
+                sep = "&" if "?" in dl_url else "?"
+                dl_url = f"{dl_url}{sep}dl=1"
+
         try:
-            resp = requests.get(url, headers=_DL_HEADERS, timeout=8)
+            resp = requests.get(dl_url, headers=_DL_HEADERS, timeout=20)
             if resp.status_code != 200:
+                logger.info("image download skipped (status %s): %s", resp.status_code, url[:120])
                 return None
             buf = io.BytesIO(resp.content)
             # Validate it's actually an image
             PILImage.open(buf).verify()
             buf.seek(0)
             return buf
-        except Exception:
+        except Exception as exc:
+            logger.info("image download failed (%s): %s", exc, url[:120])
             return None
 
     def _save_image_file(self, img_data: bytes, base_images_dir: str, item: dict):
