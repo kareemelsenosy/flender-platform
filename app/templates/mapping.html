@@ -31,6 +31,13 @@
 </div>
 {% endif %}
 
+{% if horizontal_size_columns %}
+<div class="alert" style="border-color:#3b82f6;background:#eff6ff;color:#1e3a8a">
+  <strong>Horizontal sizes detected.</strong>
+  This file has one column per size ({{ horizontal_size_columns[:6]|join(', ') }}{% if horizontal_size_columns|length > 6 %} … {{ horizontal_size_columns|length }} total{% endif %}). You don't need to pick a <em>Size</em> or <em>Quantity Available</em> column — we'll automatically expand each row into one row per (item, size) with the cell value as the quantity for that size.
+</div>
+{% endif %}
+
 {% if saved_formats %}
 <div class="flex gap-2 mb-4 items-center flex-wrap">
   <span class="text-sm text-muted">Saved Formats:</span>

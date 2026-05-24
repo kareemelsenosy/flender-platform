@@ -289,13 +289,22 @@ class FileParser:
 
     def _build_rows(self, df: pd.DataFrame, col_map: dict[str, str | None]) -> list[dict]:
         # Detect sheets where sizes are laid horizontally (one column per size).
-        # Only treat them as size columns if the file lacks both an explicit
-        # `size` column and a `qty_available` column — otherwise the existing
-        # path already handles per-row sizes correctly.
-        size_columns: list[str] = []
-        if not col_map.get("size") and not col_map.get("qty_available"):
-            used = {v for v in col_map.values() if v}
-            size_columns = _detect_size_columns(list(df.columns), used)
+        # We run this regardless of what the user mapped for `size` / `qty`
+        # because mapping picks a single column, which can't represent a row
+        # that genuinely spans many size columns. When we detect ≥3 size-like
+        # headers we treat ALL of them as size columns (including any the user
+        # mapped to size or qty_available) and ignore those two mappings for
+        # the purpose of this row expansion.
+        used = {v for v in col_map.values() if v and v not in (col_map.get("size"), col_map.get("qty_available"))}
+        size_columns = _detect_size_columns(list(df.columns), used)
+        # When horizontal sizes are in play, drop any single-column size/qty
+        # mapping the user picked — those are individual size columns we are
+        # about to expand into rows. Otherwise the same value would leak as
+        # the "size" of every emitted row.
+        if size_columns:
+            col_map = dict(col_map)
+            col_map["size"] = None
+            col_map["qty_available"] = None
 
         rows: list[dict] = []
         for _, raw_row in df.iterrows():

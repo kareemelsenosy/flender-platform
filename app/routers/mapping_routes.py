@@ -87,6 +87,14 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
     existing_mapping = sess.column_mapping
     auto_mapping = existing_mapping if existing_mapping else detect_columns(raw_headers)
 
+    # Detect horizontal-size layouts so we can show a hint in the UI.
+    from app.core.parser import _detect_size_columns
+    horizontal_size_columns = _detect_size_columns(
+        raw_headers,
+        {v for v in auto_mapping.values() if v
+            and v not in (auto_mapping.get("size"), auto_mapping.get("qty_available"))},
+    )
+
     # Get saved formats
     saved_formats = db.query(ColumnMappingFormat).filter(
         ColumnMappingFormat.user_id == uid
@@ -108,6 +116,7 @@ async def mapping_page(session_id: int, request: Request, db: DBSession = Depend
         "ai_mapping": {},
         "is_remap": sess.status not in ("created", "mapping"),
         "sheet_names": sheet_names,
+        "horizontal_size_columns": horizontal_size_columns,
     })
 
 
