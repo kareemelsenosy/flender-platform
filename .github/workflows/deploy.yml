@@ -68,7 +68,10 @@ jobs:
 
             docker compose pull
             docker compose build --no-cache
-            docker compose up -d --remove-orphans
+            # `--force-recreate` avoids "container name already in use"
+            # conflicts that have happened when an old SMT container is
+            # left behind in a renamed state after build retries.
+            docker compose up -d --remove-orphans --force-recreate
             docker image prune -f
 
             # /smt/* is reverse-proxied by FastAPI (see app/routers/smt_proxy.py).
