@@ -5,6 +5,7 @@ product groups, merged cells, and Row helper columns.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
@@ -241,10 +242,13 @@ class OrderSheetGenerator:
         wb.save(out_path)
         self._report(progress_state["total"], progress_state["total"], "done")
 
-        # Clean up temp images
+        # Clean up temp images and the per-export download spill dir.
         for p in tmp_images:
             try:
-                os.remove(p)
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    os.remove(p)
             except Exception:
                 pass
 
@@ -352,8 +356,14 @@ class OrderSheetGenerator:
                 row_to_group[ri] = (g, gi)
 
         # ── Download all images (parallel for speed) ──
-        image_data = {}
-        url_to_bytes = {}  # cache to avoid double downloads for save_images
+        # Spill image bytes to a temp directory as soon as they arrive instead
+        # of keeping every blob in RAM. Large exports (8k+ items, 1k+ unique
+        # images) were OOM-killing the container during wb.save() because all
+        # raw bytes lived in memory alongside the openpyxl workbook. The
+        # downstream consumers (image embed + save_images_to_folder) read
+        # from disk on demand.
+        image_paths: dict[int, str] = {}      # group index → path on disk
+        url_to_path: dict[str, str] = {}      # url → path on disk
         unique_urls = {}
         for gi, g in enumerate(groups):
             url = g.get("image_url", "")
@@ -369,6 +379,8 @@ class OrderSheetGenerator:
                     if extra_url and extra_url.startswith(("http", "file://")) and extra_url not in unique_urls:
                         unique_urls.setdefault(extra_url, [])
 
+        download_tmpdir = tempfile.mkdtemp(prefix="ordersheet_dl_")
+
         def _dl(url_gis):
             url, gis = url_gis
             return url, gis, self._download_image(url)
@@ -377,12 +389,24 @@ class OrderSheetGenerator:
             for url, gis, img_bytes in pool.map(_dl, unique_urls.items()):
                 progress_state["downloaded"] += 1
                 self._report(progress_state["downloaded"], progress_state["total"], "downloading")
-                if img_bytes:
-                    img_bytes.seek(0)
-                    raw = img_bytes.read()
-                    url_to_bytes[url] = raw
-                    for gi in gis:
-                        image_data[gi] = raw
+                if not img_bytes:
+                    continue
+                img_bytes.seek(0)
+                raw = img_bytes.read()
+                tmp_name = hashlib.md5(url.encode("utf-8")).hexdigest()[:24] + ".bin"
+                tmp_path = os.path.join(download_tmpdir, tmp_name)
+                try:
+                    with open(tmp_path, "wb") as fh:
+                        fh.write(raw)
+                except OSError as exc:
+                    logger.warning("image spill-to-disk failed (%s): %s", exc, url[:80])
+                    del raw
+                    continue
+                del raw  # release the in-memory copy now that disk has it
+                url_to_path[url] = tmp_path
+                for gi in gis:
+                    image_paths[gi] = tmp_path
+        tmp_images.append(download_tmpdir)  # cleaned up after wb.save()
 
         # Column indices (1-based)
         col_idx = {h: i + 1 for i, h in enumerate(out_headers)}
@@ -559,11 +583,11 @@ class OrderSheetGenerator:
 
             if images_dir:
                 img_url = item.get("approved_url", "")
-                if img_url and img_url in url_to_bytes:
-                    self._save_image_file(url_to_bytes[img_url], images_dir, item)
+                if img_url and img_url in url_to_path:
+                    self._save_image_file_from_path(url_to_path[img_url], images_dir, item)
                 for extra_url in item.get("additional_urls", []):
-                    if extra_url and extra_url in url_to_bytes:
-                        self._save_image_file(url_to_bytes[extra_url], images_dir, item)
+                    if extra_url and extra_url in url_to_path:
+                        self._save_image_file_from_path(url_to_path[extra_url], images_dir, item)
 
         last_data_row = max(DATA_START, DATA_START + len(items) - 1)
 
@@ -583,7 +607,7 @@ class OrderSheetGenerator:
             mc.alignment = CENTER
             mc.border = THIN_BORDER
 
-            if gi not in image_data:
+            if gi not in image_paths:
                 continue
 
             num_rows = g["end"] - g["start"] + 1
@@ -591,8 +615,14 @@ class OrderSheetGenerator:
             total_cell_h_px = int(row_h_pt * num_rows / 0.75)
             display_h = min(IMAGE_PX, total_cell_h_px)
 
-            img_bytes = io.BytesIO(image_data[gi])
-            pil_open = PILImage.open(img_bytes)
+            # Open the spilled file directly — PIL streams from disk, so we
+            # never hold the full-resolution bytes in RAM.
+            try:
+                pil_open = PILImage.open(image_paths[gi])
+                pil_open.load()  # force decode now so the file handle can close
+            except Exception as exc:
+                logger.info("image load failed for gi=%s: %s", gi, exc)
+                continue
             if pil_open.mode in ("RGBA", "LA", "P"):
                 pil_rgba = pil_open.convert("RGBA")
                 bg = PILImage.new("RGB", pil_rgba.size, (208, 208, 208))
@@ -773,6 +803,20 @@ class OrderSheetGenerator:
         except Exception as exc:
             logger.info("image download failed (%s): %s", exc, url[:120])
             return None
+
+    def _save_image_file_from_path(self, src_path: str, base_images_dir: str, item: dict):
+        """Disk-friendly variant of `_save_image_file` — reads bytes from
+        `src_path` instead of taking them as an argument. Cuts peak RAM
+        because the caller no longer has to hold every image's bytes alive
+        until the end of the worksheet loop.
+        """
+        try:
+            with open(src_path, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            logger.info("save_image: cannot read %s (%s)", src_path, exc)
+            return
+        self._save_image_file(data, base_images_dir, item)
 
     def _save_image_file(self, img_data: bytes, base_images_dir: str, item: dict):
         """
