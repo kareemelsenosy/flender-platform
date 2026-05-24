@@ -267,6 +267,34 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         ).count()
         without_images = total_items - with_images
 
+        # Kick off the background image search for items still pending. Without
+        # this, the user has to open /search/{id} and click "Start" manually —
+        # if they skip that step the export comes out with no pictures.
+        pending = db.query(UniqueItem).filter(
+            UniqueItem.session_id == sess.id,
+            UniqueItem.search_status == "pending",
+        ).count()
+        if search_missing and pending > 0:
+            try:
+                import threading
+                from app.routers.search_routes import _run_search_background, _search_progress
+                # Mark searching so the UI can show progress on /search/{id}.
+                sess.status = "searching"
+                cfg = dict(sess.config or {})
+                cfg["search_gen"] = cfg.get("search_gen", 0) + 1
+                sess.config = cfg
+                db.commit()
+                _search_progress.pop(sess.id, None)
+                threading.Thread(
+                    target=_run_search_background,
+                    args=(sess.id, cfg, uid),
+                    daemon=True,
+                ).start()
+            except Exception:
+                # Auto-start is best-effort; the user can always click Start
+                # on the search page if this didn't fire.
+                pass
+
         return {
             "ok": True,
             "session_id": sess.id,
@@ -276,6 +304,7 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
             "with_images": with_images,
             "without_images": without_images,
             "search_missing": bool(search_missing),
+            "search_started": bool(search_missing and pending > 0),
         }
     except Exception as e:
         return {"error": str(e)}
