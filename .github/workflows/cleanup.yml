@@ -1,0 +1,47 @@
+name: Cleanup server disk
+
+# Manual trigger only — frees space on the production server when the
+# `output/` volume fills up enough to block a deploy. SSH-only, no scp,
+# so it works even when the disk is completely full.
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune stale output dirs + docker leftovers
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: false
+          script: |
+            set -uxo pipefail
+            echo "=== disk before ==="
+            df -h / | tail -2
+
+            # Wipe everything under the app's output volume that isn't a fresh
+            # session. The startup hook will re-prune anything we miss.
+            APP_CTR=$(docker ps --filter "name=flender-platform-app" --format "{{.Names}}" | head -1)
+            if [ -n "$APP_CTR" ]; then
+              echo "=== inside $APP_CTR /app/output ==="
+              docker exec "$APP_CTR" sh -c 'du -sh /app/output 2>/dev/null || true'
+              # Delete every session_* dir — startup prune is harmless re-entry.
+              docker exec "$APP_CTR" sh -c 'rm -rf /app/output/session_* 2>/dev/null || true'
+              echo "=== after wipe ==="
+              docker exec "$APP_CTR" sh -c 'du -sh /app/output 2>/dev/null || true'
+            else
+              echo "(app container not running — skipping in-container clean)"
+            fi
+
+            # Drop unused docker images / build cache to reclaim more space.
+            docker image prune -af || true
+            docker builder prune -af || true
+
+            # Old SCP tarballs the github action leaves in /tmp.
+            find /tmp -maxdepth 1 -name '*.tar.gz' -mtime +0 -delete 2>/dev/null || true
+
+            echo "=== disk after ==="
+            df -h / | tail -2
