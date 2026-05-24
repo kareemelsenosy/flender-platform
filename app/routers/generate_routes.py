@@ -269,6 +269,15 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     if not sess:
         return JSONResponse({"error": "not found"}, status_code=404)
 
+    # Free disk space before a potentially large export — large sessions
+    # (thousands of items + images.zip) routinely hit "No space left on
+    # device" without this. Best-effort: never block the export on cleanup.
+    try:
+        cleanup_expired_files(db)
+        prune_old_output_dirs(db)
+    except Exception:
+        pass
+
     materialize_default_review_approvals(db, session_id)
     _materialize_google_sheet_conversion_approvals(db, sess)
     backfill_sap_codes_for_session(db, sess, uid)
@@ -446,6 +455,74 @@ def cleanup_expired_files(db_session) -> int:
     if deleted:
         db_session.commit()
     return deleted
+
+
+def prune_old_output_dirs(db_session, max_age_days: int = 14) -> tuple[int, int]:
+    """Delete entire `session_*/` output directories that are no longer needed.
+
+    `cleanup_expired_files` only removes the single Excel/ZIP files referenced
+    by expired `GeneratedFile` rows — it leaves behind the `images/` subfolder
+    (which is the bulk of the disk usage on large sessions: thousands of
+    downloaded product photos). This sweeper drops the *entire* output dir
+    once nothing references it.
+
+    A session_* dir is removed if any of the following is true:
+      - There are no `GeneratedFile` rows for that session_id
+      - All `GeneratedFile` rows for that session are expired
+      - The session row itself no longer exists in the DB
+      - The directory hasn't been modified for `max_age_days` days
+
+    Returns (dirs_removed, bytes_freed).
+    """
+    import shutil
+    if not OUTPUT_DIR.exists():
+        return (0, 0)
+    now = datetime.now(timezone.utc)
+    cutoff_mtime = (now - timedelta(days=max_age_days)).timestamp()
+
+    # Snapshot live session ids and their non-expired GeneratedFile counts
+    live_session_ids = {sid for (sid,) in db_session.query(Session.id).all()}
+    fresh_by_session: dict[int, int] = {}
+    for rec in db_session.query(GeneratedFile).all():
+        rec_exp = rec.expires_at
+        if rec_exp is not None and rec_exp.tzinfo is None:
+            from datetime import timezone as _tz
+            rec_exp = rec_exp.replace(tzinfo=_tz.utc)
+        if rec_exp is None or rec_exp > now:
+            fresh_by_session[rec.session_id] = fresh_by_session.get(rec.session_id, 0) + 1
+
+    removed = 0
+    bytes_freed = 0
+    for entry in OUTPUT_DIR.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("session_"):
+            continue
+        try:
+            sess_id = int(entry.name.split("_", 1)[1])
+        except (ValueError, IndexError):
+            continue
+
+        should_delete = (
+            sess_id not in live_session_ids
+            or fresh_by_session.get(sess_id, 0) == 0
+            or entry.stat().st_mtime < cutoff_mtime
+        )
+        if not should_delete:
+            continue
+
+        try:
+            size = sum(
+                f.stat().st_size for f in entry.rglob("*") if f.is_file()
+            )
+        except OSError:
+            size = 0
+        try:
+            shutil.rmtree(entry)
+            removed += 1
+            bytes_freed += size
+        except OSError:
+            pass
+
+    return (removed, bytes_freed)
 
 
 def _download_error_page(title: str, message: str, status_code: int,

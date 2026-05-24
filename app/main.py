@@ -82,12 +82,21 @@ async def lifespan(app: FastAPI):
     # Clean up expired generated files from disk on startup
     try:
         from app.database import SessionLocal
-        from app.routers.generate_routes import cleanup_expired_files
+        from app.routers.generate_routes import cleanup_expired_files, prune_old_output_dirs
         _db = SessionLocal()
         try:
             n = cleanup_expired_files(_db)
             if n:
                 logger.info(f"Cleaned up {n} expired generated files on startup")
+            # Also prune orphan/expired session output dirs — they accumulate
+            # gigabytes of downloaded product images that GeneratedFile cleanup
+            # never touches, and are the usual cause of "No space left on
+            # device" during a large export.
+            dirs, bytes_freed = prune_old_output_dirs(_db)
+            if dirs:
+                logger.info(
+                    f"Pruned {dirs} old session output dir(s) — freed {bytes_freed/1_048_576:.1f} MB"
+                )
         finally:
             _db.close()
     except Exception:
