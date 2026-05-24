@@ -148,9 +148,18 @@ function getUrls() {
   return Array.from(document.querySelectorAll('.url-row input[type=text]')).map(i=>i.value.trim()).filter(Boolean);
 }
 
+// Track the last URL we previewed per row so a blur event that fires with
+// an unchanged value doesn't re-hit the Sheets API.
+const _lastPreviewedUrl = {};
+
 async function previewTabs(rowId, url) {
   url = url.trim();
   if (!url || !url.includes('spreadsheets')) return;
+  if (_lastPreviewedUrl[rowId] === url && _tabAllNames[url]) {
+    // Same URL as last time and we already have the tabs cached — no need to refetch.
+    return;
+  }
+  _lastPreviewedUrl[rowId] = url;
   const tabsEl = document.getElementById(`tabs-${rowId}`);
   tabsEl.style.display = 'block';
   tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--gray-400)">Loading tabs...</span>';
@@ -161,7 +170,25 @@ async function previewTabs(rowId, url) {
       body: JSON.stringify({url}),
     });
     const data = await resp.json();
-    if (!data.ok) { tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${escapeHtml(data.error || 'Failed')}</span>`; return; }
+    if (!data.ok) {
+      // Let the user retry — clear the cache marker so blurring again re-fetches.
+      _lastPreviewedUrl[rowId] = null;
+      const isQuota = resp.status === 429;
+      const msg = data.error || 'Failed';
+      tabsEl.innerHTML = `<span style="font-size:0.78rem;color:var(--danger)">${escapeHtml(msg)}</span>`;
+      if (isQuota) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Retry';
+        btn.style.cssText = 'font-size:0.72rem;margin-left:6px;padding:2px 8px;border-radius:4px;border:1px solid var(--gray-300);background:white;cursor:pointer';
+        btn.addEventListener('click', () => {
+          const input = document.querySelector(`#${rowId} input[type=text]`);
+          if (input) previewTabs(rowId, input.value);
+        });
+        tabsEl.appendChild(btn);
+      }
+      return;
+    }
     const tabs = data.tabs || [];
     // Store tab names in JS — never embed arbitrary strings in HTML attributes
     _tabAllNames[url] = tabs;

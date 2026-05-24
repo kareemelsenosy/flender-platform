@@ -283,6 +283,20 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         db.close()
 
 
+# Cache of tab listings per (user, spreadsheet_id). The Sheets API has a
+# generous-but-real per-minute read quota, and the UI calls preview-tabs
+# every time a user blurs the URL field — pasting the same link twice was
+# enough to start tripping 429s in practice. Cached entries are kept for
+# 10 minutes; the user can paste freely without hammering Google.
+_TABS_CACHE: dict[tuple[int, str], tuple[float, str, list[str]]] = {}
+_TABS_CACHE_TTL_SEC = 600
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "[429]" in msg or "quota exceeded" in msg or "rate limit" in msg
+
+
 @router.post("/sheets/preview-tabs")
 async def preview_tabs(request: Request):
     """Fetch tab names from a Google Sheets URL (no import). Used by UI for tab selection."""
@@ -299,23 +313,57 @@ async def preview_tabs(request: Request):
     if not os.path.exists(cred_path):
         return JSONResponse({"error": "No Google credentials found"}, status_code=400)
 
+    from app.core.sheets_reader import SheetsReader, extract_spreadsheet_id
     try:
-        from app.core.sheets_reader import SheetsReader, extract_spreadsheet_id
         spreadsheet_id = extract_spreadsheet_id(url)
-        reader = SheetsReader(cred_path)
-        spreadsheet = reader.gc.open_by_key(spreadsheet_id)
-        tabs = [ws.title for ws in spreadsheet.worksheets()]
-        return JSONResponse({"ok": True, "title": spreadsheet.title, "tabs": tabs})
-    except Exception as e:
-        msg = str(e)
-        if "not supported for this document" in msg or "[400]" in msg:
-            msg = (
-                "This document cannot be accessed via the Google Sheets API. "
-                "It is likely an Excel file (.xlsx) stored in Google Drive. "
-                "To fix: open it in Google Sheets → File → Save as Google Sheets, "
-                "then share the new Sheets file with your service account."
-            )
-        return JSONResponse({"error": msg}, status_code=500)
+    except Exception as exc:
+        return JSONResponse({"error": f"Could not parse Google Sheets URL: {exc}"}, status_code=400)
+
+    # Hot-path: cached preview within TTL.
+    import time as _time
+    cache_key = (uid, spreadsheet_id)
+    now = _time.time()
+    cached = _TABS_CACHE.get(cache_key)
+    if cached and now - cached[0] < _TABS_CACHE_TTL_SEC:
+        return JSONResponse({"ok": True, "title": cached[1], "tabs": cached[2], "cached": True})
+
+    # Otherwise, talk to Google with retry on 429.
+    import asyncio
+    last_exc: Exception | None = None
+    backoffs = (0.0, 1.5, 4.0)
+    for delay in backoffs:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            reader = SheetsReader(cred_path)
+            spreadsheet = reader.gc.open_by_key(spreadsheet_id)
+            tabs = [ws.title for ws in spreadsheet.worksheets()]
+            _TABS_CACHE[cache_key] = (now, spreadsheet.title, tabs)
+            # Trim cache if it grows large.
+            if len(_TABS_CACHE) > 500:
+                stale = [k for k, v in _TABS_CACHE.items() if now - v[0] > _TABS_CACHE_TTL_SEC]
+                for k in stale:
+                    _TABS_CACHE.pop(k, None)
+            return JSONResponse({"ok": True, "title": spreadsheet.title, "tabs": tabs})
+        except Exception as exc:
+            last_exc = exc
+            if not _is_quota_error(exc):
+                break  # not a quota issue — don't retry
+
+    # All retries exhausted (or non-retryable error).
+    msg = str(last_exc) if last_exc else "Unknown error"
+    if last_exc is not None and _is_quota_error(last_exc):
+        return JSONResponse({
+            "error": "Google Sheets is rate-limiting us right now. Please wait about a minute and try again. (If this happens often, we may need to raise the API quota.)",
+        }, status_code=429)
+    if "not supported for this document" in msg or "[400]" in msg:
+        msg = (
+            "This document cannot be accessed via the Google Sheets API. "
+            "It is likely an Excel file (.xlsx) stored in Google Drive. "
+            "To fix: open it in Google Sheets → File → Save as Google Sheets, "
+            "then share the new Sheets file with your service account."
+        )
+    return JSONResponse({"error": msg}, status_code=500)
 
 
 # ── Single import (original endpoint, kept for compatibility) ─────────────────
