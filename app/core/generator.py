@@ -723,13 +723,51 @@ class OrderSheetGenerator:
                 dl_url = f"{dl_url}{sep}dl=1"
 
         try:
-            resp = requests.get(dl_url, headers=_DL_HEADERS, timeout=20)
-            if resp.status_code != 200:
-                logger.info("image download skipped (status %s): %s", resp.status_code, url[:120])
-                return None
-            buf = io.BytesIO(resp.content)
+            # Stream the download so a giant image (Dropbox originals can be
+            # 30 MB each) can't single-handedly blow up memory before we
+            # check the Content-Length.
+            with requests.get(dl_url, headers=_DL_HEADERS, timeout=20, stream=True) as resp:
+                if resp.status_code != 200:
+                    logger.info("image download skipped (status %s): %s",
+                                resp.status_code, url[:120])
+                    return None
+                _MAX_BYTES = 20_000_000  # 20 MB hard cap per image
+                chunks: list[bytes] = []
+                seen = 0
+                for chunk in resp.iter_content(chunk_size=131072):
+                    if not chunk:
+                        continue
+                    seen += len(chunk)
+                    if seen > _MAX_BYTES:
+                        logger.info("image too large (>%d bytes), truncating: %s",
+                                    _MAX_BYTES, url[:120])
+                        chunks.append(chunk[:_MAX_BYTES - (seen - len(chunk))])
+                        break
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+            buf = io.BytesIO(raw)
             # Validate it's actually an image
             PILImage.open(buf).verify()
+            # Immediately downsample very large images so we don't carry
+            # 30 MB blobs for every URL until wb.save() runs. The embed
+            # step thumbnails again to its display size; the on-disk copy
+            # gets downsampled to 1600 px in _save_image_file.
+            buf.seek(0)
+            if len(raw) > 3_000_000:
+                try:
+                    from PIL import ImageOps  # noqa: PLC0415
+                    img = PILImage.open(buf)
+                    img = ImageOps.exif_transpose(img)
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    if max(img.size) > 1600:
+                        img.thumbnail((1600, 1600), PILImage.LANCZOS)
+                    small = io.BytesIO()
+                    img.save(small, format="JPEG", quality=88, optimize=True)
+                    small.seek(0)
+                    return small
+                except Exception:
+                    pass  # fall through to returning original bytes
             buf.seek(0)
             return buf
         except Exception as exc:
@@ -782,9 +820,15 @@ class OrderSheetGenerator:
 
         path = os.path.join(folder_path, f"{safe_code}_{n:02d}{ext}")
 
-        # Path 1 — JPG/PNG: write source bytes verbatim. No PIL round-trip
-        # means no colour shifts and no transparency artifacts.
-        if ext in (".jpg", ".png") and img_data[:2] in (b"\xff\xd8", b"\x89P"):
+        # Path 1 — JPG/PNG that's already a reasonable size: write source bytes
+        # verbatim (no PIL round-trip means no colour shifts and no
+        # transparency artifacts). For oversized originals (Dropbox masters
+        # are often 5–30 MB each, which adds up to tens of GB across an
+        # 8000-item export and blew up the disk twice) we fall through to
+        # the PIL path below to downsample first.
+        _MAX_RAW_BYTES = 1_500_000  # ~1.5 MB
+        if ext in (".jpg", ".png") and img_data[:2] in (b"\xff\xd8", b"\x89P") \
+                and len(img_data) <= _MAX_RAW_BYTES:
             try:
                 with open(path, "wb") as f:
                     f.write(img_data)
@@ -792,8 +836,10 @@ class OrderSheetGenerator:
             except OSError:
                 pass
 
-        # Path 2 — exotic / corrupt header: try to decode with PIL,
-        # composite transparency onto white, save as JPEG.
+        # Path 2 — exotic / corrupt header OR an oversized JPG/PNG: decode
+        # with PIL, downsample to a reasonable max dimension, composite
+        # transparency onto white, save as JPEG. This is what keeps the
+        # output volume from filling up on big sessions.
         try:
             from PIL import ImageOps  # noqa: PLC0415
             img = PILImage.open(io.BytesIO(img_data))
@@ -809,8 +855,16 @@ class OrderSheetGenerator:
                 img = bg
             elif img.mode != "RGB":
                 img = img.convert("RGB")
+            # Long-edge cap of 1600 px is plenty for the B2B importer; an
+            # 8000-item session at this resolution stays under ~5 GB instead
+            # of blowing past 30 GB of multi-MB Dropbox originals.
+            _MAX_DIM = 1600
+            if max(img.size) > _MAX_DIM:
+                img.thumbnail((_MAX_DIM, _MAX_DIM), PILImage.LANCZOS)
             jpg_path = os.path.join(folder_path, f"{safe_code}_{n:02d}.jpg")
-            img.save(jpg_path, format="JPEG", quality=95, optimize=True)
+            img.save(jpg_path, format="JPEG", quality=88, optimize=True)
         except Exception:
+            # Last-ditch fallback: write raw bytes. Only happens if PIL
+            # couldn't decode the image at all.
             with open(path, "wb") as f:
                 f.write(img_data)
