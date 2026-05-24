@@ -68,6 +68,9 @@ jobs:
 
             docker compose pull
             docker compose build --no-cache
+            # Clean up any stopped/renamed leftover containers from a previous
+            # failed deploy — they hold onto names that the new "up" needs.
+            docker container prune -f
             # `--force-recreate` avoids "container name already in use"
             # conflicts that have happened when an old SMT container is
             # left behind in a renamed state after build retries.
