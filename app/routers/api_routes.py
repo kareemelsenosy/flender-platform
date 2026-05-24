@@ -288,20 +288,26 @@ async def active_tasks(request: Request, db: DBSession = Depends(get_db)):
         }
         for sid, prog in gen_snapshot.items():
             name = owned_sessions.get(sid)
-            if name:
-                downloaded = prog.get("downloaded", 0)
-                total = prog.get("total", 0)
-                tasks.append({
-                    "type": "export",
-                    "session_id": sid,
-                    "done": downloaded,
-                    "total": total,
-                    "running": True,
-                    "status": "running",
-                    "url": f"/generate/{sid}",
-                    "label": f"Export: {name}",
-                    "stage": prog.get("stage", ""),
-                })
+            if not name:
+                continue
+            # Skip failed exports — they're not running, so the UI shouldn't
+            # keep polling. The error is surfaced via /generate/{id}/progress
+            # which pollProgress() reads to render the "Export Failed" panel.
+            if prog.get("error") or str(prog.get("stage") or "").startswith("Error"):
+                continue
+            downloaded = prog.get("downloaded", 0)
+            total = prog.get("total", 0)
+            tasks.append({
+                "type": "export",
+                "session_id": sid,
+                "done": downloaded,
+                "total": total,
+                "running": True,
+                "status": "running",
+                "url": f"/generate/{sid}",
+                "label": f"Export: {name}",
+                "stage": prog.get("stage", ""),
+            })
 
     # ── Recently completed exports (kept for 5 min) ──────────────────────────
     for entry in list(_completed_exports.get(uid, [])):

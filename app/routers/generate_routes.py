@@ -242,8 +242,17 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
     except Exception as exc:
         import logging
         logging.getLogger(__name__).error(f"Export failed for session {session_id}: {exc}")
+        # Surface the error in /generate/{id}/progress for the UI's pollProgress
+        # to render "Export Failed: ..." and stop the spinner. Mark error=True
+        # so /api/active-tasks knows this is NOT a running task — otherwise the
+        # frontend keeps polling thinking the export is in progress.
         with _progress_lock:
-            _progress[session_id] = {"stage": f"Error: {exc}", "downloaded": 0, "total": 0}
+            _progress[session_id] = {
+                "stage": f"Error: {exc}",
+                "downloaded": 0,
+                "total": 0,
+                "error": True,
+            }
         # Notify user of failure
         try:
             from app.services.notifications import add_notification
@@ -282,10 +291,17 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
     _materialize_google_sheet_conversion_approvals(db, sess)
     backfill_sap_codes_for_session(db, sess, uid)
 
-    # Already exporting?
+    # Already exporting? Clear stale error entries so a retry actually starts
+    # a fresh background thread instead of bouncing off a previous failure's
+    # "Error: ..." progress record.
     with _progress_lock:
-        if session_id in _progress:
-            return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
+        existing = _progress.get(session_id)
+        if existing:
+            stage = str(existing.get("stage") or "")
+            if stage.startswith("Error"):
+                _progress.pop(session_id, None)
+            else:
+                return JSONResponse({"ok": True, "started": True, "message": "Export already in progress"})
 
     # Approved items. By default the export preserves the original source-sheet
     # order (rows imported earlier first). Toggle `regroup_by_brand` in the
