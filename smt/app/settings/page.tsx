@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Database, HardDrive, Save, FileText, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 const cardStyle: React.CSSProperties = {
   backgroundColor: '#FFFFFF',
@@ -50,6 +51,7 @@ const chipStyle: React.CSSProperties = {
 };
 
 export default function SettingsPage() {
+  const confirm = useConfirm();
   const [customers, setCustomers] = useState<string[]>([]);
   const [brands, setBrands] = useState<string[]>([]);
   const [loadingLists, setLoadingLists] = useState(true);
@@ -68,9 +70,14 @@ export default function SettingsPage() {
   }, []);
 
   const handleDeleteCustomer = async (name: string) => {
-    if (!confirm(`Remove "${name}" from the saved customers list?\n\nThis won't delete any uploaded records — the customer will simply disappear from the dropdown until used again.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: `Remove "${name}"?`,
+      message:
+        "This won't delete any uploaded records — the customer will simply disappear from the dropdown until used again.",
+      danger: true,
+      confirmLabel: 'Remove customer',
+    });
+    if (!ok) return;
     setDeletingCustomer(name);
     try {
       const res = await apiFetch('/api/customers', {
@@ -80,13 +87,21 @@ export default function SettingsPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        alert(`Failed to remove "${name}": ${body.error || res.statusText}`);
+        await confirm({
+          title: `Couldn't remove "${name}"`,
+          message: body.error || `Server returned ${res.status} ${res.statusText}.`,
+          alertOnly: true,
+        });
         return;
       }
       setCustomers((prev) => prev.filter((c) => c !== name));
     } catch (err) {
       console.error('Delete customer failed:', err);
-      alert(`Failed to remove "${name}". Check the console for details.`);
+      await confirm({
+        title: `Couldn't remove "${name}"`,
+        message: 'Something went wrong. Check the browser console for details.',
+        alertOnly: true,
+      });
     } finally {
       setDeletingCustomer(null);
     }

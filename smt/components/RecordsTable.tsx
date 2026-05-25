@@ -5,6 +5,7 @@ import {
   Trash2, ChevronUp, ChevronDown, ChevronsUpDown, Search,
 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -172,6 +173,7 @@ const labelStyle: React.CSSProperties = {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function RecordsTable({ onFiltersChange, sessionId, readOnly }: RecordsTableProps) {
+  const confirm = useConfirm();
   const [records,   setRecords]   = useState<RecordItem[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [filters,   setFilters]   = useState<Filters>({ customer: '', brand: '', startDate: '', endDate: '' });
@@ -209,13 +211,34 @@ export default function RecordsTable({ onFiltersChange, sessionId, readOnly }: R
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this record and all associated files? This cannot be undone.')) return;
+    const ok = await confirm({
+      title: 'Delete this record?',
+      message: 'The record and all associated files will be permanently removed. This cannot be undone.',
+      danger: true,
+      confirmLabel: 'Delete record',
+    });
+    if (!ok) return;
     setDeleting(id);
     try {
-      await apiFetch(`/api/records?id=${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/records?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        await confirm({
+          title: 'Could not delete record',
+          message: body.error || `Server returned ${res.status} ${res.statusText}.`,
+          alertOnly: true,
+        });
+        return;
+      }
       setRecords((prev) => prev.filter((r) => r.id !== id));
-    } catch (err) { console.error(err); }
-    finally { setDeleting(null); }
+    } catch (err) {
+      console.error(err);
+      await confirm({
+        title: 'Could not delete record',
+        message: 'Something went wrong. Check the browser console for details.',
+        alertOnly: true,
+      });
+    } finally { setDeleting(null); }
   };
 
   const sorted = [...records].sort((a, b) => {
@@ -379,7 +402,7 @@ export default function RecordsTable({ onFiltersChange, sessionId, readOnly }: R
                       <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '12px', color: '#98A2B3' }}>{record.date}</td>
                       <td style={tdStyle}>
                         <div style={{ display: 'flex', gap: '6px' }}>
-                          <button onClick={() => handleDelete(record.id)} disabled={readOnly || deleting === record.id} title={readOnly ? 'Read-only (session closed)' : 'Delete record'}
+                          <button onClick={() => handleDelete(record.id)} disabled={deleting === record.id} title="Delete record"
                             style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #EAECF0', backgroundColor: '#F9FAFB', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: deleting === record.id ? 'not-allowed' : 'pointer', opacity: deleting === record.id ? 0.5 : 1, transition: 'all 0.15s ease' }}
                             onMouseEnter={(e) => { if (deleting !== record.id) { (e.currentTarget as HTMLButtonElement).style.backgroundColor = '#FEF3F2'; (e.currentTarget as HTMLButtonElement).style.borderColor = '#FDA29B'; }}}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = '#F9FAFB'; (e.currentTarget as HTMLButtonElement).style.borderColor = '#EAECF0'; }}>

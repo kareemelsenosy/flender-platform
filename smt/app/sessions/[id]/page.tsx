@@ -7,6 +7,7 @@ import { ArrowLeft, Download, Layers, Loader2 } from 'lucide-react';
 import RecordsTable from '@/components/RecordsTable';
 import { triggerDownload } from '@/lib/utils';
 import { apiFetch } from '@/lib/api';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface SessionDetail {
   id: string;
@@ -17,6 +18,7 @@ interface SessionDetail {
 }
 
 export default function SessionDetailPage() {
+  const confirm = useConfirm();
   const params = useParams<{ id: string }>();
   const id = params?.id;
   const [session, setSession] = useState<SessionDetail | null>(null);
@@ -38,7 +40,12 @@ export default function SessionDetailPage() {
 
   const closeAndExport = async () => {
     if (!session) return;
-    if (!confirm(`Close session "${session.name}" and download the export?`)) return;
+    const ok = await confirm({
+      title: `Close session "${session.name}"?`,
+      message: 'Closing will finalize the session and start the export download.',
+      confirmLabel: 'Close & export',
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try {
       const res = await apiFetch(`/api/sessions/${session.id}`, { method: 'PATCH' });

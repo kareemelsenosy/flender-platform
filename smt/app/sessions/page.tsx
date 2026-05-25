@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Layers, Download, Trash2, Eye, Plus, Loader2 } from 'lucide-react';
 import { triggerDownload } from '@/lib/utils';
 import { apiFetch } from '@/lib/api';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface Session {
   id: string;
@@ -30,6 +31,7 @@ const labelStyle: React.CSSProperties = {
 };
 
 export default function SessionsPage() {
+  const confirm = useConfirm();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>('all');
@@ -71,7 +73,12 @@ export default function SessionsPage() {
   };
 
   const closeSession = async (s: Session) => {
-    if (!confirm(`Close session "${s.name}"?`)) return;
+    const ok = await confirm({
+      title: `Close session "${s.name}"?`,
+      message: 'Closing will finalize the session and trigger the export download.',
+      confirmLabel: 'Close & export',
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try {
       const res = await apiFetch(`/api/sessions/${s.id}`, { method: 'PATCH' });
@@ -89,7 +96,13 @@ export default function SessionsPage() {
   };
 
   const deleteSession = async (s: Session) => {
-    if (!confirm(`Delete session "${s.name}" and all associated files? This cannot be undone.`)) return;
+    const ok = await confirm({
+      title: `Delete session "${s.name}"?`,
+      message: 'The session and all associated files will be permanently removed. This cannot be undone.',
+      danger: true,
+      confirmLabel: 'Delete session',
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try {
       const res = await apiFetch(`/api/sessions/${s.id}`, { method: 'DELETE' });

@@ -8,6 +8,7 @@ import UploadChart from '@/components/UploadChart';
 import TopBrandsList from '@/components/TopBrandsList';
 import { triggerDownload } from '@/lib/utils';
 import { apiFetch } from '@/lib/api';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface RecordItem {
   id: string;
@@ -82,6 +83,7 @@ function parseBrands(raw: string): string[] {
 }
 
 export default function DashboardPage() {
+  const confirm = useConfirm();
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -150,7 +152,12 @@ export default function DashboardPage() {
 
   const closeAndExport = async () => {
     if (!session) return;
-    if (!confirm(`Close session "${session.name}" and download the export?`)) return;
+    const ok = await confirm({
+      title: `Close session "${session.name}"?`,
+      message: 'Closing will finalize the session and start the export download.',
+      confirmLabel: 'Close & export',
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try {
       const res = await apiFetch(`/api/sessions/${session.id}`, { method: 'PATCH' });

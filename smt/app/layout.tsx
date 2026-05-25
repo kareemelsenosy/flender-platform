@@ -3,6 +3,7 @@ import { headers } from 'next/headers';
 import './globals.css';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
+import { ConfirmProvider } from '@/components/ConfirmDialog';
 
 export const metadata: Metadata = {
   title: 'SMT — Social Media Tracker',
@@ -26,24 +27,26 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div style={{ display: 'flex', minHeight: '100vh' }}>
-          <Sidebar userEmail={userEmail} userName={userName} />
-          <main
-            style={{
-              marginLeft: '240px',
-              flex: 1,
-              minHeight: '100vh',
-              backgroundColor: 'var(--color-bg)',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            <TopBar />
-            <div style={{ flex: 1 }}>
-              {children}
-            </div>
-          </main>
-        </div>
+        <ConfirmProvider>
+          <div style={{ display: 'flex', minHeight: '100vh' }}>
+            <Sidebar userEmail={userEmail} userName={userName} />
+            <main
+              style={{
+                marginLeft: '240px',
+                flex: 1,
+                minHeight: '100vh',
+                backgroundColor: 'var(--color-bg)',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <TopBar />
+              <div style={{ flex: 1 }}>
+                {children}
+              </div>
+            </main>
+          </div>
+        </ConfirmProvider>
       </body>
     </html>
   );
