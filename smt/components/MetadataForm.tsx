@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
-import { ChevronDown, Loader2, CheckCircle, Upload, X } from 'lucide-react';
+import { ChevronDown, Loader2, CheckCircle, Upload, X, Lock, LockOpen } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 
 interface MetadataFormProps {
@@ -287,6 +287,7 @@ export default function MetadataForm({
   const [customer, setCustomer] = useState('');
   const [brands, setBrands] = useState<string[]>([]);
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [dateLocked, setDateLocked] = useState(false);
   const [type, setType] = useState('');
   const [contentType, setContentType] = useState('');
   const [contentSource, setContentSource] = useState('');
@@ -300,12 +301,12 @@ export default function MetadataForm({
     if (isSuccess) {
       setCustomer('');
       setBrands([]);
-      setDate(format(new Date(), 'yyyy-MM-dd'));
+      if (!dateLocked) setDate(format(new Date(), 'yyyy-MM-dd'));
       setType('');
       setContentType('');
       setContentSource('');
     }
-  }, [isSuccess]);
+  }, [isSuccess, dateLocked]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -344,8 +345,29 @@ export default function MetadataForm({
 
         <div>
           <label style={labelStyle}>Date</label>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '13px', colorScheme: 'light' }} />
+          <div style={{ position: 'relative' }}>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '13px', colorScheme: 'light', paddingRight: '40px' }} />
+            <button
+              type="button"
+              onClick={() => setDateLocked((v) => !v)}
+              title={dateLocked ? 'Date is locked — click to unlock' : 'Click to lock this date across uploads'}
+              style={{
+                position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer', padding: '2px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: dateLocked ? '#2D6FF7' : '#C0C9D8',
+                transition: 'color 0.15s ease',
+              }}
+            >
+              {dateLocked ? <Lock size={14} /> : <LockOpen size={14} />}
+            </button>
+          </div>
+          {dateLocked && (
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: '11px', color: '#2D6FF7', marginTop: '4px', fontWeight: 500 }}>
+              Date locked — won't reset between uploads
+            </p>
+          )}
         </div>
 
         <SelectField label="Type" value={type} onChange={setType} options={['Stories', 'Reels', 'Posts']} />

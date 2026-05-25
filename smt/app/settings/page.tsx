@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Database, HardDrive, Save, FileText } from 'lucide-react';
+import { Database, HardDrive, Save, FileText, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 
 const cardStyle: React.CSSProperties = {
@@ -53,6 +53,7 @@ export default function SettingsPage() {
   const [customers, setCustomers] = useState<string[]>([]);
   const [brands, setBrands] = useState<string[]>([]);
   const [loadingLists, setLoadingLists] = useState(true);
+  const [deletingCustomer, setDeletingCustomer] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -65,6 +66,20 @@ export default function SettingsPage() {
       })
       .finally(() => setLoadingLists(false));
   }, []);
+
+  const handleDeleteCustomer = async (name: string) => {
+    setDeletingCustomer(name);
+    try {
+      await apiFetch('/api/customers', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      setCustomers((prev) => prev.filter((c) => c !== name));
+    } finally {
+      setDeletingCustomer(null);
+    }
+  };
 
   return (
     <div style={{ padding: '28px 32px 40px' }}>
@@ -200,8 +215,20 @@ export default function SettingsPage() {
                 </span>
               ) : (
                 customers.map((c) => (
-                  <span key={c} style={chipStyle}>
+                  <span key={c} style={{ ...chipStyle, display: 'inline-flex', alignItems: 'center', gap: '6px', paddingRight: '6px' }}>
                     {c}
+                    <button
+                      onClick={() => handleDeleteCustomer(c)}
+                      disabled={deletingCustomer === c}
+                      title={`Remove ${c}`}
+                      style={{
+                        background: 'none', border: 'none', padding: '1px', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', color: '#98A2B3',
+                        opacity: deletingCustomer === c ? 0.4 : 1,
+                      }}
+                    >
+                      <X size={11} />
+                    </button>
                   </span>
                 ))
               )}
@@ -280,7 +307,7 @@ export default function SettingsPage() {
             paddingTop: 14,
           }}
         >
-          Customers and brands are added automatically when you use them in uploads.
+          Customers are added automatically when you use them in uploads. Click the × on a customer to remove it from the list.
         </p>
       </div>
 

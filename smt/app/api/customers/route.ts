@@ -14,3 +14,15 @@ export async function GET() {
     return NextResponse.json({ error: 'Failed to fetch customers' }, { status: 500 });
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { name } = await request.json();
+    if (!name) return NextResponse.json({ error: 'Name required' }, { status: 400 });
+    await query('DELETE FROM customers WHERE name = $1', [name]);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error('Customer delete error:', error);
+    return NextResponse.json({ error: 'Failed to delete customer' }, { status: 500 });
+  }
+}
