@@ -15,10 +15,36 @@ from typing import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+
+from app.auth import get_current_user_id
+from app.database import SessionLocal
+from app.models import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _auth_user(request: Request) -> tuple[str, str] | None:
+    """Resolve the active user's (email, display_name) or None if not logged in."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return None
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == uid, User.is_active == True).first()  # noqa: E712
+        if not user:
+            return None
+        return (user.email or "", user.username or "")
+    finally:
+        db.close()
+
+
+def _auth_failure_response(request: Request) -> Response:
+    """API paths get JSON 401; everything else bounces to /login."""
+    if request.url.path.startswith("/smt/api/"):
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    return RedirectResponse("/login", status_code=302)
 
 SMT_BACKEND_URL = os.getenv("SMT_BACKEND_URL", "http://smt:3000").rstrip("/")
 
@@ -47,16 +73,27 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def _proxy(request: Request, target_path: str) -> StreamingResponse:
+async def _proxy(request: Request, target_path: str) -> Response:
+    # Enforce login on every /smt/* request. The Next.js container has no
+    # auth of its own — it trusts the identity headers we inject below, so
+    # this gate must run before any traffic reaches it.
+    user = _auth_user(request)
+    if user is None:
+        return _auth_failure_response(request)
+    user_email, user_name = user
+
     url = f"{SMT_BACKEND_URL}{target_path}"
 
     # Strip Host (httpx sets its own) and Accept-Encoding (let the upstream
     # send identity-encoded bytes; FastAPI's GZipMiddleware compresses the
-    # response on the way out).
+    # response on the way out). Inject identity headers so SMT can render
+    # the real user in the sidebar / attribute records / etc.
     fwd_headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in {"host", "accept-encoding"}
     }
+    fwd_headers["X-Smt-User-Email"] = user_email
+    fwd_headers["X-Smt-User-Name"] = user_name
 
     client = _get_client()
     upstream_req = client.build_request(

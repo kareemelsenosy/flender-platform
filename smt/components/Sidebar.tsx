@@ -79,8 +79,22 @@ function NavItem({
   );
 }
 
-export default function Sidebar() {
+interface SidebarProps {
+  userEmail?: string;
+  userName?: string;
+}
+
+export default function Sidebar({ userEmail = '', userName = '' }: SidebarProps) {
   const pathname = usePathname();
+
+  // Display name — prefer the explicit username; fall back to the local part
+  // of the email; final fallback "User".
+  const displayName =
+    userName.trim() ||
+    (userEmail.includes('@') ? userEmail.split('@')[0] : userEmail) ||
+    'User';
+  const displayEmail = userEmail || '—';
+  const avatarLetter = (displayName[0] || 'U').toUpperCase();
 
   return (
     <aside
@@ -261,9 +275,9 @@ export default function Sidebar() {
               flexShrink: 0,
             }}
           >
-            A
+            {avatarLetter}
           </div>
-          <div style={{ minWidth: 0 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
             <p
               style={{
                 fontFamily: 'var(--font-body)',
@@ -271,9 +285,13 @@ export default function Sidebar() {
                 fontSize: '13px',
                 color: '#101828',
                 margin: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
+              title={displayName}
             >
-              Admin
+              {displayName}
             </p>
             <p
               style={{
@@ -285,8 +303,9 @@ export default function Sidebar() {
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}
+              title={displayEmail}
             >
-              admin@flender.com
+              {displayEmail}
             </p>
           </div>
         </div>
