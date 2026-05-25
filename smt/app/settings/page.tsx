@@ -68,14 +68,25 @@ export default function SettingsPage() {
   }, []);
 
   const handleDeleteCustomer = async (name: string) => {
+    if (!confirm(`Remove "${name}" from the saved customers list?\n\nThis won't delete any uploaded records — the customer will simply disappear from the dropdown until used again.`)) {
+      return;
+    }
     setDeletingCustomer(name);
     try {
-      await apiFetch('/api/customers', {
+      const res = await apiFetch('/api/customers', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        alert(`Failed to remove "${name}": ${body.error || res.statusText}`);
+        return;
+      }
       setCustomers((prev) => prev.filter((c) => c !== name));
+    } catch (err) {
+      console.error('Delete customer failed:', err);
+      alert(`Failed to remove "${name}". Check the console for details.`);
     } finally {
       setDeletingCustomer(null);
     }
@@ -215,19 +226,51 @@ export default function SettingsPage() {
                 </span>
               ) : (
                 customers.map((c) => (
-                  <span key={c} style={{ ...chipStyle, display: 'inline-flex', alignItems: 'center', gap: '6px', paddingRight: '6px' }}>
+                  <span
+                    key={c}
+                    style={{
+                      ...chipStyle,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      paddingRight: '4px',
+                    }}
+                  >
                     {c}
                     <button
+                      type="button"
                       onClick={() => handleDeleteCustomer(c)}
                       disabled={deletingCustomer === c}
                       title={`Remove ${c}`}
+                      aria-label={`Remove ${c}`}
                       style={{
-                        background: 'none', border: 'none', padding: '1px', cursor: 'pointer',
-                        display: 'flex', alignItems: 'center', color: '#98A2B3',
-                        opacity: deletingCustomer === c ? 0.4 : 1,
+                        background: '#FEE4E2',
+                        border: 'none',
+                        padding: 0,
+                        width: 18,
+                        height: 18,
+                        borderRadius: '50%',
+                        cursor: deletingCustomer === c ? 'wait' : 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#B42318',
+                        opacity: deletingCustomer === c ? 0.5 : 1,
+                        transition: 'background-color 0.15s ease, color 0.15s ease, transform 0.1s ease',
+                        flexShrink: 0,
+                      }}
+                      onMouseEnter={(e) => {
+                        if (deletingCustomer !== c) {
+                          (e.currentTarget as HTMLButtonElement).style.backgroundColor = '#F04438';
+                          (e.currentTarget as HTMLButtonElement).style.color = '#FFFFFF';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget as HTMLButtonElement).style.backgroundColor = '#FEE4E2';
+                        (e.currentTarget as HTMLButtonElement).style.color = '#B42318';
                       }}
                     >
-                      <X size={11} />
+                      <X size={12} strokeWidth={2.5} />
                     </button>
                   </span>
                 ))
