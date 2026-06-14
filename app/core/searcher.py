@@ -152,6 +152,12 @@ BRAND_DOMAINS: dict[str, str] = {
     "mammut": "mammut.com",
     "aurelien": "aurelien-online.com",
     "aurélien": "aurelien-online.com",
+    # Drôle de Monsieur — Paris designer label. Both accented and ASCII
+    # spellings are registered because BRAND_DOMAINS is looked up by raw
+    # .lower() (accent-sensitive), whereas the playbook below matches by
+    # accent-folded slug.
+    "drôle de monsieur": "droledemonsieur.com",
+    "drole de monsieur": "droledemonsieur.com",
 }
 
 BRAND_PLAYBOOKS: dict[str, dict[str, Any]] = {
@@ -197,6 +203,28 @@ BRAND_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "aurélien": {
         "preferred_domains": ["aurelien-online.com"],
         "blocked_domains": ["dhgate.", "aliexpress.", "temu.", "ebay."],
+        "strict_query": True,
+    },
+    # Drôle de Monsieur — Paris designer label. The brand's own site only
+    # carries the current season, but Flender order sheets are mostly archive
+    # stock (FW-23 / SS-24), so we lean on clean-packshot stockists that keep
+    # past-season product pages and index by both the base item code
+    # (e.g. C-BP105-CO080-BG) and the French style name (e.g. "Le Jean
+    # Cropped"). Marketplaces / user-photo resale are blocked because they
+    # surface wrong colourways and dirty worn shots — exactly the "9 out of 10
+    # unusable" images reported on the Drôle test sheet. (Accent-folded slug
+    # "droledemonsieur" matches the accented brand label in the sheet.)
+    "drôle de monsieur": {
+        "preferred_domains": [
+            "droledemonsieur.com",
+            "ssense.com",
+            "wrongweather.net",
+            "modesens.com",
+        ],
+        "blocked_domains": [
+            "amazon.", "ebay.", "aliexpress.", "temu.", "dhgate.", "wish.",
+            "vinted.", "poshmark.", "depop.", "grailed.", "vestiairecollective.",
+        ],
         "strict_query": True,
     },
 }
@@ -720,6 +748,36 @@ def split_and_normalize_domains(values: list[str] | str | None) -> list[str]:
     return _unique_preserve(out)
 
 
+def derive_brand_domain_candidates(brand: str) -> list[str]:
+    """Best-effort guess of a brand's own ``.com`` domain from its name.
+
+    Used ONLY as a fallback for brands that are in neither ``BRAND_DOMAINS``
+    nor ``BRAND_PLAYBOOKS`` so a freshly onboarded label still gets a dedicated
+    brand-site search instead of dropping straight to generic web results
+    (the failure mode that put Drôle de Monsieur at <40% before it was added
+    explicitly). Most direct-to-consumer labels live at ``brandnameslug.com``
+    (droledemonsieur.com, buttergoods.com, casablancaparis.com…), so the slug
+    guess is right surprisingly often. A wrong guess simply yields no hits — it
+    can never override an explicitly configured domain, and the matching score
+    boost is gated on the page also naming the brand.
+    """
+    text = str(brand or "").strip().lower()
+    if not text:
+        return []
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    tokens = [
+        tok for tok in re.split(r"[^a-z0-9]+", folded)
+        if tok and tok not in _GENERIC_BRAND_TOKENS
+    ]
+    joined = "".join(tokens)
+    if len(joined) < 4:
+        return []
+    candidates = [f"{joined}.com"]
+    if len(tokens) > 1:
+        candidates.append(f"{'-'.join(tokens)}.com")
+    return _unique_preserve(candidates)
+
+
 class ImageSearcher:
     """Search for product images across multiple sources."""
 
@@ -954,6 +1012,13 @@ class ImageSearcher:
         color_tokens = _parse_color_tokens(color_name or "")
         exact_query = _join_distinct_parts([brand, style_name, item_group or "", color_name or "", base_item_code or item_code or barcode or ""])
         exact_query_tokens = [token for token in _tokenize(exact_query) if len(token) >= 3]
+        # Fallback brand-site guess for brands not yet registered in
+        # BRAND_DOMAINS / BRAND_PLAYBOOKS. Empty for registered brands so the
+        # curated domains always take precedence.
+        explicit_brand_domains = self.matching_brand_site_urls(brand)
+        derived_brand_domains = (
+            [] if explicit_brand_domains else derive_brand_domain_candidates(brand)
+        )
         return {
             "item_code": item_code,
             "base_item_code": base_item_code or item_code,
@@ -970,7 +1035,8 @@ class ImageSearcher:
             "core_style_tokens": _unique_preserve(style_tokens),
             "color_tokens": _unique_preserve(color_tokens),
             "normalized_color_identity": self._normalized_color_identity(color_code, color_name),
-            "preferred_domains": _unique_preserve(self.matching_priority_site_urls(brand) + self.matching_brand_site_urls(brand)),
+            "preferred_domains": _unique_preserve(self.matching_priority_site_urls(brand) + explicit_brand_domains),
+            "derived_brand_domains": derived_brand_domains,
             "blocked_domains": playbook.get("blocked_domains", []),
             "blocked_terms": set(playbook.get("blocked_terms", [])),
             "strict_query": bool(playbook.get("strict_query", self.strict_match_mode)),
@@ -1589,6 +1655,13 @@ class ImageSearcher:
             domain = BRAND_DOMAINS.get(brand.lower().strip())
             if domain:
                 site_urls = [normalize_search_domain(domain)]
+        if not site_urls and not self.matching_priority_site_urls(brand):
+            # Unregistered brand with no manual priority override — fall back to
+            # a guessed brand domain so the item still gets a dedicated
+            # brand-site search instead of only generic web results. A wrong
+            # guess just returns nothing. We skip guessing when the user already
+            # supplied a priority domain, which is a stronger signal.
+            site_urls = ctx.get("derived_brand_domains") or []
 
         # Build task list — all run simultaneously
         tasks: dict[str, Any] = {}
@@ -1953,6 +2026,14 @@ class ImageSearcher:
             brand_slug = _slug(ctx.get("brand") or "")
             if brand_slug and len(brand_slug) > 3 and brand_slug in normalized_text:
                 score += 0.15
+            # Auto-derived brand domain (unregistered brand): trust it only when
+            # the page also names the brand, and weight it below a curated
+            # domain so an explicit config always wins.
+            if not matched_brand_domain and brand_slug and brand_slug in normalized_text:
+                for dd in ctx.get("derived_brand_domains", []):
+                    if dd and (dd in url.lower() or dd in page_url.lower()):
+                        score += 0.30
+                        break
             # Penalize URLs from wrong brand domains
             for other_brand, other_domain in BRAND_DOMAINS.items():
                 if other_brand != (ctx.get("brand") or "").lower().strip() and (

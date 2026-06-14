@@ -107,6 +107,72 @@ def test_search_penalizes_wrong_garment_type_even_when_code_matches(monkeypatch)
     assert wrong_tshirt.url not in scores or scores[correct_shorts.url] > scores[wrong_tshirt.url]
 
 
+def test_drole_de_monsieur_is_registered_for_brand_site_search():
+    """Regression for the Drôle de Monsieur test sheet where ~9/10 images were
+    unusable: the brand was in neither BRAND_DOMAINS nor BRAND_PLAYBOOKS, so it
+    fell back to generic web search with no domain anchoring. It must now resolve
+    to the official site + clean-packshot stockists, and accept the accent-folded
+    ASCII spelling too."""
+    searcher = ImageSearcher()
+    for brand in ("Drôle de Monsieur", "Drole de Monsieur"):
+        domains = searcher.matching_brand_site_urls(brand)
+        assert "droledemonsieur.com" in domains, brand
+        assert "ssense.com" in domains, brand
+        ctx = searcher._build_item_context({
+            "brand": brand,
+            "style_name": "Le Jean Cropped",
+            "item_code": "C-BP105-CO080-BG-D",
+            "color_name": "BEIGE",
+        })
+        assert ctx["strict_query"] is True
+        assert any("ebay." in d for d in ctx["blocked_domains"])
+
+
+def test_drole_search_prefers_brand_site_and_drops_wrong_color(monkeypatch):
+    searcher = ImageSearcher()
+
+    official = SearchHit(
+        url="https://droledemonsieur.com/cdn/products/la-parka-nfpm-black-01.jpg",
+        page_url="https://droledemonsieur.com/products/la-parka-nfpm-black",
+        title="Drôle de Monsieur La Parka NFPM Black jacket",
+        description="packshot",
+    )
+    wrong_color = SearchHit(
+        url="https://droledemonsieur.com/cdn/products/la-parka-nfpm-beige-01.jpg",
+        page_url="https://droledemonsieur.com/products/la-parka-nfpm-beige",
+        title="Drôle de Monsieur La Parka NFPM Beige jacket",
+        description="packshot",
+    )
+    marketplace = SearchHit(
+        url="https://i.ebayimg.com/images/g/abc/random-black-coat.jpg",
+        page_url="https://www.ebay.com/itm/123456",
+        title="Mens black parka coat winter",
+        description="worn",
+    )
+
+    monkeypatch.setattr(
+        searcher, "_bing_site_search",
+        lambda domain, query: [official, wrong_color] if "droledemonsieur" in domain else [],
+    )
+    monkeypatch.setattr(searcher, "_bing_search", lambda query: [marketplace])
+    monkeypatch.setattr(searcher, "_bing_raw", lambda query: [])
+    monkeypatch.setattr(searcher, "_google_images_scrape", lambda query: [])
+    monkeypatch.setattr(searcher, "_duckduckgo_search", lambda query: [])
+    monkeypatch.setattr(searcher, "_yahoo_images_scrape", lambda query: [])
+
+    candidates, scores = searcher.search({
+        "item_code": "C-CT105-PL007-BL-D",
+        "style_name": "La Parka NFPM",
+        "color_name": "BLACK",
+        "brand": "Drôle de Monsieur",
+        "item_group": "Jacket",
+    })
+
+    assert candidates[0] == official.url
+    assert wrong_color.url not in candidates          # wrong colourway filtered
+    assert marketplace.url not in candidates or scores[official.url] > scores[marketplace.url]
+
+
 def test_search_collapses_same_image_resize_variants(monkeypatch):
     searcher = ImageSearcher({"brand_site_urls": {"on": ["on.com"]}})
 
