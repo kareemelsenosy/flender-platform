@@ -331,6 +331,58 @@ def test_google_sheet_import_deduplicates_across_tabs_by_source_sheet(
         db.close()
 
 
+def test_preorder_import_uses_document_currency_and_flags_order_mode(
+    make_user,
+    test_app,
+    monkeypatch,
+):
+    """Preorder import reads the doc's own 'Currency' column (USD here) and marks
+    the session as a preorder so the export renders it as a faithful order."""
+    user = make_user()
+    sheets_routes = test_app["sheets_routes"]
+    sheets_reader = importlib.import_module("app.core.sheets_reader")
+
+    preorder_headers = ["Picture", "Pictures", "Type", "DocNum", "ITEM CODE",
+                        "QTY", "Unit Price", "SRP price", "Currency"]
+
+    class FakeSheetsReader:
+        def __init__(self, _cred_path):
+            pass
+
+        def fetch_spreadsheet(self, _spreadsheet_id):
+            return {
+                "title": "OC Mastersheet",
+                "tabs": [{"title": "Preorder3034", "headers": preorder_headers}],
+            }
+
+        def extract_items_from_tab(self, _tab):
+            return [{
+                "item_code": "TN260 BLACK", "size": "M", "brand": "TNT",
+                "color_name": "BLACK", "wholesale_price": "21.03",
+                "retail_price": "50.00 USD", "qty_available": "2",
+                "ordered_qty": "2", "currency": "USD", "image_url": "",
+            }]
+
+    monkeypatch.setattr(sheets_reader, "SheetsReader", FakeSheetsReader)
+    monkeypatch.setattr(sheets_reader, "extract_spreadsheet_id", lambda _url: "sheet-pre")
+
+    result = sheets_routes._do_import_sheet_sync(
+        user["id"],
+        "https://docs.google.com/spreadsheets/d/sheet-pre/edit#gid=0",
+        "unused-creds.json",
+        selected_tabs=["Preorder3034"],
+    )
+    assert result["ok"] is True
+
+    db = test_app["database"].SessionLocal()
+    try:
+        sess = db.get(test_app["models"].Session, result["session_id"])
+        assert sess.config["currency"] == "$"          # USD, not the default €
+        assert sess.config["sheet_kind"] == "preorder"
+    finally:
+        db.close()
+
+
 def test_order_mode_export_fills_qty_and_drops_stock(tmp_path):
     """Preorder/Reorder exports reproduce the placed order: QTY holds the ordered
     quantity, line totals compute from it, and the 'Stock' column is dropped."""

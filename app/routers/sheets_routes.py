@@ -99,38 +99,51 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         db.refresh(sess)
 
         # Detect currency from first tab's headers and WHS Price values
+        from app.core.sheets_reader import is_preorder_format
+        _CUR_SYMBOLS = {"USD": "$", "AED": "AED ", "GBP": "£", "EUR": "€",
+                        "$": "$", "£": "£", "€": "€"}
         detected_currency = "€"
         if tabs_to_process:
             first_tab = tabs_to_process[0]
             headers = first_tab.get("headers", [])
-            # Check for currency in Total column name (e.g. "TOTAL (AED)")
-            for h in headers:
-                hu = h.upper()
-                if "TOTAL" in hu:
-                    if "AED" in hu:
-                        detected_currency = "AED "
-                    elif "USD" in hu or "$" in hu:
-                        detected_currency = "$"
-                    elif "GBP" in hu or "£" in hu:
-                        detected_currency = "£"
-                    elif "EUR" in hu or "€" in hu:
-                        detected_currency = "€"
-                    break
-            # Also check first few WHS Price values for currency prefix
-            if detected_currency == "€":
-                items_sample = reader_inst.extract_items_from_tab(first_tab)[:5]
-                for it in items_sample:
-                    raw_whs = str(it.get("wholesale_price", "")).strip()
-                    ru = raw_whs.upper()
-                    if "AED" in ru or ru.startswith("DH"):
-                        detected_currency = "AED "
+            if is_preorder_format(headers):
+                # Preorder/Reorder docs carry an explicit "Currency" column per line
+                # (e.g. USD) — authoritative. Totals stay in the document's own
+                # currency (we never convert), so the symbol must match it.
+                for it in reader_inst.extract_items_from_tab(first_tab)[:5]:
+                    code = str(it.get("currency", "")).strip().upper()
+                    if code in _CUR_SYMBOLS:
+                        detected_currency = _CUR_SYMBOLS[code]
                         break
-                    elif ru.startswith("$"):
-                        detected_currency = "$"
+            else:
+                # Check for currency in Total column name (e.g. "TOTAL (AED)")
+                for h in headers:
+                    hu = h.upper()
+                    if "TOTAL" in hu:
+                        if "AED" in hu:
+                            detected_currency = "AED "
+                        elif "USD" in hu or "$" in hu:
+                            detected_currency = "$"
+                        elif "GBP" in hu or "£" in hu:
+                            detected_currency = "£"
+                        elif "EUR" in hu or "€" in hu:
+                            detected_currency = "€"
                         break
-                    elif ru.startswith("£"):
-                        detected_currency = "£"
-                        break
+                # Also check first few WHS Price values for currency prefix
+                if detected_currency == "€":
+                    items_sample = reader_inst.extract_items_from_tab(first_tab)[:5]
+                    for it in items_sample:
+                        raw_whs = str(it.get("wholesale_price", "")).strip()
+                        ru = raw_whs.upper()
+                        if "AED" in ru or ru.startswith("DH"):
+                            detected_currency = "AED "
+                            break
+                        elif ru.startswith("$"):
+                            detected_currency = "$"
+                            break
+                        elif ru.startswith("£"):
+                            detected_currency = "£"
+                            break
 
         for tab in tabs_to_process:
             items = reader_inst.extract_items_from_tab(tab)
