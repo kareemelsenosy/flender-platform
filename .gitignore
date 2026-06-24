@@ -57,3 +57,6 @@ ehthumbs.db
 *.log
 logs/
 .pytest_cache/
+
+# ── Build artifacts ───────────────────────────────────────────────────────────
+*.tsbuildinfo
