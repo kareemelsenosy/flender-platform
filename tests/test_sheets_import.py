@@ -6,6 +6,109 @@ import time
 
 from openpyxl import load_workbook
 
+from app.core.sheets_reader import SheetsReader, is_preorder_format
+
+
+# Header row of the SAP Preorder/Reorder order-document layout (subset, same
+# column order as the live sheet). One tab per order doc, one line per row.
+_PREORDER_HEADERS = [
+    "Picture", "Pictures", "Type", "DocNum", "Brand", "ITEM CODE",
+    "DESCRIPTION", "Category", "GENDER", "Size", "Color", "BARCODE",
+    "QTY", "Unit Price", "Currency", "SRP price", "SAP CODE",
+]
+
+
+def _img(url):
+    return f'=IMAGE("{url}")'
+
+
+def _link(url, label):
+    return f'=HYPERLINK("{url}","{label}")'
+
+
+def test_is_preorder_format_distinguishes_layouts():
+    assert is_preorder_format(_PREORDER_HEADERS) is True
+    # Reorder tabs share the identical schema
+    assert is_preorder_format(["Picture", "Pictures", "Type", "DocNum",
+                               "ITEM CODE", "QTY", "Unit Price"]) is True
+    # Stock Ordersheet layout must NOT be misdetected
+    assert is_preorder_format([
+        "Picture", "Manufacturer Code", "Brand Name", "Color", "Size",
+        "WHS Price", "RRP Price", "Stock",
+    ]) is False
+    # Invoice tabs (no DocNum/Unit Price) must NOT match the preorder extractor
+    assert is_preorder_format([
+        "Picture", "Pictures", "Invoice No", "ITEM CODE", "DESCRIPTION",
+    ]) is False
+
+
+def test_preorder_extractor_maps_columns_and_carries_image_forward():
+    a_img = "https://dl.dropboxusercontent.com/scl/fi/aaa/tee.png?rlkey=x"
+    b_img = "https://dl.dropboxusercontent.com/scl/fi/bbb/cap.png?rlkey=y"
+    a_folder = "https://www.dropbox.com/scl/fo/folderA"
+    b_folder = "https://www.dropbox.com/scl/fo/folderB"
+
+    # Product A spans two size rows; the =IMAGE photo lives on the first row only.
+    # Product B is a single row. Trailing blank row must be ignored.
+    display_rows = [
+        ["", "ACODE BLACK", "Preorder", "3034", "TestBrand", "ACODE BLACK",
+         "Test Tee", "T-Shirts", "Men", "M", "BLACK", "BAR-M",
+         "2", "21.03", "USD", "50.00 USD", "SAP-A-M"],
+        ["", "", "Preorder", "3034", "TestBrand", "ACODE BLACK",
+         "Test Tee", "T-Shirts", "Men", "L", "BLACK", "BAR-L",
+         "1", "21.03", "USD", "50.00 USD", "SAP-A-L"],
+        ["", "BCODE NAVY", "Preorder", "3034", "TestBrand", "BCODE NAVY",
+         "Test Cap", "Headwear", "Men", "onesize", "NAVY", "BAR-OS",
+         "3", "30.00", "USD", "70.00 USD", "SAP-B"],
+        ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ]
+    formula_rows = [
+        [_img(a_img), _link(a_folder, "ACODE BLACK")] + display_rows[0][2:],
+        ["", ""] + display_rows[1][2:],
+        [_img(b_img), _link(b_folder, "BCODE NAVY")] + display_rows[2][2:],
+        display_rows[3],
+    ]
+    tab = {
+        "title": "Preorder3034",
+        "headers": _PREORDER_HEADERS,
+        "display_rows": display_rows,
+        "formula_rows": formula_rows,
+    }
+
+    reader = SheetsReader.__new__(SheetsReader)  # skip credential loading
+    items = reader.extract_items_from_tab(tab)
+
+    assert len(items) == 3  # trailing blank row dropped
+
+    first, second, third = items
+    assert first["item_code"] == "ACODE BLACK"
+    assert first["brand"] == "TestBrand"
+    assert first["style_name"] == "Test Tee"
+    assert first["item_group"] == "T-Shirts"
+    assert first["color_name"] == "BLACK"
+    assert first["size"] == "M"
+    assert first["gender"] == "Men"
+    assert first["barcode"] == "BAR-M"
+    assert first["wholesale_price"] == "21.03"
+    assert first["retail_price"] == "50.00 USD"
+    assert first["ordered_qty"] == "2"
+    assert first["qty_available"] == "2"
+    assert first["currency"] == "USD"
+    assert first["sap_code"] == "SAP-A-M"
+    assert first["image_url"] == a_img
+    assert a_folder in first["dropbox_url"]
+
+    # Second size row has no photo of its own — it inherits product A's image.
+    assert second["size"] == "L"
+    assert second["image_url"] == a_img
+    assert a_folder in second["dropbox_url"]
+
+    # New product resets the carried image.
+    assert third["item_code"] == "BCODE NAVY"
+    assert third["image_url"] == b_img
+    assert b_folder in third["dropbox_url"]
+
+
 
 def test_expand_batch_jobs_keeps_one_job_per_sheet_url(test_app):
     sheets_routes = test_app["sheets_routes"]
@@ -226,6 +329,51 @@ def test_google_sheet_import_deduplicates_across_tabs_by_source_sheet(
         assert items[0].color_code != items[1].color_code
     finally:
         db.close()
+
+
+def test_order_mode_export_fills_qty_and_drops_stock(tmp_path):
+    """Preorder/Reorder exports reproduce the placed order: QTY holds the ordered
+    quantity, line totals compute from it, and the 'Stock' column is dropped."""
+    from openpyxl import load_workbook
+
+    from app.core.generator import OrderSheetGenerator
+
+    items = [
+        {
+            "item_code": "ACODE BLACK", "brand": "TestBrand", "style_name": "Tee",
+            "item_group": "T-Shirts", "color_name": "BLACK", "size": "M",
+            "gender": "Men", "barcode": "BAR-M",
+            "wholesale_price": 21.03, "retail_price": 50.0,
+            "qty_available": 2, "source_sheet": "Preorder3034",
+        },
+        {
+            "item_code": "ACODE BLACK", "brand": "TestBrand", "style_name": "Tee",
+            "item_group": "T-Shirts", "color_name": "BLACK", "size": "L",
+            "gender": "Men", "barcode": "BAR-L",
+            "wholesale_price": 21.03, "retail_price": 50.0,
+            "qty_available": 1, "source_sheet": "Preorder3034",
+        },
+    ]
+
+    gen = OrderSheetGenerator(config={"image_size": [150, 150], "row_height_px": 100})
+    path = gen.generate(items, str(tmp_path), input_filename="Preorder3034",
+                        brand="TestBrand", currency="$",
+                        google_sheet_tabs=["Preorder3034"], order_mode=True)
+
+    wb = load_workbook(path)
+    try:
+        ws = wb[wb.sheetnames[0]]
+        headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+        assert "Stock" not in headers           # free stock is meaningless for an order
+        qty_col = headers.index("QTY") + 1
+        total_col = headers.index("QTY Total") + 1
+        # QTY shows the actual ordered quantities (not a blank 0 buying form)
+        assert ws.cell(3, qty_col).value == 2
+        assert ws.cell(4, qty_col).value == 1
+        # Line total is a formula multiplying QTY by the (hidden) row WHS price
+        assert str(ws.cell(3, total_col).value).startswith("=")
+    finally:
+        wb.close()
 
 
 def test_backfill_sap_code_repairs_existing_google_sheet_sessions(

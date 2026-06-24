@@ -191,8 +191,14 @@ class OrderSheetGenerator:
 
     def generate(self, items: list[dict], output_dir: str,
                  input_filename: str = "export", brand: str = "",
-                 currency: str = "", google_sheet_tabs: list[str] | None = None) -> str:
-        """Generate standard ordersheet Excel from approved items."""
+                 currency: str = "", google_sheet_tabs: list[str] | None = None,
+                 order_mode: bool = False) -> str:
+        """Generate standard ordersheet Excel from approved items.
+
+        order_mode=True renders an already-placed order faithfully (Preorder/
+        Reorder docs): the QTY column shows the ordered quantity and the line
+        total is computed from it, instead of a blank editable buying form.
+        """
         os.makedirs(output_dir, exist_ok=True)
 
         today = date.today().strftime("%Y%m%d")
@@ -236,6 +242,7 @@ class OrderSheetGenerator:
                 currency=currency,
                 progress_state=progress_state,
                 tmp_images=tmp_images,
+                order_mode=order_mode,
             )
 
         self._report(progress_state["total"], progress_state["total"], "saving")
@@ -314,11 +321,16 @@ class OrderSheetGenerator:
         currency: str,
         progress_state: dict[str, int],
         tmp_images: list[str],
+        order_mode: bool = False,
     ) -> None:
         # Build column list
         out_headers = list(STANDARD_COLUMNS.keys())
         if not _has_comming_soon_column(items):
             out_headers = [header for header in out_headers if header != "Comming Soon"]
+        if order_mode:
+            # Already-placed order: "Stock" (free stock) is meaningless here, and
+            # the QTY column carries the ordered quantity instead of being blank.
+            out_headers = [header for header in out_headers if header != "Stock"]
 
         # ── Header row (row 2) ──
         SUMMARY_ROW = 1
@@ -510,9 +522,17 @@ class OrderSheetGenerator:
                     cell.alignment = CENTER
 
                 elif header == "QTY":
-                    cell.value = 0
-                    cell.fill = QTY_FILL
-                    cell.font = EDITABLE_FONT
+                    if order_mode:
+                        # Faithful order copy: show the actual ordered quantity.
+                        qty = item.get("qty_available")
+                        cell.value = float(qty) if qty else 0
+                        cell.number_format = "#,##0"
+                        cell.fill = gfill
+                        cell.font = BODY_FONT
+                    else:
+                        cell.value = 0
+                        cell.fill = QTY_FILL
+                        cell.font = EDITABLE_FONT
                     cell.alignment = CENTER
 
                 elif header == "QTY Total":
@@ -767,29 +787,58 @@ class OrderSheetGenerator:
                 sep = "&" if "?" in dl_url else "?"
                 dl_url = f"{dl_url}{sep}dl=1"
 
+        # Retry transient failures with backoff. Dropbox (which hosts every
+        # Preorder/Reorder photo) rate-limits bursts: with 16 parallel workers
+        # pulling multi-MB originals it returns 429s, and a single miss used to
+        # silently drop the photo from the export — making a sheet with perfect
+        # image data still come out half-empty. Retrying on 429/5xx/network
+        # errors recovers those.
+        raw: bytes | None = None
+        last_status = None
+        for attempt in range(4):
+            if attempt:
+                import random
+                import time as _t
+                _t.sleep((0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.4))
+            try:
+                # Stream the download so a giant image (Dropbox originals can be
+                # 30 MB each) can't single-handedly blow up memory before we
+                # check the Content-Length.
+                with requests.get(dl_url, headers=_DL_HEADERS, timeout=30, stream=True) as resp:
+                    last_status = resp.status_code
+                    if resp.status_code != 200:
+                        # 429 (throttled) and 5xx are transient — back off and retry.
+                        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                            continue
+                        logger.info("image download skipped (status %s): %s",
+                                    resp.status_code, url[:120])
+                        return None
+                    _MAX_BYTES = 20_000_000  # 20 MB hard cap per image
+                    chunks: list[bytes] = []
+                    seen = 0
+                    for chunk in resp.iter_content(chunk_size=131072):
+                        if not chunk:
+                            continue
+                        seen += len(chunk)
+                        if seen > _MAX_BYTES:
+                            logger.info("image too large (>%d bytes), truncating: %s",
+                                        _MAX_BYTES, url[:120])
+                            chunks.append(chunk[:_MAX_BYTES - (seen - len(chunk))])
+                            break
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
+                    break
+            except Exception as exc:
+                logger.info("image download attempt %d failed (%s): %s",
+                            attempt + 1, exc, url[:120])
+                continue
+
+        if raw is None:
+            logger.info("image download failed after retries (last status %s): %s",
+                        last_status, url[:120])
+            return None
+
         try:
-            # Stream the download so a giant image (Dropbox originals can be
-            # 30 MB each) can't single-handedly blow up memory before we
-            # check the Content-Length.
-            with requests.get(dl_url, headers=_DL_HEADERS, timeout=20, stream=True) as resp:
-                if resp.status_code != 200:
-                    logger.info("image download skipped (status %s): %s",
-                                resp.status_code, url[:120])
-                    return None
-                _MAX_BYTES = 20_000_000  # 20 MB hard cap per image
-                chunks: list[bytes] = []
-                seen = 0
-                for chunk in resp.iter_content(chunk_size=131072):
-                    if not chunk:
-                        continue
-                    seen += len(chunk)
-                    if seen > _MAX_BYTES:
-                        logger.info("image too large (>%d bytes), truncating: %s",
-                                    _MAX_BYTES, url[:120])
-                        chunks.append(chunk[:_MAX_BYTES - (seen - len(chunk))])
-                        break
-                    chunks.append(chunk)
-                raw = b"".join(chunks)
             buf = io.BytesIO(raw)
             # Validate it's actually an image
             PILImage.open(buf).verify()

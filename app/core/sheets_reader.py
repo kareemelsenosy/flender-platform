@@ -53,6 +53,21 @@ def extract_hyperlink_url(formula: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# Header names that uniquely identify the SAP "Preorder"/"Reorder" tab layout
+# (one tab per order document, e.g. "Preorder3034" / "Reorder13124"). These tabs
+# share an identical 36-column schema and already carry product photos as
+# =IMAGE(dropbox-url) formulas, so they import with near-100% image accuracy and
+# need no web image search. The Stock Ordersheet layout has none of these
+# columns (it uses "Manufacturer Code" / "WHS Price" / "Stock"), so detection
+# never misfires on it.
+def is_preorder_format(headers: list[str]) -> bool:
+    """True if a tab uses the SAP Preorder/Reorder order-document layout."""
+    norm = {str(h).strip().lower() for h in (headers or [])}
+    has_doc = "docnum" in norm or "doc num" in norm
+    has_price = "unit price" in norm or "srp price" in norm
+    return "item code" in norm and has_doc and has_price
+
+
 def _parse_worksheet(ws) -> tuple:
     """Parse a single worksheet — fires both API calls simultaneously (2x faster per tab)."""
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -171,6 +186,12 @@ class SheetsReader:
         display_rows = tab["display_rows"]
         formula_rows = tab["formula_rows"]
 
+        # Preorder/Reorder order-document tabs use a different schema (and already
+        # carry their photos as =IMAGE formulas) — route them to the dedicated
+        # extractor so the rest of the pipeline gets the same item dict shape.
+        if is_preorder_format(headers):
+            return self._extract_preorder_items(tab)
+
         # Find column indices
         col_idx = {}
         for i, h in enumerate(headers):
@@ -275,6 +296,100 @@ class SheetsReader:
                 "dropbox_url": last_dropbox_url,
                 "sap_code": row_sap_code,
                 "comming_soon_qty": last_comming_soon_qty,
+            })
+
+        return items
+
+    def _extract_preorder_items(self, tab: dict) -> list[dict]:
+        """Extract items from a SAP Preorder/Reorder order-document tab.
+
+        These tabs list one order line per row (style+color+size+qty) and embed
+        the product photo as =IMAGE("dropbox-url") in the "Picture" column on the
+        first row of each product only — so we carry the image forward across the
+        remaining size rows of the same ITEM CODE.
+        """
+        headers = tab["headers"]
+        display_rows = tab["display_rows"]
+        formula_rows = tab["formula_rows"]
+
+        col_idx = {str(h).strip(): i for i, h in enumerate(headers)}
+        norm_idx = {str(h).strip().lower(): i for i, h in enumerate(headers)}
+
+        def find(*names: str) -> int:
+            for n in names:
+                idx = norm_idx.get(n.strip().lower())
+                if idx is not None:
+                    return idx
+            return -1
+
+        i_pic = find("Picture")
+        i_pics = find("Pictures")
+        i_code = find("ITEM CODE", "Item Code")
+        i_desc = find("DESCRIPTION", "Description")
+        i_cat = find("Category", "CATEGORY")
+        i_gender = find("GENDER", "Gender")
+        i_size = find("Size")
+        i_color = find("Color", "Colour")
+        i_barcode = find("BARCODE", "Barcode")
+        i_qty = find("QTY", "Qty")
+        i_unit = find("Unit Price")
+        i_srp = find("SRP price", "SRP Price")
+        i_sap = find("SAP CODE", "SAP Code")
+        i_brand = find("Brand", "BRAND")
+        i_currency = find("Currency")
+
+        def cell(row: list, idx: int) -> str:
+            if idx < 0 or idx >= len(row):
+                return ""
+            return str(row[idx]).strip()
+
+        items: list[dict] = []
+        last_code = None
+        last_image_url = ""
+        last_dropbox_url = ""
+
+        for ri, row in enumerate(display_rows):
+            item_code = cell(row, i_code)
+            if not item_code:
+                continue  # trailing blank rows
+
+            frow = formula_rows[ri] if ri < len(formula_rows) else []
+            this_image = extract_image_url(cell(frow, i_pic)) or ""
+            this_dropbox = extract_hyperlink_url(cell(frow, i_pics)) or ""
+
+            if item_code != last_code:
+                # First row of a new product — adopt its photo (image lives here only)
+                last_code = item_code
+                last_image_url = this_image
+                last_dropbox_url = this_dropbox
+            else:
+                # Continuation size-row — keep the product's photo
+                last_image_url = last_image_url or this_image
+                last_dropbox_url = last_dropbox_url or this_dropbox
+
+            qty = cell(row, i_qty)
+            items.append({
+                "item_code": item_code,
+                "brand": cell(row, i_brand),
+                "style_name": cell(row, i_desc),
+                "color_name": cell(row, i_color),
+                "size": cell(row, i_size),
+                "gender": cell(row, i_gender),
+                "barcode": cell(row, i_barcode),
+                "item_group": cell(row, i_cat),
+                "item_group_code": "",
+                "wholesale_price": cell(row, i_unit),
+                "retail_price": cell(row, i_srp),
+                # Preorder/Reorder rows carry the *ordered* quantity (the order is
+                # already placed), surfaced both as qty_available (flows through the
+                # export's quantity column) and as ordered_qty for clarity.
+                "qty_available": qty,
+                "ordered_qty": qty,
+                "image_url": last_image_url,
+                "dropbox_url": last_dropbox_url,
+                "sap_code": cell(row, i_sap),
+                "comming_soon_qty": "",
+                "currency": cell(row, i_currency),
             })
 
         return items

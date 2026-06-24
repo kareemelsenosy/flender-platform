@@ -165,6 +165,15 @@ def _do_import_sheet_sync(uid: int, sheets_url: str, cred_path: str,
         cfg["selected_sheet_tabs"] = [tab["title"] for tab in tabs_to_process]
         cfg["google_sheet_title"] = result["title"]
         cfg["search_missing"] = bool(search_missing)
+        # SAP Preorder/Reorder order-document tabs are already-placed orders —
+        # the export should reproduce them faithfully (ordered QTY + line totals)
+        # rather than render a blank buying form. Flag the session when every
+        # selected tab uses that layout.
+        from app.core.sheets_reader import is_preorder_format
+        if tabs_to_process and all(
+            is_preorder_format(tab.get("headers", [])) for tab in tabs_to_process
+        ):
+            cfg["sheet_kind"] = "preorder"
         sess.config = cfg
 
         # Store each row as its own UniqueItem (no aggregation).

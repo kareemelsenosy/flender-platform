@@ -162,6 +162,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             brand=brand,
             currency=currency,
             google_sheet_tabs=google_sheet_tabs,
+            order_mode=(sess_config.get("sheet_kind") == "preorder"),
         )
 
         # Create download token for Excel
