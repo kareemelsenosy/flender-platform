@@ -1263,9 +1263,10 @@
     const bar = document.getElementById('nav-progress');
     let barTimer = null;
     // Skip only non-GET endpoints or external URLs.
-    // /review and /search both have stateful page-level JS (image review + local
-    // file upload) that behaves more reliably with a full browser navigation.
-    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip', '/review', '/search'];
+    // /review, /search and /products have stateful page-level JS (image review,
+    // local file upload, upload→poll→download) that behaves more reliably with a
+    // full browser navigation than the content-swap.
+    const SKIP = ['/upload', '/upload/file', '/download', '/download-zip', '/review', '/search', '/products'];
 
     function canInstantNav(href) {
       try {
