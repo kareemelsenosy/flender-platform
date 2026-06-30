@@ -40,6 +40,19 @@ def _tools() -> list[dict]:
             "accent_soft": "#f0f0f0",
         },
         {
+            "id": "products",
+            "name": "Product Attributes",
+            "description": (
+                "Upload a SAP product export and auto-fill each style's SAP "
+                "attributes — product type plus Fabric, Fit, Style and Weight — "
+                "into an upload-ready sheet, with low-confidence styles flagged."
+            ),
+            "url": "/products",
+            "icon": "sheet",
+            "accent": "#0F766E",
+            "accent_soft": "#e6f4f1",
+        },
+        {
             "id": "smt",
             "name": "Social Media Tracker",
             "description": (

@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Product Attributes — Product Management System{% endblock %}
+
+{% block content %}
+<div style="max-width:1100px">
+  <div style="margin-bottom:24px">
+    <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Product Attributes</h1>
+    <p style="color:var(--gray-500);margin-top:6px;max-width:680px">
+      Upload a SAP product export. The system reads every style and fills in its
+      SAP attributes — product type plus Fabric, Fit, Style and Weight — using
+      SAP's own value lists, then gives you an upload-ready sheet. Anything it
+      isn't confident about is flagged for review.
+    </p>
+  </div>
+
+  <!-- Upload card -->
+  <div id="upload-card" style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;padding:28px">
+    <form id="product-form">
+      <label for="product-file" id="dropzone"
+        style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+               border:2px dashed var(--gray-300,#ddd);border-radius:12px;padding:40px;cursor:pointer;text-align:center">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--gray-400,#999)"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <div style="font-weight:600" id="dz-title">Drop your SAP product export here, or click to choose</div>
+        <div style="font-size:0.8rem;color:var(--gray-400,#999)">.xlsx — must include a Style Code column</div>
+      </label>
+      <input type="file" id="product-file" name="file" accept=".xlsx,.xlsm" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-top:18px">
+        <button type="submit" class="btn btn-primary" id="run-btn" disabled>Run attribute extraction</button>
+      </div>
+      <div id="form-error" style="color:var(--danger,#c0392b);font-size:0.85rem;margin-top:10px;display:none"></div>
+    </form>
+  </div>
+
+  <!-- Progress -->
+  <div id="progress-card" style="display:none;background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;padding:28px;margin-top:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <strong id="progress-title">Reading products…</strong>
+      <span id="progress-count" style="color:var(--gray-500);font-variant-numeric:tabular-nums"></span>
+    </div>
+    <div style="background:var(--gray-100,#f1f1f1);height:8px;border-radius:99px;overflow:hidden">
+      <div id="progress-bar" style="height:100%;width:0;background:var(--black,#111);border-radius:99px;transition:width .4s"></div>
+    </div>
+    <p style="color:var(--gray-400);font-size:0.8rem;margin-top:10px">
+      Each style is matched against SAP's controlled attribute lists. Large files take a few minutes.
+    </p>
+  </div>
+
+  <!-- Results -->
+  <div id="results-card" style="display:none;margin-top:20px">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px">
+      <div class="stat" id="stat-clean"></div>
+      <div class="stat" id="stat-review"></div>
+      <div class="stat" id="stat-rows"></div>
+    </div>
+    <div style="display:flex;gap:12px;margin-bottom:18px">
+      <a id="download-btn" class="btn btn-primary" href="#" download>Download SAP upload sheet</a>
+      <button class="btn btn-outline" id="reset-btn" type="button">Process another file</button>
+      <label style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:0.85rem;color:var(--gray-500)">
+        <input type="checkbox" id="review-only"> Show only flagged
+      </label>
+    </div>
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+        <thead>
+          <tr style="background:var(--gray-50,#fafafa);text-align:left">
+            <th style="padding:10px 14px">Style Code</th>
+            <th style="padding:10px 14px">Name</th>
+            <th style="padding:10px 14px">Group</th>
+            <th style="padding:10px 14px">Product Type</th>
+            <th style="padding:10px 14px">Conf.</th>
+            <th style="padding:10px 14px">Attributes</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<style>
+  .stat{background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 18px;min-width:150px}
+  .stat .n{font-size:1.6rem;font-weight:800;letter-spacing:-0.02em}
+  .stat .l{font-size:0.75rem;color:var(--gray-400);text-transform:uppercase;letter-spacing:0.05em;margin-top:2px}
+  #results-body tr{border-top:1px solid var(--gray-100,#f1f1f1)}
+  #results-body td{padding:9px 14px;vertical-align:top}
+  .pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:0.72rem;font-weight:600}
+  .pill-pt{background:#eef2ff;color:#3730a3}
+  .pill-attr{background:var(--gray-100,#f1f1f1);color:var(--gray-600,#555);margin:0 4px 4px 0}
+  .row-review{background:#fff8e6}
+  .badge-review{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:0.7rem;font-weight:700}
+</style>
+
+<script>
+(function(){
+  const fileInput = document.getElementById('product-file');
+  const runBtn = document.getElementById('run-btn');
+  const form = document.getElementById('product-form');
+  const dzTitle = document.getElementById('dz-title');
+  const formError = document.getElementById('form-error');
+  let preview = [];
+
+  function show(id, on){ document.getElementById(id).style.display = on ? '' : 'none'; }
+  function err(m){ formError.textContent = m; formError.style.display = m ? 'block' : 'none'; }
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length){
+      dzTitle.textContent = fileInput.files[0].name;
+      runBtn.disabled = false;
+      err('');
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!fileInput.files.length) return;
+    runBtn.disabled = true; err('');
+    const fd = new FormData(); fd.append('file', fileInput.files[0]);
+    let data;
+    try {
+      const r = await fetch('/products/run', { method:'POST', body: fd, credentials:'same-origin' });
+      data = await r.json();
+      if (!r.ok || data.error) throw new Error(data.error || 'Upload failed');
+    } catch (ex) { err(ex.message); runBtn.disabled = false; return; }
+
+    show('upload-card', false);
+    show('progress-card', true);
+    document.getElementById('progress-title').textContent =
+      `Enriching ${data.total} styles…`;
+    pollJob(data.job_id, data.total);
+  });
+
+  async function pollJob(jobId, total){
+    const bar = document.getElementById('progress-bar');
+    const count = document.getElementById('progress-count');
+    try {
+      const r = await fetch(`/products/job/${jobId}`, { credentials:'same-origin' });
+      const d = await r.json();
+      const pct = total ? Math.round((d.done/total)*100) : 0;
+      bar.style.width = pct + '%';
+      count.textContent = `${d.done} / ${total}`;
+      if (d.status === 'done'){ renderResults(jobId, d); return; }
+      if (d.status === 'error'){ show('progress-card', false); show('upload-card', true); err(d.error || 'Processing failed'); return; }
+    } catch(_) {}
+    setTimeout(() => pollJob(jobId, total), 1200);
+  }
+
+  function renderResults(jobId, d){
+    show('progress-card', false);
+    show('results-card', true);
+    const s = d.summary || {};
+    document.getElementById('stat-clean').innerHTML  = `<div class="n">${s.clean_styles||0}</div><div class="l">Clean styles</div>`;
+    document.getElementById('stat-review').innerHTML = `<div class="n">${s.review_styles||0}</div><div class="l">Need review</div>`;
+    document.getElementById('stat-rows').innerHTML   = `<div class="n">${s.rows||0}</div><div class="l">SAP rows</div>`;
+    document.getElementById('download-btn').href = `/products/download/${jobId}`;
+    preview = d.preview || [];
+    drawTable();
+  }
+
+  function drawTable(){
+    const body = document.getElementById('results-body');
+    const reviewOnly = document.getElementById('review-only').checked;
+    const list = reviewOnly ? preview.filter(p => p.needs_review) : preview;
+    body.innerHTML = list.slice(0, 600).map(p => {
+      const attrs = (p.attributes||[]).map(a => `<span class="pill pill-attr">${escapeHtml(a)}</span>`).join('');
+      const pt = p.product_type
+        ? `<span class="pill pill-pt">${escapeHtml(p.product_type)}</span>`
+        : `<span class="badge-review">no type</span>`;
+      return `<tr class="${p.needs_review ? 'row-review':''}">
+        <td><strong>${escapeHtml(p.style_code)}</strong></td>
+        <td>${escapeHtml(p.name||'')}</td>
+        <td>${escapeHtml(p.item_group||'')}</td>
+        <td>${pt} ${p.needs_review ? '<span class="badge-review">review</span>':''}</td>
+        <td>${p.confidence}</td>
+        <td>${attrs || '<span style="color:var(--gray-400)">—</span>'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  document.getElementById('review-only').addEventListener('change', drawTable);
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    show('results-card', false); show('upload-card', true);
+    fileInput.value=''; dzTitle.textContent='Drop your SAP product export here, or click to choose';
+    runBtn.disabled = true;
+  });
+})();
+</script>
+{% endblock %}
