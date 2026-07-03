@@ -124,6 +124,9 @@ class UniqueItem(Base):
     confidence_label = Column(String(20), default="low")
     confidence_reason = Column(Text)
     comming_soon_qty = Column(String(50))  # "Comming Soon" column from Google Sheets (Dubai Reorder)
+    # Multi-source merge (Step 3): per-field {field: {value, source, conflicts:[{source,value}]}}.
+    # Empty "{}" for normal single-source items; populated when this item was produced by a merge.
+    provenance_json = Column(Text, default="{}")
 
     session = relationship("Session", back_populates="unique_items")
 
@@ -149,6 +152,14 @@ class UniqueItem(Base):
     @sizes.setter
     def sizes(self, val: list):
         self.sizes_json = json.dumps(val)
+
+    @property
+    def provenance(self) -> dict:
+        return json.loads(self.provenance_json or "{}")
+
+    @provenance.setter
+    def provenance(self, val: dict):
+        self.provenance_json = json.dumps(val or {})
 
     @property
     def candidates(self) -> list:
