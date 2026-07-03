@@ -109,6 +109,54 @@ def test_preorder_extractor_maps_columns_and_carries_image_forward():
     assert b_folder in third["dropbox_url"]
 
 
+# Header row of the Stock Ordersheet layout (Dubai Reorder), same column order as
+# the live sheet. "FreeStock" and "Comming Soon" are BOTH per-size quantities.
+_STOCK_HEADERS = [
+    "Picture", "Brand Name", "Item Group", "Manufacturer Code",
+    "Web Description 2", "Barcode", "Gender", "Color", "Size",
+    "FreeStock", "Comming Soon", "WHS Price", "RRP Price",
+]
+
+
+def test_stock_extractor_reads_comming_soon_per_size_not_carried_forward():
+    """Regression: 'Comming Soon' is a per-size quantity (like FreeStock) and must
+    be read from each size row. It was previously captured only on a product's
+    first row and carried forward to every size, which overstated some sizes and
+    understated others — throwing the Dubai Reorder Coming-Soon total off by ~19%.
+    """
+    # One product, three sizes, each with its OWN distinct Coming Soon value.
+    # The Manufacturer Code sits on the first size row only; the other two are
+    # merged/blank continuation rows (exactly how the live sheet is laid out).
+    display_rows = [
+        ["", "TestBrand", "Bags", "I021756.89XX", "Test Bag", "BAR-SM",
+         "Men", "BLACK", "S-M", "0", "2", "100", "200"],
+        ["", "", "", "", "", "BAR-ML",
+         "", "", "M-L", "0", "3", "", ""],
+        ["", "", "", "", "", "BAR-LXL",
+         "", "", "L-XL", "0", "5", "", ""],
+    ]
+    formula_rows = [list(r) for r in display_rows]  # no image formulas here
+    tab = {
+        "title": "ReOrder_Dubai",
+        "headers": _STOCK_HEADERS,
+        "display_rows": display_rows,
+        "formula_rows": formula_rows,
+    }
+
+    reader = SheetsReader.__new__(SheetsReader)  # skip credential loading
+    items = reader.extract_items_from_tab(tab)
+
+    assert not is_preorder_format(_STOCK_HEADERS)  # routes through stock extractor
+    assert len(items) == 3
+
+    # Each size keeps its own Coming Soon value — NOT the first row's "2".
+    assert [it["size"] for it in items] == ["S-M", "M-L", "L-XL"]
+    assert [it["comming_soon_qty"] for it in items] == ["2", "3", "5"]
+
+    # Correct tab total is 2 + 3 + 5 = 10. The carry-forward bug produced 2,2,2 = 6.
+    assert sum(int(it["comming_soon_qty"]) for it in items) == 10
+    assert [it["comming_soon_qty"] for it in items] != ["2", "2", "2"]
+
 
 def test_expand_batch_jobs_keeps_one_job_per_sheet_url(test_app):
     sheets_routes = test_app["sheets_routes"]

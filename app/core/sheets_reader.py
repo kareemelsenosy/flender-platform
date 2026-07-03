@@ -219,7 +219,6 @@ class SheetsReader:
         last_retail_price = ""
         last_image_url = ""
         last_dropbox_url = ""
-        last_comming_soon_qty = ""
 
         for ri, row in enumerate(display_rows):
             def get_val(*col_names):
@@ -266,7 +265,6 @@ class SheetsReader:
                 last_retail_price = get_val("RRP Price")
                 last_image_url = image_url or last_image_url
                 last_dropbox_url = dropbox_url or last_dropbox_url
-                last_comming_soon_qty = get_val("Comming Soon", "Coming Soon")
             else:
                 # Merged / blank row — only include if we have a size value
                 # (continuation of previous product's sizes)
@@ -274,9 +272,14 @@ class SheetsReader:
                 if not size or not last_item_code:
                     continue
 
-            # Read per-row values (not carried forward — unique per size row)
+            # Read per-row values (not carried forward — unique per size row).
+            # "Comming Soon" is a per-size incoming quantity, just like FreeStock —
+            # it must be read from the current size row, NOT carried forward from
+            # the product's first row (doing so overstated some sizes and understated
+            # others, throwing the tab's Coming Soon total off by ~19%).
             row_barcode = get_val("Barcode") or last_barcode
             row_stock = get_val("FreeStock") or get_val("Stock")
+            row_comming_soon = get_val("Comming Soon", "Coming Soon")
             row_sap_code = get_val("ItemCode")
 
             items.append({
@@ -295,7 +298,7 @@ class SheetsReader:
                 "image_url": last_image_url,
                 "dropbox_url": last_dropbox_url,
                 "sap_code": row_sap_code,
-                "comming_soon_qty": last_comming_soon_qty,
+                "comming_soon_qty": row_comming_soon,
             })
 
         return items
