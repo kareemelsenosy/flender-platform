@@ -18,6 +18,9 @@ itsdangerous>=2.1.0
 openpyxl>=3.1.0
 pandas>=2.0.0
 
+# PDF line-sheet ingest (extract product tables from supplier PDFs)
+pdfplumber>=0.11.0
+
 # Image processing
 Pillow>=10.0.0
 

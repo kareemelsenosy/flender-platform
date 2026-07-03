@@ -47,6 +47,26 @@ async def _stream_upload_to_disk(file: UploadFile, dest: pathlib.Path, max_size:
     return written
 
 
+ALLOWED_UPLOAD_EXTS = (".xlsx", ".xls", ".csv", ".pdf")
+
+
+def _prepare_parse_path(saved_path: pathlib.Path, ext: str) -> "tuple[pathlib.Path, str]":
+    """Return (path the spreadsheet parser should read, source_type) for a saved
+    upload. A PDF line sheet is converted into a sibling .xlsx so it flows
+    through the exact same mapping/review/export pipeline as Excel; the original
+    PDF is kept on disk. Raises pdf_ingest.PdfIngestError if the PDF has no
+    usable product table.
+    """
+    if ext == ".pdf":
+        from app.core.pdf_ingest import pdf_to_xlsx
+        xlsx_path = saved_path.with_name(saved_path.stem + "__from_pdf.xlsx")
+        pdf_to_xlsx(str(saved_path), str(xlsx_path))
+        return xlsx_path, "pdf_upload"
+    if ext == ".csv":
+        return saved_path, "csv_upload"
+    return saved_path, "excel_upload"
+
+
 def _owned_upload_path(uid: int, file_path: str) -> pathlib.Path | None:
     try:
         resolved = pathlib.Path(file_path).resolve()
@@ -86,7 +106,7 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     # Validate file extension
     display_name, safe_name = normalize_uploaded_name(file.filename or "upload")
     ext = os.path.splitext(safe_name)[1].lower()
-    if ext not in (".xlsx", ".xls", ".csv"):
+    if ext not in ALLOWED_UPLOAD_EXTS:
         return RedirectResponse("/order-sheet", status_code=302)
 
     # Save file to disk (stream-write with size cap so large uploads don't OOM)
@@ -98,9 +118,12 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     except ValueError:
         return RedirectResponse("/order-sheet", status_code=302)
 
-    # Create session
-    ext = os.path.splitext(safe_name)[1].lower()
-    source_type = "csv_upload" if ext == ".csv" else "excel_upload"
+    # For a PDF line sheet, extract its table into a sibling .xlsx the parser reads.
+    from app.core.pdf_ingest import PdfIngestError
+    try:
+        parse_path, source_type = _prepare_parse_path(file_path, ext)
+    except PdfIngestError:
+        return RedirectResponse("/order-sheet?error=pdf_no_table", status_code=302)
 
     sess = Session(
         user_id=uid,
@@ -113,12 +136,13 @@ async def upload_file(request: Request, file: UploadFile = File(...),
     db.commit()
     db.refresh(sess)
 
-    # Save file record
+    # Save file record — file_path points at the parseable file (converted xlsx
+    # for PDFs), while filename keeps the original upload name for display.
     uf = UploadedFile(
         session_id=sess.id,
         filename=display_name,
-        file_path=str(file_path),
-        file_size=os.path.getsize(file_path),
+        file_path=str(parse_path),
+        file_size=os.path.getsize(parse_path),
     )
     db.add(uf)
     db.commit()
@@ -136,7 +160,7 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
 
     display_name, safe_name = normalize_uploaded_name(file.filename or "upload")
     ext = os.path.splitext(safe_name)[1].lower()
-    if ext not in (".xlsx", ".xls", ".csv"):
+    if ext not in ALLOWED_UPLOAD_EXTS:
         return JSONResponse({"error": f"Unsupported file type: {ext}"}, status_code=400)
 
     session_dir = UPLOAD_DIR / f"user_{uid}"
@@ -150,7 +174,13 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     except ValueError:
         return JSONResponse({"error": "File too large (max 50MB)"}, status_code=413)
 
-    source_type = "csv_upload" if ext == ".csv" else "excel_upload"
+    # For a PDF line sheet, extract its table into a sibling .xlsx the parser reads.
+    from app.core.pdf_ingest import PdfIngestError
+    try:
+        parse_path, source_type = _prepare_parse_path(file_path, ext)
+    except PdfIngestError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+
     sess = Session(
         user_id=uid,
         name=display_name,
@@ -165,8 +195,8 @@ async def upload_file_json(request: Request, file: UploadFile = File(...),
     uf = UploadedFile(
         session_id=sess.id,
         filename=display_name,
-        file_path=str(file_path),
-        file_size=os.path.getsize(file_path),
+        file_path=str(parse_path),
+        file_size=os.path.getsize(parse_path),
     )
     db.add(uf)
     db.commit()

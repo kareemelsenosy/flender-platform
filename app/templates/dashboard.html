@@ -5,13 +5,13 @@
 
 <!-- Upload options -->
 <div class="grid-2 mb-6">
-  <!-- Excel / CSV upload (multi-file) -->
+  <!-- Excel / CSV / PDF upload (multi-file) -->
   <div class="card" id="upload-card">
     <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
-      <h3>Upload Excel or CSV</h3>
+      <h3>Upload Excel, CSV or PDF</h3>
       <p class="text-sm text-muted">Drag &amp; drop or click — select <strong>multiple files</strong> at once</p>
-      <p class="text-sm text-muted" style="margin-top:4px">.xlsx, .xls, .csv</p>
-      <input type="file" id="file-input" accept=".xlsx,.xls,.csv" multiple style="display:none"
+      <p class="text-sm text-muted" style="margin-top:4px">.xlsx, .xls, .csv, .pdf (table-based line sheets)</p>
+      <input type="file" id="file-input" accept=".xlsx,.xls,.csv,.pdf" multiple style="display:none"
              onchange="startUpload(this.files)">
     </div>
   </div>
@@ -161,8 +161,8 @@ function _uploadError(idx, msg) {
 }
 
 async function startUpload(fileList) {
-  const files = Array.from(fileList).filter(f => /\.(xlsx|xls|csv)$/i.test(f.name));
-  if (!files.length) { showAlert('Please select .xlsx, .xls, or .csv files.', 'Invalid Files'); return; }
+  const files = Array.from(fileList).filter(f => /\.(xlsx|xls|csv|pdf)$/i.test(f.name));
+  if (!files.length) { showAlert('Please select .xlsx, .xls, .csv, or .pdf files.', 'Invalid Files'); return; }
 
   document.getElementById('upload-card').style.display  = 'none';
   document.getElementById('upload-batch').style.display = 'block';
