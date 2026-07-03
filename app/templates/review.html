@@ -778,6 +778,56 @@ async function selectItem(key) {
   prefetchNearbyDetails(key);
 }
 
+function toggleEditPanel() {
+  const p = document.getElementById('edit-details-panel');
+  if (!p) return;
+  const opening = (p.style.display === 'none' || !p.style.display);
+  p.style.display = opening ? 'block' : 'none';
+  if (opening) {
+    const first = p.querySelector('input');
+    if (first) first.focus();
+  }
+}
+
+async function saveItemDetails(key, itemId) {
+  const entry = state[key];
+  if (!entry) return;
+  const fields = ['style_name', 'brand', 'color_name', 'gender', 'item_group',
+                  'barcode', 'sap_code', 'wholesale_price', 'retail_price',
+                  'qty_available', 'comming_soon_qty'];
+  const payload = {};
+  for (const f of fields) {
+    const el = document.getElementById('edit-' + f);
+    if (el) payload[f] = el.value;
+  }
+  const status = document.getElementById('edit-status');
+  const btn = document.getElementById('edit-save-btn');
+  if (status) status.textContent = 'Saving…';
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch(`/review/${SESSION_ID}/items/${itemId}/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    if (!resp.ok) throw new Error('Server returned ' + resp.status);
+    const data = await resp.json();
+    // Merge the server-normalised values back into local state and re-render so
+    // the header line (brand · description · price) reflects the correction.
+    entry.item = { ...(entry.item || {}), ...(data.item || {}) };
+    renderMain(key);
+    updateSidebar();
+    const panel = document.getElementById('edit-details-panel');
+    if (panel) panel.style.display = 'block';
+    const s2 = document.getElementById('edit-status');
+    if (s2) s2.textContent = 'Saved ✓';
+  } catch (e) {
+    if (status) status.textContent = 'Save failed — please try again';
+    if (btn) btn.disabled = false;
+  }
+}
+
 function renderMain(key) {
   const entry = state[key];
   if (!entry) return;
@@ -831,11 +881,46 @@ function renderMain(key) {
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
         ${canApplyGroup ? `<button class="btn btn-primary btn-sm" id="apply-group-btn">Apply to Group (${groupKeys.length})</button>` : ''}
+        <button class="btn btn-outline btn-sm" id="edit-details-toggle" title="Correct the item's description, prices, quantity, Coming Soon, etc.">✎ Edit details</button>
         <button class="btn btn-primary btn-sm" id="clipboard-image-btn" title="Copy an image or image URL from another website, then click this">Paste Image / URL</button>
         <button class="btn btn-outline btn-sm" id="custom-url-toggle">Type URL</button>
         <button class="btn btn-outline btn-sm" id="research-toggle" style="border-color:var(--primary);color:var(--primary)">Re-Search</button>
         <a href="${googleHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem" title="${canReverseSearch ? 'Find this exact image on Google Lens' : 'Search Google Images'}">${googleLabel}</a>
         <a href="${bingHref}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="font-size:0.65rem" title="${canReverseSearch ? 'Find this exact image on Bing Visual Search' : 'Search Bing Images'}">${bingLabel}</a>
+      </div>
+    </div>
+
+    <div id="edit-details-panel" style="display:none" class="mb-4">
+      <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius);padding:14px">
+        <div style="font-size:0.8rem;font-weight:600;margin-bottom:10px">Edit item details <span style="font-weight:400;color:var(--gray-400)">— corrections save to this item and flow into the export</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+          ${[
+            ['Description','style_name','text'],
+            ['Brand','brand','text'],
+            ['Colour','color_name','text'],
+            ['Gender','gender','text'],
+            ['Item Group','item_group','text'],
+            ['Barcode','barcode','text'],
+            ['SAP Code','sap_code','text'],
+            ['WHS Price','wholesale_price','number'],
+            ['RRP Price','retail_price','number'],
+            ['Quantity','qty_available','number'],
+            ['Coming Soon','comming_soon_qty','text'],
+          ].map(([label, field, type]) => {
+            const v = item[field];
+            const val = (v === null || v === undefined) ? '' : v;
+            return `<label style="font-size:0.7rem;color:var(--gray-500);display:flex;flex-direction:column;gap:3px">
+              ${label}
+              <input type="${type}" id="edit-${field}" value="${escapeAttr(String(val))}" ${type === 'number' ? 'step="any"' : ''}
+                     style="font-size:0.82rem;padding:5px 7px;border:1px solid var(--gray-200);border-radius:4px">
+            </label>`;
+          }).join('')}
+        </div>
+        <div class="flex gap-2" style="margin-top:12px;align-items:center">
+          <button class="btn btn-primary btn-sm" id="edit-save-btn">Save changes</button>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('edit-details-panel').style.display='none'">Cancel</button>
+          <span id="edit-status" style="font-size:0.75rem;color:var(--gray-400)"></span>
+        </div>
       </div>
     </div>
 
@@ -975,6 +1060,12 @@ function renderMain(key) {
 
   const noImageBtn = document.getElementById('mark-no-image-btn');
   if (noImageBtn) noImageBtn.addEventListener('click', () => approveUrl(key, entry.id, ''));
+
+  const editToggle = document.getElementById('edit-details-toggle');
+  if (editToggle) editToggle.addEventListener('click', () => toggleEditPanel());
+
+  const editSaveBtn = document.getElementById('edit-save-btn');
+  if (editSaveBtn) editSaveBtn.addEventListener('click', () => saveItemDetails(key, entry.id));
 
   // Drag-and-drop replacement
   _wireDropzone(document.getElementById('image-dropzone'),

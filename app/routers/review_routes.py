@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 import urllib.parse
 import zipfile
@@ -412,6 +413,10 @@ def review_item_detail(session_id: int, item_id: int, request: Request, db: DBSe
             "gender": item.gender,
             "sizes": item.sizes,
             "qty_available": item.qty_available,
+            "comming_soon_qty": item.comming_soon_qty,
+            "barcode": item.barcode,
+            "item_group": item.item_group,
+            "sap_code": item.sap_code,
         },
         "candidates": item.candidates,
         "scores": item.scores,
@@ -451,6 +456,85 @@ async def approve_item(session_id: int, request: Request, db: DBSession = Depend
     db.commit()
 
     return JSONResponse({"ok": True})
+
+
+# Fields the user may correct in the in-app review/edit panel. Split by type so
+# prices/quantities are coerced to numbers while the rest stay as trimmed text.
+_EDIT_TEXT_FIELDS = ("brand", "style_name", "color_name", "gender",
+                     "barcode", "item_group", "sap_code")
+_EDIT_NUM_FIELDS = ("wholesale_price", "retail_price", "qty_available")
+
+
+def _coerce_edit_number(raw):
+    """Parse a user-entered price/qty. Blank -> None; strips currency & commas
+    (e.g. '88.00 AED' -> 88.0, '1,250' -> 1250.0)."""
+    if raw is None:
+        return None
+    s = re.sub(r"[^0-9.\-]", "", str(raw).replace(",", "").strip())
+    if s in ("", "-", ".", "-.", "-"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+@router.post("/review/{session_id}/items/{item_id}/edit")
+async def edit_item_fields(session_id: int, item_id: int, request: Request,
+                           db: DBSession = Depends(get_db)):
+    """Update an item's data fields (prices, quantities, description, colour, …)
+    from the in-app edit panel. Only fields present in the payload are changed;
+    edits persist to the DB and flow straight into the next export."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    data = await request.json()
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "invalid payload"}, status_code=400)
+
+    item = _get_owned_item(db, uid, session_id, item_id)
+    if not item:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    changed: list[str] = []
+    for field in _EDIT_TEXT_FIELDS:
+        if field in data:
+            val = data[field]
+            setattr(item, field, str(val).strip() if val is not None else "")
+            changed.append(field)
+    # comming_soon_qty is stored as a string in the model (mirrors the sheet cell).
+    if "comming_soon_qty" in data:
+        val = data["comming_soon_qty"]
+        item.comming_soon_qty = "" if val is None else str(val).strip()
+        changed.append("comming_soon_qty")
+    for field in _EDIT_NUM_FIELDS:
+        if field in data:
+            setattr(item, field, _coerce_edit_number(data[field]))
+            changed.append(field)
+
+    if not changed:
+        return JSONResponse({"error": "no editable fields provided"}, status_code=400)
+
+    db.commit()
+
+    return JSONResponse({
+        "ok": True,
+        "changed": changed,
+        "item": {
+            "brand": item.brand,
+            "style_name": item.style_name,
+            "color_name": item.color_name,
+            "gender": item.gender,
+            "barcode": item.barcode,
+            "item_group": item.item_group,
+            "sap_code": item.sap_code,
+            "comming_soon_qty": item.comming_soon_qty,
+            "wholesale_price": item.wholesale_price,
+            "retail_price": item.retail_price,
+            "qty_available": item.qty_available,
+        },
+    })
 
 
 @router.post("/review/{session_id}/approve-group")
