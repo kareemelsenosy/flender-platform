@@ -307,6 +307,31 @@ def review_page(session_id: int, request: Request, db: DBSession = Depends(get_d
     })
 
 
+# Only conflicts on fields the user can actually pick in the ✎ edit panel are
+# flagged — a disagreement on image_url/item_code isn't resolvable here and must
+# not leave a permanent ⚠ the user can't clear.
+_RESOLVABLE_CONFLICT_FIELDS = {
+    "style_name", "brand", "color_name", "gender", "item_group",
+    "barcode", "sap_code", "wholesale_price", "retail_price",
+    "qty_available", "comming_soon_qty",
+}
+
+
+def _unresolved_conflict_fields(provenance_json: str | None) -> list[str]:
+    """Resolvable fields where merge sources disagreed and the user hasn't picked."""
+    try:
+        prov = json.loads(provenance_json or "{}")
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for field, entry in (prov.items() if isinstance(prov, dict) else []):
+        if field not in _RESOLVABLE_CONFLICT_FIELDS:
+            continue
+        if isinstance(entry, dict) and entry.get("conflicts") and not entry.get("resolved"):
+            out.append(field)
+    return out
+
+
 @router.get("/review/{session_id}/state")
 def review_state(session_id: int, request: Request, db: DBSession = Depends(get_db)):
     uid = get_current_user_id_db(request, db)
@@ -334,6 +359,7 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
         UniqueItem.search_confidence,
         UniqueItem.confidence_label,
         UniqueItem.confidence_reason,
+        UniqueItem.provenance_json,
     ).filter(
         UniqueItem.session_id == session_id,
         UniqueItem.search_status == "done",
@@ -382,6 +408,7 @@ def review_state(session_id: int, request: Request, db: DBSession = Depends(get_
             "search_confidence": item.search_confidence or 0.0,
             "confidence_label": item.confidence_label or "low",
             "confidence_reason": item.confidence_reason or "",
+            "has_conflicts": bool(_unresolved_conflict_fields(item.provenance_json)),
             "details_loaded": False,
         }
         group_entry = groups.setdefault(group_key, {"label": group_label, "keys": []})
@@ -429,6 +456,8 @@ def review_item_detail(session_id: int, item_id: int, request: Request, db: DBSe
         "search_confidence": item.search_confidence or 0.0,
         "confidence_label": item.confidence_label or "low",
         "confidence_reason": item.confidence_reason or "",
+        "provenance": item.provenance,
+        "has_conflicts": bool(_unresolved_conflict_fields(item.provenance_json)),
         "details_loaded": True,
     })
 
@@ -516,11 +545,26 @@ async def edit_item_fields(session_id: int, item_id: int, request: Request,
     if not changed:
         return JSONResponse({"error": "no editable fields provided"}, status_code=400)
 
+    # Saving a field that carried a merge conflict counts as the user resolving it:
+    # record their chosen value + mark it resolved so it stops being flagged.
+    prov = item.provenance
+    prov_changed = False
+    for field in changed:
+        entry = prov.get(field)
+        if isinstance(entry, dict) and entry.get("conflicts") and not entry.get("resolved"):
+            entry["resolved"] = True
+            entry["value"] = str(data.get(field, "")).strip()
+            entry["source"] = "you"
+            prov_changed = True
+    if prov_changed:
+        item.provenance = prov
+
     db.commit()
 
     return JSONResponse({
         "ok": True,
         "changed": changed,
+        "has_conflicts": bool(_unresolved_conflict_fields(item.provenance_json)),
         "item": {
             "brand": item.brand,
             "style_name": item.style_name,

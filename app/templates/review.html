@@ -331,6 +331,7 @@
           <button onclick="filterItems('needsreview')">Needs Review</button>
           <button onclick="filterItems('edited')">Edited</button>
           <button onclick="filterItems('noimage')">No Image</button>
+          <button id="filter-conflicts-btn" style="display:none;border-color:#f97316;color:#c2410c" onclick="filterItems('conflicts')">Conflicts</button>
         </div>
         <div class="stats-bar" id="stats-bar">Loading...</div>
         <div class="flex gap-2" style="margin-top:10px">
@@ -629,6 +630,7 @@ function updateSidebar() {
     if (filter === 'needsreview') return needsReview(state[k]);
     if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
     if (filter === 'noimage') return !getPrimaryUrl(state[k]);
+    if (filter === 'conflicts') return !!state[k].has_conflicts;
     return true;
   });
 
@@ -636,8 +638,14 @@ function updateSidebar() {
   const needs = keys.filter(k => needsReview(state[k])).length;
   const edited = keys.filter(k => !state[k].auto_selected && state[k].status === 'approved').length;
   const noImg = keys.filter(k => !getPrimaryUrl(state[k])).length;
+  const conflicts = keys.filter(k => state[k].has_conflicts).length;
   document.getElementById('stats-bar').textContent =
-    `${approved} approved \u00b7 ${needs} needs review \u00b7 ${edited} edited \u00b7 ${noImg} no image \u00b7 ${keys.length} total`;
+    `${approved} approved \u00b7 ${needs} needs review \u00b7 ${edited} edited \u00b7 ${noImg} no image`
+    + (conflicts ? ` \u00b7 ${conflicts} conflicts` : '') + ` \u00b7 ${keys.length} total`;
+
+  // Reveal the Conflicts filter only when a merge left disagreements to resolve.
+  const conflictBtn = document.getElementById('filter-conflicts-btn');
+  if (conflictBtn) conflictBtn.style.display = conflicts ? '' : 'none';
 
   // Update group toggle button style
   const groupBtn = document.getElementById('group-toggle');
@@ -726,7 +734,7 @@ function updateSidebar() {
         ${thumbHtml}
         <div class="review-item-info">
           <div class="code">${safeCode}</div>
-          <div class="brand">${safeBrand} <span class="badge ${badgeCls}">${badge}</span></div>
+          <div class="brand">${safeBrand} <span class="badge ${badgeCls}">${badge}</span>${item.has_conflicts ? ' <span class="badge badge-red" title="Sources disagree — open to resolve">⚠</span>' : ''}</div>
         </div>
       </div>`;
     }).join('');
@@ -816,6 +824,14 @@ async function saveItemDetails(key, itemId) {
     // Merge the server-normalised values back into local state and re-render so
     // the header line (brand · description · price) reflects the correction.
     entry.item = { ...(entry.item || {}), ...(data.item || {}) };
+    // Saving a conflicting field resolves it — clear the local markers so the
+    // ⚠ badges and Conflicts filter update without a reload.
+    if (entry.provenance) {
+      for (const f of (data.changed || [])) {
+        if (entry.provenance[f] && entry.provenance[f].conflicts) entry.provenance[f].resolved = true;
+      }
+    }
+    if (typeof data.has_conflicts === 'boolean') entry.has_conflicts = data.has_conflicts;
     renderMain(key);
     updateSidebar();
     const panel = document.getElementById('edit-details-panel');
@@ -860,6 +876,25 @@ function renderMain(key) {
   const googleLabel = canReverseSearch ? 'Find on Google' : 'Google Images';
   const bingLabel   = canReverseSearch ? 'Find on Bing'   : 'Bing Images';
 
+  // Multi-source merge conflicts (Step 4): for a field where sources disagreed,
+  // offer each source's value as a one-click choice under its input.
+  const prov = entry.provenance || {};
+  const hasConf = !!entry.has_conflicts;
+  const conflictBlockHtml = (field, inputId) => {
+    const p = prov[field];
+    if (!p || !Array.isArray(p.conflicts) || !p.conflicts.length || p.resolved) return '';
+    const opts = [{ source: p.source, value: p.value }].concat(p.conflicts);
+    const btns = opts.map(o => `<button type="button" class="conflict-use"
+        data-target="${inputId}" data-value="${escapeAttr(String(o.value ?? ''))}"
+        style="text-align:left;font-size:0.68rem;padding:3px 7px;border:1px solid var(--gray-200);border-radius:3px;background:white;cursor:pointer">
+        ${escapeHtml(String(o.value ?? '') || '(empty)')} <span style="color:var(--gray-400)">· ${escapeHtml(String(o.source ?? ''))}</span>
+      </button>`).join('');
+    return `<div style="margin-top:5px;background:#fff7ed;border:1px solid #fed7aa;border-radius:4px;padding:6px 7px">
+        <div style="font-size:0.62rem;color:#c2410c;font-weight:600">⚠ ${opts.length} sources disagree — pick one, then Save</div>
+        <div style="display:flex;flex-direction:column;gap:3px;margin-top:4px">${btns}</div>
+      </div>`;
+  };
+
   main.scrollTop = 0;
 
   main.innerHTML = `
@@ -881,7 +916,7 @@ function renderMain(key) {
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap">
         ${canApplyGroup ? `<button class="btn btn-primary btn-sm" id="apply-group-btn">Apply to Group (${groupKeys.length})</button>` : ''}
-        <button class="btn btn-outline btn-sm" id="edit-details-toggle" title="Correct the item's description, prices, quantity, Coming Soon, etc.">✎ Edit details</button>
+        <button class="btn btn-outline btn-sm" id="edit-details-toggle" title="Correct the item's description, prices, quantity, Coming Soon, etc." ${hasConf ? 'style="border-color:#f97316;color:#c2410c"' : ''}>✎ Edit details${hasConf ? ' ⚠' : ''}</button>
         <button class="btn btn-primary btn-sm" id="clipboard-image-btn" title="Copy an image or image URL from another website, then click this">Paste Image / URL</button>
         <button class="btn btn-outline btn-sm" id="custom-url-toggle">Type URL</button>
         <button class="btn btn-outline btn-sm" id="research-toggle" style="border-color:var(--primary);color:var(--primary)">Re-Search</button>
@@ -913,6 +948,7 @@ function renderMain(key) {
               ${label}
               <input type="${type}" id="edit-${field}" value="${escapeAttr(String(val))}" ${type === 'number' ? 'step="any"' : ''}
                      style="font-size:0.82rem;padding:5px 7px;border:1px solid var(--gray-200);border-radius:4px">
+              ${conflictBlockHtml(field, 'edit-' + field)}
             </label>`;
           }).join('')}
         </div>
@@ -1066,6 +1102,19 @@ function renderMain(key) {
 
   const editSaveBtn = document.getElementById('edit-save-btn');
   if (editSaveBtn) editSaveBtn.addEventListener('click', () => saveItemDetails(key, entry.id));
+
+  // Conflict "Use this value" buttons drop the chosen value into the field input.
+  document.querySelectorAll('.conflict-use').forEach(b => {
+    b.addEventListener('click', () => {
+      const t = document.getElementById(b.dataset.target);
+      if (t) { t.value = b.dataset.value; t.focus(); }
+    });
+  });
+  // Surface merge conflicts right away: open the edit panel when this item has any.
+  if (hasConf) {
+    const panel = document.getElementById('edit-details-panel');
+    if (panel) panel.style.display = 'block';
+  }
 
   // Drag-and-drop replacement
   _wireDropzone(document.getElementById('image-dropzone'),
@@ -1658,6 +1707,7 @@ document.addEventListener('keydown', e => {
     if (filter === 'needsreview') return needsReview(state[k]);
     if (filter === 'edited') return !state[k].auto_selected && state[k].status === 'approved';
     if (filter === 'noimage') return !getPrimaryUrl(state[k]);
+    if (filter === 'conflicts') return !!state[k].has_conflicts;
     return true;
   });
   const filtered = groupMode
