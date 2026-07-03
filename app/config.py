@@ -23,6 +23,13 @@ SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads")))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", str(BASE_DIR / "output")))
 
+# How long a generated Order Sheet (Excel / images ZIP) stays downloadable
+# before the disk-cleanup sweeper may remove it and its images folder. The old
+# 24-hour window was too short — users returned the next day to find their
+# result gone and had to regenerate the whole sheet. Kept configurable so the
+# window can be dialed back from the server if the output volume gets tight.
+GENERATED_FILE_RETENTION_DAYS = int(os.getenv("GENERATED_FILE_RETENTION_DAYS", "30"))
+
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GOOGLE_SEARCH_KEY = os.getenv("GOOGLE_SEARCH_KEY", "")

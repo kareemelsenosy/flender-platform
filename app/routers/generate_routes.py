@@ -16,7 +16,7 @@ from starlette.responses import FileResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
-from app.config import OUTPUT_DIR
+from app.config import OUTPUT_DIR, GENERATED_FILE_RETENTION_DAYS
 from app.core.generator import OrderSheetGenerator
 from app.core.searcher import item_sort_key
 from app.database import get_db
@@ -26,6 +26,11 @@ from app.services.review_defaults import materialize_default_review_approvals
 from app.services.sap_code_backfill import backfill_sap_codes_for_session
 
 router = APIRouter()
+
+# How long a fresh download link / generated file is kept before it may be
+# swept from disk. Driven by GENERATED_FILE_RETENTION_DAYS (default 30 days) so
+# a user's result survives well beyond the same-day session (see config.py).
+_RETENTION = timedelta(days=GENERATED_FILE_RETENTION_DAYS)
 
 # In-memory progress tracking per session — protected by a lock (M4)
 _progress: dict[int, dict] = {}
@@ -174,7 +179,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
             file_path=out_path,
             filename=os.path.basename(out_path),
             image_folder_path=images_folder,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            expires_at=datetime.now(timezone.utc) + _RETENTION,
         )
         db.add(gen_file)
 
@@ -204,7 +209,7 @@ def _run_export_background(session_id: int, user_id: int, item_dicts: list,
                     token=zip_token,
                     file_path=zip_path,
                     filename="images.zip",
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                    expires_at=datetime.now(timezone.utc) + _RETENTION,
                 )
                 db.add(zip_gen)
                 db.commit()
@@ -474,7 +479,7 @@ def cleanup_expired_files(db_session) -> int:
     return deleted
 
 
-def prune_old_output_dirs(db_session, max_age_days: int = 14) -> tuple[int, int]:
+def prune_old_output_dirs(db_session, max_age_days: int = GENERATED_FILE_RETENTION_DAYS) -> tuple[int, int]:
     """Delete entire `session_*/` output directories that are no longer needed.
 
     `cleanup_expired_files` only removes the single Excel/ZIP files referenced
@@ -604,14 +609,14 @@ async def download_file(token: str, request: Request, db: DBSession = Depends(ge
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         return _download_error_page(
             "Download link expired",
-            "Download links are kept for 24 hours after the last download. Please re-export to get a fresh link.",
+            f"Download links are kept for {GENERATED_FILE_RETENTION_DAYS} days after the last download. Please re-export to get a fresh link.",
             410,
             session_id=gen.session_id,
         )
 
-    # Sliding expiry: each successful download bumps the link forward 24h,
-    # so users actively reviewing/correcting images don't lose access.
-    gen.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    # Sliding expiry: each successful download bumps the link forward the full
+    # retention window, so users actively reviewing/correcting keep access.
+    gen.expires_at = datetime.now(timezone.utc) + _RETENTION
     db.commit()
 
     return FileResponse(
@@ -654,13 +659,14 @@ async def download_zip(token: str, request: Request, db: DBSession = Depends(get
     if gen.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         return _download_error_page(
             "Download link expired",
-            "Download links are kept for 24 hours after the last download. Please re-export to get a fresh link.",
+            f"Download links are kept for {GENERATED_FILE_RETENTION_DAYS} days after the last download. Please re-export to get a fresh link.",
             410,
             session_id=gen.session_id,
         )
 
-    # Sliding expiry: each successful download bumps the link forward 24h.
-    gen.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    # Sliding expiry: each successful download bumps the link forward the full
+    # retention window.
+    gen.expires_at = datetime.now(timezone.utc) + _RETENTION
     db.commit()
 
     return FileResponse(
