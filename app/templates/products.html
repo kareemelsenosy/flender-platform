@@ -2,14 +2,15 @@
 {% block title %}Product Attributes — Product Management System{% endblock %}
 
 {% block content %}
-<div style="max-width:1100px">
+<div style="max-width:1150px">
   <div style="margin-bottom:24px">
     <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Product Attributes</h1>
-    <p style="color:var(--gray-500);margin-top:6px;max-width:680px">
-      Upload a SAP product export. The system reads every style and fills in its
-      SAP attributes — product type plus Fabric, Fit, Style and Weight — using
-      SAP's own value lists, then gives you an upload-ready sheet. Anything it
-      isn't confident about is flagged for review.
+    <p style="color:var(--gray-500);margin-top:6px;max-width:720px">
+      Upload one or more SAP product exports. The system reads every style and fills in
+      its SAP attributes — product type plus Fabric, Fit, Style and Weight — using SAP's
+      own value lists, then gives you an upload-ready sheet. Anything it isn't confident
+      about is flagged; you can correct any product type or attribute, and every run is
+      saved so you can reopen it later.
     </p>
   </div>
 
@@ -20,15 +21,38 @@
         style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
                border:2px dashed var(--gray-300,#ddd);border-radius:12px;padding:40px;cursor:pointer;text-align:center">
         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--gray-400,#999)"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <div style="font-weight:600" id="dz-title">Drop your SAP product export here, or click to choose</div>
-        <div style="font-size:0.8rem;color:var(--gray-400,#999)">.xlsx — must include a Style Code column</div>
+        <div style="font-weight:600" id="dz-title">Drop your SAP product export(s) here, or click to choose</div>
+        <div style="font-size:0.8rem;color:var(--gray-400,#999)">.xlsx — you can select multiple files · each must include a Style Code column</div>
       </label>
-      <input type="file" id="product-file" name="file" accept=".xlsx,.xlsm" style="display:none">
+      <input type="file" id="product-file" name="file" accept=".xlsx,.xlsm" multiple style="display:none">
       <div style="display:flex;justify-content:flex-end;margin-top:18px">
         <button type="submit" class="btn btn-primary" id="run-btn" disabled>Run attribute extraction</button>
       </div>
       <div id="form-error" style="color:var(--danger,#c0392b);font-size:0.85rem;margin-top:10px;display:none"></div>
     </form>
+  </div>
+
+  <!-- Saved runs / history -->
+  <div id="history-card" style="margin-top:22px;{% if not history %}display:none{% endif %}">
+    <h3 style="font-size:1rem;font-weight:700;margin-bottom:10px">Saved runs</h3>
+    <div id="history-list" style="display:flex;flex-direction:column;gap:8px">
+      {% for h in history %}
+      <div class="hist-row" data-run-id="{{ h.id }}" style="display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--gray-200,#eee);border-radius:10px;padding:12px 14px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ h.name or 'Untitled run' }}</div>
+          <div style="font-size:0.78rem;color:var(--gray-500);margin-top:2px">
+            {{ h.created_at }} · {{ h.total }} styles
+            {% if h.status == 'done' %}· {{ h.clean }} clean · {{ h.review }} to review
+            {% elif h.status == 'running' %}· <span style="color:#b45309">processing…</span>
+            {% elif h.status == 'error' %}· <span style="color:var(--danger,#c0392b)">failed</span>{% endif %}
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm hist-open" data-run-id="{{ h.id }}" type="button">Open</button>
+        <a class="btn btn-outline btn-sm" href="/products/download/{{ h.id }}" download>Download</a>
+        <button class="btn btn-danger btn-sm hist-del" data-run-id="{{ h.id }}" type="button">Delete</button>
+      </div>
+      {% endfor %}
+    </div>
   </div>
 
   <!-- Progress -->
@@ -52,15 +76,16 @@
       <div class="stat" id="stat-review"></div>
       <div class="stat" id="stat-rows"></div>
     </div>
-    <div style="display:flex;gap:12px;margin-bottom:18px">
+    <div style="display:flex;gap:12px;margin-bottom:18px;align-items:center;flex-wrap:wrap">
       <a id="download-btn" class="btn btn-primary" href="#" download>Download SAP upload sheet</a>
       <button class="btn btn-outline" id="reset-btn" type="button">Process another file</button>
+      <span style="font-size:0.78rem;color:var(--gray-400)">Tip: click <strong>Edit</strong> on any row to fix its product type or attributes.</span>
       <label style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:0.85rem;color:var(--gray-500)">
         <input type="checkbox" id="review-only"> Show only flagged
       </label>
     </div>
-    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;overflow:hidden">
-      <table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:760px">
         <thead>
           <tr style="background:var(--gray-50,#fafafa);text-align:left">
             <th style="padding:10px 14px">Style Code</th>
@@ -69,6 +94,7 @@
             <th style="padding:10px 14px">Product Type</th>
             <th style="padding:10px 14px">Conf.</th>
             <th style="padding:10px 14px">Attributes</th>
+            <th style="padding:10px 14px"></th>
           </tr>
         </thead>
         <tbody id="results-body"></tbody>
@@ -88,23 +114,33 @@
   .pill-attr{background:var(--gray-100,#f1f1f1);color:var(--gray-600,#555);margin:0 4px 4px 0}
   .row-review{background:#fff8e6}
   .badge-review{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:0.7rem;font-weight:700}
+  .badge-edited{background:#dcfce7;color:#166534;padding:2px 8px;border-radius:99px;font-size:0.7rem;font-weight:700}
+  .edit-sel{font-size:0.8rem;padding:4px 6px;border:1px solid var(--gray-200,#ddd);border-radius:6px;max-width:170px}
+  .style-chip{font-size:0.7rem;padding:2px 7px;border:1px solid var(--gray-200,#ddd);border-radius:99px;cursor:pointer;user-select:none}
+  .style-chip.on{background:#111;color:#fff;border-color:#111}
 </style>
 
 <script>
 (function(){
+  const PT_OPTIONS = {{ pt_options | tojson }};
+  const VALUE_LISTS = {{ value_lists | tojson }};
+
   const fileInput = document.getElementById('product-file');
   const runBtn = document.getElementById('run-btn');
   const form = document.getElementById('product-form');
   const dzTitle = document.getElementById('dz-title');
   const formError = document.getElementById('form-error');
   let preview = [];
+  let RUN_ID = null;
+  let editingCode = null;
 
   function show(id, on){ document.getElementById(id).style.display = on ? '' : 'none'; }
   function err(m){ formError.textContent = m; formError.style.display = m ? 'block' : 'none'; }
 
   fileInput.addEventListener('change', () => {
-    if (fileInput.files.length){
-      dzTitle.textContent = fileInput.files[0].name;
+    const n = fileInput.files.length;
+    if (n){
+      dzTitle.textContent = n === 1 ? fileInput.files[0].name : `${n} files selected`;
       runBtn.disabled = false;
       err('');
     }
@@ -114,7 +150,8 @@
     e.preventDefault();
     if (!fileInput.files.length) return;
     runBtn.disabled = true; err('');
-    const fd = new FormData(); fd.append('file', fileInput.files[0]);
+    const fd = new FormData();
+    for (const f of fileInput.files) fd.append('file', f);
     let data;
     try {
       const r = await fetch('/products/run', { method:'POST', body: fd, credentials:'same-origin' });
@@ -123,64 +160,177 @@
     } catch (ex) { err(ex.message); runBtn.disabled = false; return; }
 
     show('upload-card', false);
+    show('history-card', false);
     show('progress-card', true);
-    document.getElementById('progress-title').textContent =
-      `Enriching ${data.total} styles…`;
-    pollJob(data.job_id, data.total);
+    document.getElementById('progress-title').textContent = `Enriching ${data.total} styles…`;
+    pollStatus(data.run_id, data.total);
   });
 
-  async function pollJob(jobId, total){
+  async function pollStatus(runId, total){
     const bar = document.getElementById('progress-bar');
     const count = document.getElementById('progress-count');
     try {
-      const r = await fetch(`/products/job/${jobId}`, { credentials:'same-origin' });
+      const r = await fetch(`/products/run/${runId}/status`, { credentials:'same-origin' });
       const d = await r.json();
       const pct = total ? Math.round((d.done/total)*100) : 0;
       bar.style.width = pct + '%';
       count.textContent = `${d.done} / ${total}`;
-      if (d.status === 'done'){ renderResults(jobId, d); return; }
-      if (d.status === 'error'){ show('progress-card', false); show('upload-card', true); err(d.error || 'Processing failed'); return; }
+      if (d.status === 'done'){ renderResults(runId, d); return; }
+      if (d.status === 'error'){ show('progress-card', false); show('upload-card', true); show('history-card', true); err(d.error || 'Processing failed'); return; }
     } catch(_) {}
-    setTimeout(() => pollJob(jobId, total), 1200);
+    setTimeout(() => pollStatus(runId, total), 1200);
   }
 
-  function renderResults(jobId, d){
+  async function openRun(runId){
+    try {
+      const r = await fetch(`/products/run/${runId}`, { credentials:'same-origin' });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || 'Could not open run');
+      show('upload-card', false); show('progress-card', false);
+      renderResults(runId, d);
+    } catch (ex) { err(ex.message); }
+  }
+
+  function renderResults(runId, d){
+    RUN_ID = runId;
+    editingCode = null;
     show('progress-card', false);
     show('results-card', true);
-    const s = d.summary || {};
+    setStats(d.summary || {});
+    document.getElementById('download-btn').href = `/products/download/${runId}`;
+    preview = d.preview || [];
+    drawTable();
+  }
+
+  function setStats(s){
     document.getElementById('stat-clean').innerHTML  = `<div class="n">${s.clean_styles||0}</div><div class="l">Clean styles</div>`;
     document.getElementById('stat-review').innerHTML = `<div class="n">${s.review_styles||0}</div><div class="l">Need review</div>`;
     document.getElementById('stat-rows').innerHTML   = `<div class="n">${s.rows||0}</div><div class="l">SAP rows</div>`;
-    document.getElementById('download-btn').href = `/products/download/${jobId}`;
-    preview = d.preview || [];
-    drawTable();
+  }
+
+  function optionList(values, current){
+    return ['<option value="">—</option>'].concat(
+      values.map(v => `<option value="${escapeHtml(v)}" ${v===current?'selected':''}>${escapeHtml(v)}</option>`)
+    ).join('');
+  }
+
+  function displayRow(p){
+    const attrs = (p.attributes||[]).map(a => `<span class="pill pill-attr">${escapeHtml(a)}</span>`).join('');
+    const pt = p.product_type
+      ? `<span class="pill pill-pt">${escapeHtml(p.product_type)}</span>`
+      : `<span class="badge-review">no type</span>`;
+    const flag = p.needs_review ? '<span class="badge-review">review</span>'
+               : (p.edited ? '<span class="badge-edited">edited</span>' : '');
+    return `<tr class="${p.needs_review ? 'row-review':''}" data-code="${escapeHtml(p.style_code)}">
+      <td><strong>${escapeHtml(p.style_code)}</strong></td>
+      <td>${escapeHtml(p.name||'')}</td>
+      <td>${escapeHtml(p.item_group||'')}</td>
+      <td>${pt} ${flag}</td>
+      <td>${p.confidence}</td>
+      <td>${attrs || '<span style="color:var(--gray-400)">—</span>'}</td>
+      <td style="text-align:right"><button class="btn btn-outline btn-sm row-edit" data-code="${escapeHtml(p.style_code)}" type="button">Edit</button></td>
+    </tr>`;
+  }
+
+  function editRowHtml(p){
+    const pts = (PT_OPTIONS[p.master_group] || []).map(o =>
+      `<option value="${escapeHtml(o.code)}" ${o.code===p.product_type?'selected':''}>${escapeHtml(o.code)} — ${escapeHtml(o.name)}</option>`).join('');
+    const styleChips = (VALUE_LISTS.STYLE||[]).map(s =>
+      `<span class="style-chip ${(p.STYLE||[]).includes(s)?'on':''}" data-style="${escapeHtml(s)}">${escapeHtml(s)}</span>`).join(' ');
+    return `<tr class="row-review" data-code="${escapeHtml(p.style_code)}">
+      <td><strong>${escapeHtml(p.style_code)}</strong></td>
+      <td>${escapeHtml(p.name||'')}</td>
+      <td>${escapeHtml(p.item_group||'')}</td>
+      <td colspan="3">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+          <label style="font-size:0.72rem;color:var(--gray-500)">Type
+            <select class="edit-sel" id="ed-pt"><option value="">—</option>${pts}</select></label>
+          <label style="font-size:0.72rem;color:var(--gray-500)">Fabric
+            <select class="edit-sel" id="ed-FABRIC">${optionList(VALUE_LISTS.FABRIC, p.FABRIC)}</select></label>
+          <label style="font-size:0.72rem;color:var(--gray-500)">Fit
+            <select class="edit-sel" id="ed-FIT">${optionList(VALUE_LISTS.FIT, p.FIT)}</select></label>
+          <label style="font-size:0.72rem;color:var(--gray-500)">Weight
+            <select class="edit-sel" id="ed-WEIGHT">${optionList(VALUE_LISTS.WEIGHT, p.WEIGHT)}</select></label>
+          <div style="font-size:0.72rem;color:var(--gray-500)">Style (max 2)<div id="ed-STYLE" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:3px">${styleChips}</div></div>
+        </div>
+      </td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn btn-primary btn-sm row-save" data-code="${escapeHtml(p.style_code)}" type="button">Save</button>
+        <button class="btn btn-outline btn-sm row-cancel" type="button">Cancel</button>
+      </td>
+    </tr>`;
   }
 
   function drawTable(){
     const body = document.getElementById('results-body');
     const reviewOnly = document.getElementById('review-only').checked;
-    const list = reviewOnly ? preview.filter(p => p.needs_review) : preview;
-    body.innerHTML = list.slice(0, 600).map(p => {
-      const attrs = (p.attributes||[]).map(a => `<span class="pill pill-attr">${escapeHtml(a)}</span>`).join('');
-      const pt = p.product_type
-        ? `<span class="pill pill-pt">${escapeHtml(p.product_type)}</span>`
-        : `<span class="badge-review">no type</span>`;
-      return `<tr class="${p.needs_review ? 'row-review':''}">
-        <td><strong>${escapeHtml(p.style_code)}</strong></td>
-        <td>${escapeHtml(p.name||'')}</td>
-        <td>${escapeHtml(p.item_group||'')}</td>
-        <td>${pt} ${p.needs_review ? '<span class="badge-review">review</span>':''}</td>
-        <td>${p.confidence}</td>
-        <td>${attrs || '<span style="color:var(--gray-400)">—</span>'}</td>
-      </tr>`;
-    }).join('');
+    const list = (reviewOnly ? preview.filter(p => p.needs_review) : preview).slice(0, 600);
+    body.innerHTML = list.map(p => p.style_code === editingCode ? editRowHtml(p) : displayRow(p)).join('');
+  }
+
+  // Style chips toggle (max 2) inside an editing row
+  document.getElementById('results-body').addEventListener('click', (e) => {
+    const chip = e.target.closest('.style-chip');
+    if (chip){
+      const on = chip.classList.contains('on');
+      const chosen = document.querySelectorAll('#ed-STYLE .style-chip.on').length;
+      if (!on && chosen >= 2) return;
+      chip.classList.toggle('on');
+      return;
+    }
+    const editBtn = e.target.closest('.row-edit');
+    if (editBtn){ editingCode = editBtn.dataset.code; drawTable(); return; }
+    const cancelBtn = e.target.closest('.row-cancel');
+    if (cancelBtn){ editingCode = null; drawTable(); return; }
+    const saveBtn = e.target.closest('.row-save');
+    if (saveBtn){ saveRow(saveBtn.dataset.code); return; }
+  });
+
+  async function saveRow(code){
+    const payload = {
+      style_code: code,
+      product_type: document.getElementById('ed-pt').value,
+      FABRIC: document.getElementById('ed-FABRIC').value,
+      FIT: document.getElementById('ed-FIT').value,
+      WEIGHT: document.getElementById('ed-WEIGHT').value,
+      STYLE: Array.from(document.querySelectorAll('#ed-STYLE .style-chip.on')).map(c => c.dataset.style),
+    };
+    try {
+      const r = await fetch(`/products/run/${RUN_ID}/style`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        credentials:'same-origin', body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || 'Save failed');
+      const idx = preview.findIndex(p => p.style_code === code);
+      if (idx >= 0) preview[idx] = d.row;
+      setStats(d.summary || {});
+      editingCode = null;
+      drawTable();
+    } catch (ex) { err(ex.message); }
   }
 
   document.getElementById('review-only').addEventListener('change', drawTable);
   document.getElementById('reset-btn').addEventListener('click', () => {
-    show('results-card', false); show('upload-card', true);
-    fileInput.value=''; dzTitle.textContent='Drop your SAP product export here, or click to choose';
-    runBtn.disabled = true;
+    show('results-card', false); show('upload-card', true); show('history-card', true);
+    fileInput.value=''; dzTitle.textContent='Drop your SAP product export(s) here, or click to choose';
+    runBtn.disabled = true; err('');
+  });
+
+  // History actions
+  document.getElementById('history-list')?.addEventListener('click', async (e) => {
+    const open = e.target.closest('.hist-open');
+    if (open){ openRun(parseInt(open.dataset.runId)); return; }
+    const del = e.target.closest('.hist-del');
+    if (del){
+      const id = del.dataset.runId;
+      if (!confirm('Delete this run?')) return;
+      try {
+        const r = await fetch(`/products/run/${id}/delete`, { method:'POST', credentials:'same-origin' });
+        if (r.ok){ del.closest('.hist-row').remove(); }
+      } catch(_) {}
+      return;
+    }
   });
 })();
 </script>

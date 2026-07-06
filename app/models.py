@@ -336,3 +336,40 @@ class GeneratedFile(Base):
     created_at = Column(DateTime, default=_utcnow)
 
     session = relationship("Session", back_populates="generated_files")
+
+
+class ProductAttributeRun(Base):
+    """A saved run of the Product Attributes tool — one SAP attribute extraction
+    over one or more uploaded product exports. Persisted so users can reopen,
+    re-download, and hand-correct the AI's product types / attributes."""
+    __tablename__ = "product_attribute_runs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(500))
+    created_at = Column(DateTime, default=_utcnow)
+    status = Column(String(20), default="running")  # running, done, error
+    error = Column(Text)
+    filename = Column(String(1000))                 # original upload name(s)
+    total_styles = Column(Integer, default=0)
+    clean_count = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    row_count = Column(Integer, default=0)
+    results_json = Column(Text, default="[]")       # list of per-style result dicts
+    columns_json = Column(Text, default="[]")       # columns found in the source(s)
+
+    @property
+    def results(self) -> list:
+        return json.loads(self.results_json or "[]")
+
+    @results.setter
+    def results(self, val: list):
+        self.results_json = json.dumps(val or [])
+
+    @property
+    def columns(self) -> list:
+        return json.loads(self.columns_json or "[]")
+
+    @columns.setter
+    def columns(self, val: list):
+        self.columns_json = json.dumps(val or [])
