@@ -37,6 +37,58 @@ def test_parse_sap_products_dedupes_and_maps(tmp_path):
     assert "style_code" in meta["columns_found"]
 
 
+def test_parse_reads_vendor_category_and_long_description(tmp_path):
+    """Hamid's Carhartt-style export: 'SAP Item Group' is the real group (not
+    'Item Group Code', which holds the full item code), and Vendor Category /
+    µ-separated Long Description / Season are captured for the AI."""
+    p = tmp_path / "carhartt.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Item Group Code", "Style Code", "Mfr Catalog No", "Web Description",
+               "Web Description 2", "SAP Item Group", "Vendor Category",
+               "Long Description", "Season"])
+    ws.append(["CAR A I000149 4FCXX", "I000149", "I000149.4FCXX", "CARHARTT WIP",
+               "C-Logo Sticker (30 Pack)", "ACCS", "POS Divers",
+               "8 x 8 cm µ 30 Pack µ screen print", "2027-01"])
+    wb.save(p)
+
+    styles, meta = parse_sap_products(str(p))
+    assert len(styles) == 1
+    s = styles[0]
+    assert s["style_code"] == "I000149"
+    assert s["item_group"] == "ACCS"          # SAP Item Group wins
+    assert s["master_group"] == "ACCS"
+    assert s["name"] == "C-Logo Sticker (30 Pack)"
+    assert s["vendor_category"] == "POS Divers"
+    assert s["long_description"] == "8 x 8 cm; 30 Pack; screen print"  # µ split
+    assert s["season"] == "2027-01"
+    assert "vendor_category" in meta["columns_found"]
+
+
+def test_enrich_prompt_carries_catalog_context(monkeypatch):
+    """Vendor category, long description and the matched catalog extract must
+    all reach the AI prompt."""
+    import app.core.attribute_engine as eng
+    seen = {}
+
+    def fake_ai(prompt, max_tokens=300):
+        seen["prompt"] = prompt
+        return '{"product_type":"TSHIRT","confidence":0.9,"FABRIC":null,"FIT":null,"STYLE":[],"WEIGHT":null}'
+    monkeypatch.setattr(eng, "_call_ai", fake_ai)
+
+    r = eng.enrich_style({
+        "style_code": "TN001", "name": "Logo Tee", "item_group": "T-SHIRTS",
+        "master_group": "T-SHIRTS", "material": "Cotton", "gender": "Men",
+        "vendor_category": "Graphic Tees", "season": "2027-01",
+        "long_description": "240 gsm jersey; boxy fit",
+        "ref_text": "Heavyweight tee with dropped shoulders",
+    })
+    assert r["product_type"] == "TSHIRT"
+    assert "vendor_category=Graphic Tees" in seen["prompt"]
+    assert "240 gsm jersey" in seen["prompt"]
+    assert "Heavyweight tee with dropped shoulders" in seen["prompt"]
+
+
 def test_build_upload_workbook_drops_review_and_emits_sap_rows(tmp_path):
     results = [
         {"style_code": "TN001", "master_group": "T-SHIRTS", "product_type": "TSHIRT",
@@ -146,6 +198,86 @@ def test_run_persists_and_dedupes_multiple_files(client, login_as, test_app, mon
     finally:
         db.close()
     assert "a.xlsx" in client.get("/products").text
+
+
+def test_run_with_reference_file_feeds_catalog_text_to_enrichment(client, login_as, monkeypatch, test_app):
+    """A reference Excel uploaded next to the SAP export: matched styles carry
+    ref_text into enrichment, get the has_reference flag in the preview, and
+    the bulky catalog text is NOT persisted in the run results."""
+    import io
+    import time
+
+    import app.routers.products_routes as pr
+
+    seen_styles = {}
+
+    def fake_enrich(style):
+        seen_styles[style["style_code"]] = dict(style)
+        return {**style, "product_type": "TSHIRT", "confidence": 0.9,
+                "FABRIC": None, "FIT": None, "WEIGHT": None, "STYLE": [],
+                "needs_review": False}
+    monkeypatch.setattr(pr, "enrich_style", fake_enrich)
+
+    def xlsx_bytes(header, rows):
+        wb = openpyxl.Workbook(); ws = wb.active
+        ws.append(header)
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+    login_as()
+    sap = xlsx_bytes(["Web Description 2", "Item Group", "Material", "Style Code", "Gender"],
+                     [["Logo Tee", "T-SHIRTS", "Cotton", "TN001", "Men"],
+                      ["Cargo Pant", "PANTS", "Cotton", "TN002", "Men"]])
+    catalog = xlsx_bytes(["Style", "Details"],
+                         [["TN001", "Heavy 240gsm jersey, boxy fit"]])
+    resp = client.post("/products/run", files=[
+        ("file", ("sap.xlsx", sap, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("reference", ("catalog.xlsx", catalog, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+    ])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ref_matched"] == 1
+    assert body["ref_files"] == [{"name": "catalog.xlsx", "matched": 1}]
+
+    for _ in range(50):
+        st = client.get(f"/products/run/{body['run_id']}/status").json()
+        if st["status"] == "done":
+            break
+        time.sleep(0.1)
+    assert st["status"] == "done"
+
+    # The matched style saw the catalog text; the unmatched one didn't.
+    assert "Heavy 240gsm jersey" in seen_styles["TN001"].get("ref_text", "")
+    assert "ref_text" not in seen_styles["TN002"]
+
+    by_code = {p["style_code"]: p for p in st["preview"]}
+    assert by_code["TN001"]["has_reference"] is True
+    assert by_code["TN002"]["has_reference"] is False
+
+    # Persisted results keep the flag but drop the raw catalog text.
+    models = test_app["models"]
+    db = test_app["database"].SessionLocal()
+    try:
+        run = db.get(models.ProductAttributeRun, body["run_id"])
+        stored = {r["style_code"]: r for r in run.results}
+        assert stored["TN001"].get("has_reference") is True
+        assert "ref_text" not in stored["TN001"]
+    finally:
+        db.close()
+
+
+def test_run_rejects_bad_reference_extension(client, login_as):
+    import io
+    login_as()
+    wb = openpyxl.Workbook(); wb.active.append(["Style Code"]); wb.active.append(["TN001"])
+    buf = io.BytesIO(); wb.save(buf)
+    resp = client.post("/products/run", files=[
+        ("file", ("sap.xlsx", buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("reference", ("notes.txt", b"hello", "text/plain")),
+    ])
+    assert resp.status_code == 400
+    assert "notes.txt" in resp.json()["error"]
 
 
 def test_edit_style_changes_type_and_clears_review(client, login_as, db_session, test_app):

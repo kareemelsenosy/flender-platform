@@ -28,6 +28,7 @@ from app.core.attribute_engine import (
     parse_sap_products,
 )
 from app.core.attribute_taxonomy import PRODUCT_TYPES_BY_GROUP, VALUE_LISTS
+from app.core.reference_ingest import ReferenceIngestError, extract_reference_texts
 from app.database import SessionLocal, get_db
 from app.models import ProductAttributeRun
 from app.templates_config import templates
@@ -84,6 +85,7 @@ def _preview_row(r: dict) -> dict:
         "WEIGHT": r.get("WEIGHT"), "STYLE": r.get("STYLE") or [],
         "needs_review": bool(r.get("needs_review")),
         "edited": bool(r.get("edited")),
+        "has_reference": bool(r.get("has_reference")),
     }
 
 
@@ -132,6 +134,12 @@ async def products_run(request: Request, db: DBSession = Depends(get_db)):
     for up in uploads:
         if not up.filename.lower().endswith((".xlsx", ".xlsm")):
             return JSONResponse({"error": f"'{up.filename}' is not an .xlsx product export"}, status_code=400)
+    ref_uploads = [f for f in form.getlist("reference") if getattr(f, "filename", "")]
+    for up in ref_uploads:
+        if not up.filename.lower().endswith((".pdf", ".xlsx", ".xlsm")):
+            return JSONResponse(
+                {"error": f"Reference file '{up.filename}' must be a PDF or Excel file"},
+                status_code=400)
 
     # Parse every file and combine, de-duplicating styles by style code (the same
     # style appearing in two exports is the same product — keep the first).
@@ -159,6 +167,32 @@ async def products_run(request: Request, db: DBSession = Depends(get_db)):
     if not styles:
         return JSONResponse({"error": "No product styles found in the file(s)."}, status_code=400)
 
+    # Reference files (PDF lookbooks/catalogues, extra Excels): find each SAP
+    # style inside them by Style Number and carry the richer catalog text into
+    # the AI enrichment.
+    ref_files: list[dict] = []
+    ref_matched = 0
+    if ref_uploads:
+        ref_paths = []
+        for up in ref_uploads:
+            path = os.path.join(workdir, "ref_" + os.path.basename(up.filename))
+            with open(path, "wb") as fh:
+                fh.write(await up.read())
+            ref_paths.append(path)
+            names.append(up.filename)
+        try:
+            ref_texts, ref_files = extract_reference_texts(
+                ref_paths, [s["style_code"] for s in styles],
+                display_names=[up.filename for up in ref_uploads])
+        except ReferenceIngestError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        for s in styles:
+            txt = ref_texts.get(s["style_code"])
+            if txt:
+                s["ref_text"] = txt
+                s["has_reference"] = True
+        ref_matched = sum(1 for s in styles if s.get("has_reference"))
+
     run = ProductAttributeRun(
         user_id=uid,
         name=" + ".join(names)[:500],
@@ -174,7 +208,10 @@ async def products_run(request: Request, db: DBSession = Depends(get_db)):
     with _progress_lock:
         _progress[run.id] = {"done": 0, "total": len(styles), "status": "running", "error": None}
     threading.Thread(target=_run_job, args=(run.id, styles), daemon=True).start()
-    return JSONResponse({"ok": True, "run_id": run.id, "total": len(styles), "columns": columns})
+    return JSONResponse({
+        "ok": True, "run_id": run.id, "total": len(styles), "columns": columns,
+        "ref_files": ref_files, "ref_matched": ref_matched,
+    })
 
 
 def _run_job(run_id: int, styles: list[dict]) -> None:
@@ -188,6 +225,9 @@ def _run_job(run_id: int, styles: list[dict]) -> None:
             r = {**style, "product_type": None, "confidence": 0.0,
                  "FABRIC": None, "FIT": None, "WEIGHT": None, "STYLE": [],
                  "needs_review": True}
+        # The raw catalog extract has done its job (it fed the AI prompt);
+        # don't persist kilobytes of lookbook text per style in the DB.
+        r.pop("ref_text", None)
         with lock:
             results.append(r)
             with _progress_lock:

@@ -24,14 +24,28 @@ def _norm(s) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
 
 
-# Candidate header names (normalized) for each field we need.
+# Candidate header names (normalized) for each field we need. Order matters:
+# the first alias found wins ("SAP Item Group" must beat "Item Group Code",
+# which in Carhartt exports holds the full item code, not the group).
 _HEADER_ALIASES = {
     "style_code": ["stylecode", "mfrcatalogno", "manufacturercode", "code"],
-    "item_group": ["itemgroup", "itemgroupcode"],
+    "item_group": ["itemgroup", "sapitemgroup", "itemgroupcode"],
     "name": ["webdescription2", "itemdescriptionlong", "name", "description"],
     "material": ["material"],
     "gender": ["gender"],
+    "vendor_category": ["vendorcategory"],
+    "long_description": ["longdescription"],
+    "season": ["season"],
 }
+
+# Vendor long descriptions arrive as one field with µ-separated catalog
+# attributes ("8 x 8 cm µ 30 Pack µ screen print") — split for readability.
+_LONG_DESC_MAX = 600
+
+
+def _clean_long_description(s: str) -> str:
+    s = re.sub(r"\s*µ\s*", "; ", str(s or ""))
+    return re.sub(r"\s+", " ", s).strip()[:_LONG_DESC_MAX]
 
 
 def parse_sap_products(path: str) -> tuple[list[dict], dict]:
@@ -95,6 +109,9 @@ def parse_sap_products(path: str) -> tuple[list[dict], dict]:
                 "master_group": master_for_item_group(ig),
                 "material": get(row, "material"),
                 "gender": get(row, "gender"),
+                "vendor_category": get(row, "vendor_category"),
+                "long_description": _clean_long_description(get(row, "long_description")),
+                "season": get(row, "season"),
             }
     wb.close()
     meta = {"columns_found": list(col.keys()), "row_count": header_idx}
@@ -119,9 +136,24 @@ def enrich_style(style: dict) -> dict:
     cands = PRODUCT_TYPES_BY_GROUP.get(mg, [])
     cand_txt = ", ".join(f"{c}={n}" for c, n in cands)
     valid_pt = {c for c, _ in cands}
+    product = (
+        f"PRODUCT: name={style.get('name')}; material={style.get('material')}; "
+        f"group={style.get('item_group')}; gender={style.get('gender')}"
+    )
+    if style.get("vendor_category"):
+        product += f"; vendor_category={style['vendor_category']}"
+    if style.get("season"):
+        product += f"; season={style['season']}"
+    extra = ""
+    if style.get("long_description"):
+        extra += f"\nVENDOR LONG DESCRIPTION: {style['long_description']}"
+    if style.get("ref_text"):
+        extra += f"\nCATALOG/LOOKBOOK EXTRACT (matched by style number): {style['ref_text']}"
     prompt = (
         "Assign SAP attributes to a fashion product. Use ONLY the allowed values "
-        "(exact codes). Be conservative when the description is thin.\n"
+        "(exact codes). Be conservative when the description is thin. When a "
+        "vendor long description or catalog extract is provided, trust it — it "
+        "carries the real fabric/fit/style detail.\n"
         f"1) product_type: exactly ONE of [{cand_txt}]\n"
         f"2) FABRIC: one of {VALUE_LISTS['FABRIC']} or null "
         "(special fabrics only; basic cotton = null)\n"
@@ -130,8 +162,7 @@ def enrich_style(style: dict) -> dict:
         f"5) WEIGHT: one of {VALUE_LISTS['WEIGHT']} or null\n"
         'Return ONLY JSON: {"product_type":"CODE","confidence":0.0,'
         '"FABRIC":null,"FIT":null,"STYLE":[],"WEIGHT":null}\n\n'
-        f"PRODUCT: name={style.get('name')}; material={style.get('material')}; "
-        f"group={style.get('item_group')}; gender={style.get('gender')}"
+        + product + extra
     )
     data = {}
     for _ in range(3):

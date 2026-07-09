@@ -6,11 +6,13 @@
   <div style="margin-bottom:24px">
     <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Product Attributes</h1>
     <p style="color:var(--gray-500);margin-top:6px;max-width:720px">
-      Upload one or more SAP product exports. The system reads every style and fills in
-      its SAP attributes — product type plus Fabric, Fit, Style and Weight — using SAP's
-      own value lists, then gives you an upload-ready sheet. Anything it isn't confident
-      about is flagged; you can correct any product type or attribute, and every run is
-      saved so you can reopen it later.
+      Upload your SAP product export, and optionally the brand's catalog / lookbook
+      (PDF or Excel) alongside it. The system reads every style, finds it in the
+      catalog by Style Number, and fills in its SAP attributes — product type plus
+      Fabric, Fit, Style and Weight — using SAP's own value lists, then gives you an
+      upload-ready sheet. Anything it isn't confident about is flagged; you can
+      correct any product type or attribute, and every run is saved so you can
+      reopen it later.
     </p>
   </div>
 
@@ -25,6 +27,18 @@
         <div style="font-size:0.8rem;color:var(--gray-400,#999)">.xlsx — you can select multiple files · each must include a Style Code column</div>
       </label>
       <input type="file" id="product-file" name="file" accept=".xlsx,.xlsm" multiple style="display:none">
+
+      <label for="ref-file" id="ref-dropzone"
+        style="display:flex;align-items:center;gap:12px;margin-top:14px;border:1.5px dashed var(--gray-300,#ddd);
+               border-radius:10px;padding:16px 18px;cursor:pointer">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--gray-400,#999);flex-shrink:0"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <div style="text-align:left">
+          <div style="font-weight:600;font-size:0.88rem" id="ref-dz-title">Add catalog / lookbook files <span style="font-weight:400;color:var(--gray-400)">(optional)</span></div>
+          <div style="font-size:0.76rem;color:var(--gray-400,#999)">PDF lookbooks, catalogs or extra Excels — matched to your export by Style Number for better attribute decisions</div>
+        </div>
+      </label>
+      <input type="file" id="ref-file" name="reference" accept=".pdf,.xlsx,.xlsm" multiple style="display:none">
+
       <div style="display:flex;justify-content:flex-end;margin-top:18px">
         <button type="submit" class="btn btn-primary" id="run-btn" disabled>Run attribute extraction</button>
       </div>
@@ -64,6 +78,7 @@
     <div style="background:var(--gray-100,#f1f1f1);height:8px;border-radius:99px;overflow:hidden">
       <div id="progress-bar" style="height:100%;width:0;background:var(--black,#111);border-radius:99px;transition:width .4s"></div>
     </div>
+    <p id="ref-note" style="display:none;color:#166534;background:#dcfce7;border-radius:8px;padding:8px 12px;font-size:0.8rem;margin-top:12px"></p>
     <p style="color:var(--gray-400);font-size:0.8rem;margin-top:10px">
       Each style is matched against SAP's controlled attribute lists. Large files take a few minutes.
     </p>
@@ -115,6 +130,7 @@
   .row-review{background:#fff8e6}
   .badge-review{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:0.7rem;font-weight:700}
   .badge-edited{background:#dcfce7;color:#166534;padding:2px 8px;border-radius:99px;font-size:0.7rem;font-weight:700}
+  .badge-catalog{background:#e0f2fe;color:#075985;padding:1px 7px;border-radius:99px;font-size:0.66rem;font-weight:700;vertical-align:middle}
   .edit-sel{font-size:0.8rem;padding:4px 6px;border:1px solid var(--gray-200,#ddd);border-radius:6px;max-width:170px}
   .style-chip{font-size:0.7rem;padding:2px 7px;border:1px solid var(--gray-200,#ddd);border-radius:99px;cursor:pointer;user-select:none}
   .style-chip.on{background:#111;color:#fff;border-color:#111}
@@ -137,6 +153,9 @@
   function show(id, on){ document.getElementById(id).style.display = on ? '' : 'none'; }
   function err(m){ formError.textContent = m; formError.style.display = m ? 'block' : 'none'; }
 
+  const refInput = document.getElementById('ref-file');
+  const refDzTitle = document.getElementById('ref-dz-title');
+
   fileInput.addEventListener('change', () => {
     const n = fileInput.files.length;
     if (n){
@@ -146,12 +165,20 @@
     }
   });
 
+  refInput.addEventListener('change', () => {
+    const n = refInput.files.length;
+    refDzTitle.innerHTML = n
+      ? `${n === 1 ? escapeHtml(refInput.files[0].name) : n + ' reference files'} <span style="font-weight:400;color:var(--gray-400)">— matched by Style Number</span>`
+      : 'Add catalog / lookbook files <span style="font-weight:400;color:var(--gray-400)">(optional)</span>';
+  });
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!fileInput.files.length) return;
     runBtn.disabled = true; err('');
     const fd = new FormData();
     for (const f of fileInput.files) fd.append('file', f);
+    for (const f of refInput.files) fd.append('reference', f);
     let data;
     try {
       const r = await fetch('/products/run', { method:'POST', body: fd, credentials:'same-origin' });
@@ -163,6 +190,14 @@
     show('history-card', false);
     show('progress-card', true);
     document.getElementById('progress-title').textContent = `Enriching ${data.total} styles…`;
+    const refNote = document.getElementById('ref-note');
+    if (data.ref_files && data.ref_files.length){
+      refNote.style.display = '';
+      refNote.textContent = `Catalog match: ${data.ref_matched} of ${data.total} styles found in ` +
+        data.ref_files.map(f => `${f.name} (${f.matched})`).join(', ');
+    } else {
+      refNote.style.display = 'none';
+    }
     pollStatus(data.run_id, data.total);
   });
 
@@ -221,8 +256,10 @@
       : `<span class="badge-review">no type</span>`;
     const flag = p.needs_review ? '<span class="badge-review">review</span>'
                : (p.edited ? '<span class="badge-edited">edited</span>' : '');
+    const refMark = p.has_reference
+      ? ' <span class="badge-catalog" title="Extra detail found in the uploaded catalog/lookbook for this style">catalog</span>' : '';
     return `<tr class="${p.needs_review ? 'row-review':''}" data-code="${escapeHtml(p.style_code)}">
-      <td><strong>${escapeHtml(p.style_code)}</strong></td>
+      <td><strong>${escapeHtml(p.style_code)}</strong>${refMark}</td>
       <td>${escapeHtml(p.name||'')}</td>
       <td>${escapeHtml(p.item_group||'')}</td>
       <td>${pt} ${flag}</td>
@@ -314,6 +351,7 @@
   document.getElementById('reset-btn').addEventListener('click', () => {
     show('results-card', false); show('upload-card', true); show('history-card', true);
     fileInput.value=''; dzTitle.textContent='Drop your SAP product export(s) here, or click to choose';
+    refInput.value=''; refDzTitle.innerHTML='Add catalog / lookbook files <span style="font-weight:400;color:var(--gray-400)">(optional)</span>';
     runBtn.disabled = true; err('');
   });
 
