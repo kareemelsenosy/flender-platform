@@ -294,8 +294,9 @@ def test_build_output_tree_writes_one_folder_per_item_group(tmp_path):
     assert sorted(p.name for p in folder.iterdir()) == [
         "CTM_T_SS1_Black_1.png", "CTM_T_SS1_Black_2.png",
     ]
-    # The unmatched photo is never written anywhere.
-    assert not (out / "").glob("c.png") or not list(out.rglob("c.png"))
+    # Only that one folder exists, and the unmatched photo is nowhere in the tree.
+    assert [p.name for p in out.iterdir()] == ["CTM T SS1 Black"]
+    assert list(out.rglob("c.png")) == []
 
 
 def test_build_output_zip_contains_the_folder_tree(tmp_path):
