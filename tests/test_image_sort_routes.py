@@ -296,9 +296,54 @@ def test_another_user_cannot_open_or_download_a_run(client, login_as, stub_ai):
     assert resp.headers["location"] == "/image-sort"
 
 
-def test_deleting_a_run_removes_it(client, login_as, stub_ai):
+def test_deleting_a_run_removes_it_and_its_photos(client, login_as, stub_ai, test_app):
     login_as()
     run_id, _status = _run_and_wait(client)
+    work_dir = test_app["output_dir"] / "image_sort" / str(run_id)
+    assert work_dir.exists()
 
     assert client.post(f"/image-sort/run/{run_id}/delete").json() == {"ok": True}
     assert client.get(f"/image-sort/run/{run_id}").status_code == 404
+    assert not work_dir.exists()
+
+
+# ── Retention ────────────────────────────────────────────────────────────────
+
+def test_prune_drops_orphan_photo_dirs_but_keeps_live_runs(
+    client, login_as, stub_ai, test_app, image_sort_routes, db_session
+):
+    """A run's source photos are a gigabyte-scale liability, so anything the DB
+    no longer knows about has to go."""
+    login_as()
+    run_id, _status = _run_and_wait(client)
+
+    root = test_app["output_dir"] / "image_sort"
+    orphan = root / "999999"
+    orphan.mkdir(parents=True, exist_ok=True)
+    (orphan / "leftover.png").write_bytes(_png())
+    (root / "not-a-run-id").mkdir(exist_ok=True)   # must be left alone
+
+    removed, freed = image_sort_routes.prune_old_image_sort_dirs(db_session)
+    assert removed == 1
+    assert freed > 0
+    assert not orphan.exists()
+    assert (root / str(run_id)).exists()           # the live run survives
+    assert (root / "not-a-run-id").exists()
+
+
+def test_prune_drops_a_live_run_once_it_is_past_retention(
+    client, login_as, stub_ai, test_app, image_sort_routes, db_session
+):
+    import os
+    import time
+
+    login_as()
+    run_id, _status = _run_and_wait(client)
+    work_dir = test_app["output_dir"] / "image_sort" / str(run_id)
+
+    stale = time.time() - (40 * 86400)             # older than the 30-day window
+    os.utime(work_dir, (stale, stale))
+
+    removed, _freed = image_sort_routes.prune_old_image_sort_dirs(db_session)
+    assert removed == 1
+    assert not work_dir.exists()

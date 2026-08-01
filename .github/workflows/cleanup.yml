@@ -30,6 +30,9 @@ jobs:
               docker exec "$APP_CTR" sh -c 'du -sh /app/output 2>/dev/null || true'
               # Delete every session_* dir — startup prune is harmless re-entry.
               docker exec "$APP_CTR" sh -c 'rm -rf /app/output/session_* 2>/dev/null || true'
+              # Image Sorter keeps a run's full-size source photos so its ZIP can
+              # be rebuilt; those are the other big consumer of this volume.
+              docker exec "$APP_CTR" sh -c 'rm -rf /app/output/image_sort/* 2>/dev/null || true'
               echo "=== after wipe ==="
               docker exec "$APP_CTR" sh -c 'du -sh /app/output 2>/dev/null || true'
             else

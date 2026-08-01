@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -24,7 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
-from app.config import OUTPUT_DIR
+from app.config import GENERATED_FILE_RETENTION_DAYS, OUTPUT_DIR
 from app.core.image_sorter import (
     CONFIDENCE_REVIEW_THRESHOLD,
     ImageSortError,
@@ -519,6 +521,45 @@ async def image_sort_report(run_id: int, request: Request, db: DBSession = Depen
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="image_sort_report_{run_id}.csv"'},
     )
+
+
+def prune_old_image_sort_dirs(db_session, max_age_days: int = GENERATED_FILE_RETENTION_DAYS) -> tuple[int, int]:
+    """Delete the stored photos of runs that are gone or past the retention window.
+
+    Each run keeps every source photo on disk so the ZIP can be rebuilt after a
+    correction — a season drop is easily a gigabyte. Deleting a run cleans up its
+    own directory, but abandoned runs (and anything left behind by a crash) would
+    otherwise accumulate until the volume fills, which has taken this server down
+    before. Called from startup alongside the session-output sweeper.
+
+    Returns ``(dirs_removed, bytes_freed)``.
+    """
+    root = Path(OUTPUT_DIR) / "image_sort"
+    if not root.exists():
+        return (0, 0)
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).timestamp()
+    live_ids = {rid for (rid,) in db_session.query(ImageSortRun.id).all()}
+
+    removed = 0
+    bytes_freed = 0
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            run_id = int(entry.name)
+        except ValueError:
+            continue
+        try:
+            if run_id in live_ids and entry.stat().st_mtime >= cutoff:
+                continue
+            size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+            bytes_freed += size
+        except OSError:
+            continue
+    return (removed, bytes_freed)
 
 
 @router.post("/image-sort/run/{run_id}/delete")

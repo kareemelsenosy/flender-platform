@@ -97,6 +97,15 @@ async def lifespan(app: FastAPI):
                 logger.info(
                     f"Pruned {dirs} old session output dir(s) — freed {bytes_freed/1_048_576:.1f} MB"
                 )
+            # Image Sorter runs keep every source photo so their ZIP can be
+            # rebuilt after a correction — a season drop is easily a gigabyte,
+            # so abandoned runs get the same retention sweep.
+            from app.routers.image_sort_routes import prune_old_image_sort_dirs
+            dirs, bytes_freed = prune_old_image_sort_dirs(_db)
+            if dirs:
+                logger.info(
+                    f"Pruned {dirs} old image-sort dir(s) — freed {bytes_freed/1_048_576:.1f} MB"
+                )
         finally:
             _db.close()
     except Exception:
