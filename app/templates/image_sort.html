@@ -55,12 +55,12 @@
 
       <details style="margin-top:20px">
         <summary style="cursor:pointer;font-size:0.84rem;color:var(--gray-500);font-weight:600">Advanced</summary>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px">
-          <label style="flex:1;min-width:220px">
+        <div class="adv-grid">
+          <label style="flex:1 1 260px;min-width:0">
             <div class="fld-label">Brand (helps the AI read the photos)</div>
             <input type="text" id="brand" name="brand" class="txt" placeholder="Read from the master file if blank">
           </label>
-          <label style="width:200px">
+          <label style="flex:0 0 190px">
             <div class="fld-label">Item Group Code column</div>
             <input type="text" id="code-column" name="code_column" class="txt" placeholder="Auto-detect (e.g. H)">
           </label>
@@ -104,9 +104,9 @@
       <span id="progress-count" style="color:var(--gray-500);font-variant-numeric:tabular-nums"></span>
     </div>
     <div style="background:var(--gray-100,#f1f1f1);height:8px;border-radius:99px;overflow:hidden">
-      <div id="progress-bar" style="height:100%;width:0;background:var(--black,#111);border-radius:99px;transition:width .4s"></div>
+      <div id="progress-bar" style="height:100%;width:0;background:var(--black,#111);border-radius:99px;transition:width .25s linear"></div>
     </div>
-    <p style="color:var(--gray-400);font-size:0.8rem;margin-top:10px">
+    <p id="progress-note" style="color:var(--gray-400);font-size:0.8rem;margin-top:10px">
       Each photo is described, then matched against the master file. Big drops take a few minutes — you can leave this page and reopen the run later.
     </p>
   </div>
@@ -144,7 +144,12 @@
   .dz-sub{font-size:0.78rem;color:var(--gray-400,#999);margin-top:3px}
   .or-row{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
   .or-row > span{font-size:0.78rem;color:var(--gray-400,#999);white-space:nowrap}
-  .txt{flex:1;min-width:240px;width:100%;font-size:0.85rem;padding:8px 11px;border:1px solid var(--gray-200,#ddd);border-radius:8px;font-family:inherit}
+  .txt{width:100%;font-size:0.85rem;padding:8px 11px;border:1px solid var(--gray-200,#ddd);border-radius:8px;font-family:inherit}
+  /* Only the "or paste a link" inputs stretch to fill the row beside their
+     label. Inside the Advanced grid the fields size to their own column. */
+  .or-row .txt{flex:1;min-width:240px}
+  .adv-grid{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;align-items:flex-start}
+  .adv-grid label{display:block}
   .fld-label{font-size:0.75rem;color:var(--gray-500);margin-bottom:4px;font-weight:600}
   .hist-row{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--gray-200,#eee);border-radius:10px;padding:12px 14px}
   .stat{background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 18px;min-width:150px}
@@ -222,6 +227,36 @@
   });
 
   // ── Run ─────────────────────────────────────────────────────────────────
+  const mb = (bytes) => (bytes / 1048576).toFixed(bytes >= 10485760 ? 0 : 1);
+
+  /** POST the form with real upload progress — fetch() cannot report it, and a
+   *  season's photos run to hundreds of MB, so XHR is what gives the user a
+   *  moving bar instead of a frozen button. */
+  function postRun(fd, onProgress){
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/image-sort/run');
+      xhr.upload.addEventListener('progress', (ev) => {
+        if (ev.lengthComputable) onProgress(ev.loaded, ev.total);
+      });
+      // Upload finished; the server is now reading the workbook and unpacking
+      // the archive, which on a big drop takes a while with nothing to report.
+      xhr.upload.addEventListener('load', () => onProgress(-1, -1));
+      xhr.addEventListener('load', () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); }
+        catch (_){ return reject(new Error('The server returned an unexpected response.')); }
+        if (xhr.status >= 200 && xhr.status < 300 && !data.error) resolve(data);
+        else reject(new Error(data.error || `Upload failed (${xhr.status}).`));
+      });
+      xhr.addEventListener('error', () => reject(new Error('The connection dropped during upload.')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload cancelled.')));
+      xhr.send(fd);
+    });
+  }
+
+  function setBar(pct){ $('progress-bar').style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     err('');
@@ -235,19 +270,38 @@
 
     runBtn.disabled = true;
     runBtn.textContent = 'Uploading…';
+    show('setup-card', false);
+    show('history-card', false);
+    show('progress-card', true);
+    $('progress-title').textContent = 'Uploading…';
+    $('progress-count').textContent = '';
+    $('progress-note').textContent = 'Large drops take a few minutes to upload. Keep this tab open until it finishes.';
+    setBar(0);
+
     try {
-      const resp = await fetch('/image-sort/run', { method: 'POST', body: fd });
-      const data = await resp.json();
-      if (!resp.ok || data.error){ err(data.error || 'Something went wrong.'); return; }
+      const data = await postRun(fd, (loaded, total) => {
+        if (loaded < 0){
+          $('progress-title').textContent = 'Unpacking and reading the master file…';
+          $('progress-count').textContent = '';
+          setBar(100);
+          return;
+        }
+        setBar(100 * loaded / total);
+        $('progress-count').textContent = `${mb(loaded)} / ${mb(total)} MB`;
+      });
+
       RUN_ID = data.run_id;
-      show('setup-card', false);
-      show('history-card', false);
-      show('progress-card', true);
       $('progress-title').textContent =
         `Matching ${data.images} photos against ${data.groups} item groups…`;
+      $('progress-note').textContent =
+        'Each photo is described, then matched against the master file. You can leave this page and reopen the run later.';
+      setBar(0);
       startPolling();
     } catch (e){
-      err('Upload failed: ' + e.message);
+      show('progress-card', false);
+      show('setup-card', true);
+      show('history-card', document.querySelectorAll('.hist-row').length > 0);
+      err(e.message);
     } finally {
       runBtn.disabled = false;
       runBtn.textContent = 'Sort the images';
@@ -265,10 +319,8 @@
     try {
       const resp = await fetch(`/image-sort/run/${RUN_ID}/status`);
       const data = await resp.json();
-      const total = data.total || 1;
-      const pct = Math.round(100 * (data.done || 0) / total);
-      $('progress-bar').style.width = pct + '%';
-      $('progress-count').textContent = `${data.done || 0} / ${data.total || 0}`;
+      setBar(100 * (data.done || 0) / (data.total || 1));
+      $('progress-count').textContent = `${data.done || 0} / ${data.total || 0} photos`;
       if (data.status === 'done'){
         clearInterval(poller);
         render(data.result);
@@ -441,6 +493,8 @@
       if (data.error){ err(data.error); return; }
       if (data.status === 'running'){
         RUN_ID = data.id;
+        $('progress-title').textContent = 'Matching photos against the master file…';
+        setBar(0);
         show('setup-card', false); show('history-card', false); show('progress-card', true);
         startPolling();
         return;
