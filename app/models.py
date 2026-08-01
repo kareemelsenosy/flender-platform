@@ -373,3 +373,65 @@ class ProductAttributeRun(Base):
     @columns.setter
     def columns(self, val: list):
         self.columns_json = json.dumps(val or [])
+
+
+class ImageSortRun(Base):
+    """A saved run of the Image Sorter — one batch of unnamed product photos
+    matched against a SAP master file's Item Group Codes.
+
+    Persisted so users can reopen a run, correct the AI's assignments, and
+    re-download the folder ZIP without re-running the vision passes.
+    """
+    __tablename__ = "image_sort_runs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(500))
+    created_at = Column(DateTime, default=_utcnow)
+    status = Column(String(20), default="running")   # running, done, error
+    stage = Column(String(60))                       # human-readable current step
+    error = Column(Text)
+
+    master_name = Column(String(500))                # master file / sheet it matched against
+    brand = Column(String(255))
+    sources_json = Column(Text, default="[]")        # image sources (uploads + links)
+
+    total_images = Column(Integer, default=0)
+    matched_count = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    folder_count = Column(Integer, default=0)
+    group_count = Column(Integer, default=0)         # item groups in the master file
+
+    work_dir = Column(String(1000))                  # on-disk source images for this run
+    groups_json = Column(Text, default="[]")         # the master file's item groups
+    results_json = Column(Text, default="[]")        # per-image match results
+
+    def _json(self, field: str, default):
+        try:
+            return json.loads(getattr(self, field) or default)
+        except (TypeError, ValueError):
+            return json.loads(default)
+
+    @property
+    def results(self) -> list:
+        return self._json("results_json", "[]")
+
+    @results.setter
+    def results(self, val: list):
+        self.results_json = json.dumps(val or [])
+
+    @property
+    def groups(self) -> list:
+        return self._json("groups_json", "[]")
+
+    @groups.setter
+    def groups(self, val: list):
+        self.groups_json = json.dumps(val or [])
+
+    @property
+    def sources(self) -> list:
+        return self._json("sources_json", "[]")
+
+    @sources.setter
+    def sources(self, val: list):
+        self.sources_json = json.dumps(val or [])

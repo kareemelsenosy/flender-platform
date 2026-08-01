@@ -8,9 +8,11 @@ A monorepo for FLENDER's internal AI tools. After logging in at the shared
 | Path | Tool | URL (production) |
 |------|------|------------------|
 | `app/` (FastAPI) | **Order Sheet Generator** — Google Sheets / Excel ↔ formatted order sheets with embedded images | `ordersheet.flendergroup.com` |
+| `app/` (FastAPI) | **Product Attributes** — SAP product type + Fabric/Fit/Style/Weight from a product export | `ordersheet.flendergroup.com/products` |
 | `smt/` (Next.js) | **Social Media Tracker** — Instagram monitoring, auto-rename + organise screenshots, session ZIP exports, monthly reports | `smt.flendergroup.com` |
+| `app/` (FastAPI) | **Image Sorter** — unnamed product photos → folders named by SAP Item Group Code | `ordersheet.flendergroup.com/image-sort` |
 
-Both tools share the same login and user database. The hub is served by the
+All tools share the same login and user database. The hub is served by the
 FastAPI app at `/`, and the Order Sheet tool lives at `/order-sheet`.
 
 For SMT deployment specifics see [`smt/DEPLOYMENT.md`](smt/DEPLOYMENT.md).
@@ -31,6 +33,50 @@ A full-stack web application for managing fashion order sheets — import from G
 - **Export** — Generates formatted Excel order sheets with embedded product images
 - **Background tasks** — Navigate away freely; searches and imports continue in the background with toast notifications on completion
 - **Persistent state** — Task progress and notifications survive server restarts
+
+---
+
+## Image Sorter
+
+Brands deliver a season's product photos with names like `CTM SUMMER MOCK17.png`,
+and SAP needs them filed into a folder per **Item Group Code** with the main shot
+named `_1`. This tool does that filing.
+
+**Input** — the SAP master export listing the items missing images (upload the
+`.xlsx` or paste a Google Sheets link), plus the photos from any combination of:
+
+- a ZIP upload (ZIPs nested inside ZIPs are unpacked too) or loose image files
+- a **Dropbox** shared folder/file link
+- a **Google Drive** link — a ZIP, or a catalogue PDF whose photos are extracted
+- a **Brandboom** presentation link (public share pages only)
+
+**Output** — a ZIP of `<Item Group Code>/` folders, each holding
+`<ITEM_GROUP_CODE>_1.<ext>` for the main image and `_2`, `_3`… for the rest, plus
+a match-report CSV that also lists every item group still without a photo.
+
+### How the matching works
+
+1. **Filename fast path** — a photo whose name already carries the item or style
+   code is filed with no AI call at all.
+2. **Describe** — one vision pass reads each photo into the master file's *own*
+   vocabulary: its category codes, its colour names, the text printed on the
+   garment, the artwork, and how usable the shot is as a main image.
+3. **Shortlist** — candidates are scored on category, colour family and an
+   IDF-weighted overlap between the printed text and the product name, so a rare
+   word like "dalmation" outweighs one like "hoodie".
+4. **Match** — a second vision pass sees the photo alongside the shortlist and
+   picks one, or returns nothing when no candidate is genuinely the same product.
+5. **Order** — inside each folder, `_1` goes to the best main image: the brand's
+   own trailing number if present, then view type (packshot before detail crop
+   before model shot), then quality and confidence.
+6. **Flag** — low-confidence matches, and photos in a crowded folder whose
+   runner-up group got nothing, are pushed to the "to check" tab.
+
+Everything is reviewable in the browser: reassign a photo from a dropdown,
+promote any shot to main, and the ZIP is rebuilt from the corrections. Runs are
+saved, so reopening one costs no further AI calls.
+
+Uses the platform's existing `GEMINI_API_KEY` / `CLAUDE_API_KEY`.
 
 ---
 

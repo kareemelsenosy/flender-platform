@@ -1,0 +1,304 @@
+"""Image Sorter routes — upload → match → correct → download, end to end.
+
+The vision passes are replaced with a stub that matches on the photo's filename,
+so the whole HTTP flow is exercised without calling a model.
+"""
+from __future__ import annotations
+
+import importlib
+import io
+import time
+import zipfile
+
+import openpyxl
+import pytest
+from PIL import Image
+
+
+@pytest.fixture
+def image_sort_routes(test_app):
+    return importlib.import_module("app.routers.image_sort_routes")
+
+
+@pytest.fixture(autouse=True)
+def clear_runs(test_app, image_sort_routes):
+    yield
+    image_sort_routes._progress.clear()
+
+
+def _master_bytes() -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Code", "Web Description", "Web Description 2",
+               "Item Group Code", "Web Color", "Item Group", "Style Code"])
+    ws.append(["CTM T SS1 Black S", "CHINATOWN MARKET", "Call Me T-Shirt",
+               "CTM T SS1 Black", "Black", "T-SHIRTS", "MKT-SS1"])
+    ws.append(["CTM T SS1 White S", "CHINATOWN MARKET", "Call Me T-Shirt",
+               "CTM T SS1 White", "White", "T-SHIRTS", "MKT-SS1"])
+    ws.append(["CTM H HD9 Pink S", "CHINATOWN MARKET", "Nice Day Hoodie",
+               "CTM H HD9 Pink", "Pink", "HOODYS", "MKT-HD9"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _png(color=(10, 10, 10)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (48, 48), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _images_zip() -> bytes:
+    """Three unnamed photos — the stub maps them by their order."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("MOCK_A.png", _png((10, 10, 10)))
+        zf.writestr("MOCK_B.png", _png((250, 250, 250)))
+        zf.writestr("MOCK_C.png", _png((250, 120, 200)))
+    return buf.getvalue()
+
+
+@pytest.fixture
+def stub_ai(monkeypatch):
+    """Stand in for both vision passes with a deterministic filename rule."""
+    sorter = importlib.import_module("app.core.image_sorter")
+    by_name = {
+        "MOCK_A.png": ("CTM T SS1 Black", 0.95),
+        "MOCK_B.png": ("CTM T SS1 Black", 0.55),   # low confidence → to check
+        "MOCK_C.png": ("", 0.0),                   # unmatched
+    }
+
+    monkeypatch.setattr(sorter, "ai_available", lambda: True)
+    monkeypatch.setattr(sorter, "describe_image", lambda image, cats, colors, brand="": {
+        "category": "T-SHIRTS", "product_type": "t-shirt", "primary_color": "Black",
+        "secondary_colors": [], "pattern": "", "visible_text": ["CALL ME"],
+        "graphic": "", "view": "front", "quality": 0.8,
+    })
+
+    def fake_match(image, desc, candidates, brand=""):
+        code, confidence = by_name.get(image.filename, ("", 0.0))
+        return {"code": code, "runner_up": "", "confidence": confidence,
+                "reason": "stubbed"}
+
+    monkeypatch.setattr(sorter, "match_one_image", fake_match)
+    return by_name
+
+
+def _run_and_wait(client, timeout=15):
+    resp = client.post("/image-sort/run", files=[
+        ("master", ("master.xlsx", _master_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("images", ("drop.zip", _images_zip(), "application/zip")),
+    ])
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = client.get(f"/image-sort/run/{run_id}/status").json()
+        if status["status"] in ("done", "error"):
+            return run_id, status
+        time.sleep(0.1)
+    pytest.fail("the run never finished")
+
+
+# ── Page ─────────────────────────────────────────────────────────────────────
+
+def test_page_requires_login(client):
+    resp = client.get("/image-sort", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
+
+
+def test_page_renders_when_logged_in(client, login_as):
+    login_as()
+    resp = client.get("/image-sort")
+    assert resp.status_code == 200
+    assert "Image Sorter" in resp.text
+
+
+def test_hub_lists_the_image_sorter_as_a_tool(client, login_as):
+    login_as()
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "Image Sorter" in resp.text
+    assert "/image-sort" in resp.text
+
+
+# ── Validation ───────────────────────────────────────────────────────────────
+
+def test_run_rejects_a_missing_master_file(client, login_as):
+    login_as()
+    resp = client.post("/image-sort/run", files=[
+        ("images", ("drop.zip", _images_zip(), "application/zip")),
+    ])
+    assert resp.status_code == 400
+    assert "master file" in resp.json()["error"]
+
+
+def test_run_rejects_a_master_that_is_not_a_workbook(client, login_as):
+    login_as()
+    resp = client.post("/image-sort/run", files=[
+        ("master", ("notes.txt", b"hello", "text/plain")),
+        ("images", ("drop.zip", _images_zip(), "application/zip")),
+    ])
+    assert resp.status_code == 400
+    assert ".xlsx" in resp.json()["error"]
+
+
+def test_run_rejects_a_drop_with_no_photos(client, login_as):
+    login_as()
+    resp = client.post("/image-sort/run", data={"image_links": ""}, files=[
+        ("master", ("master.xlsx", _master_bytes(), "application/octet-stream")),
+    ])
+    assert resp.status_code == 400
+    assert "photos" in resp.json()["error"]
+
+
+def test_run_requires_login(client):
+    resp = client.post("/image-sort/run", files=[
+        ("master", ("master.xlsx", _master_bytes(), "application/octet-stream")),
+    ])
+    assert resp.status_code == 401
+
+
+# ── The full flow ────────────────────────────────────────────────────────────
+
+def test_run_files_photos_into_item_group_folders(client, login_as, stub_ai):
+    login_as()
+    _run_id, status = _run_and_wait(client)
+    assert status["status"] == "done"
+
+    result = status["result"]
+    assert result["summary"] == {
+        "images": 3, "matched": 2, "unmatched": 1, "review": 2,
+        "groups_total": 3, "groups_covered": 1, "groups_missing": 2,
+    }
+
+    folder = result["folders"][0]
+    assert folder["code"] == "CTM T SS1 Black"
+    assert folder["name"] == "Call Me T-Shirt"
+    # The confident photo takes the main slot.
+    main = next(p for p in folder["photos"] if p["position"] == 1)
+    assert main["filename"] == "MOCK_A.png"
+    assert main["output_name"] == "CTM_T_SS1_Black_1.png"
+
+    assert [p["filename"] for p in result["unmatched"]] == ["MOCK_C.png"]
+    assert {g["code"] for g in result["missing"]} == {"CTM T SS1 White", "CTM H HD9 Pink"}
+
+
+def test_download_zip_has_the_folder_tree(client, login_as, stub_ai):
+    login_as()
+    run_id, _status = _run_and_wait(client)
+
+    resp = client.get(f"/image-sort/download/{run_id}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert sorted(zf.namelist()) == [
+            "CTM T SS1 Black/CTM_T_SS1_Black_1.png",
+            "CTM T SS1 Black/CTM_T_SS1_Black_2.png",
+        ]
+
+
+def test_report_csv_covers_matched_and_missing(client, login_as, stub_ai):
+    login_as()
+    run_id, _status = _run_and_wait(client)
+
+    resp = client.get(f"/image-sort/report/{run_id}")
+    assert resp.status_code == 200
+    assert "CTM_T_SS1_Black_1.png" in resp.text
+    assert "CTM H HD9 Pink" in resp.text
+    assert "no-image" in resp.text
+
+
+def test_reassigning_a_photo_rebuilds_the_zip(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    orphan = status["result"]["unmatched"][0]
+
+    resp = client.post(f"/image-sort/run/{run_id}/assign",
+                       json={"index": orphan["index"], "code": "CTM H HD9 Pink"})
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["summary"]["matched"] == 3
+    assert result["summary"]["unmatched"] == 0
+    assert {f["code"] for f in result["folders"]} == {"CTM T SS1 Black", "CTM H HD9 Pink"}
+
+    # A hand-set match is trusted, so it is no longer in the "to check" pile.
+    moved = next(p for f in result["folders"] if f["code"] == "CTM H HD9 Pink"
+                 for p in f["photos"])
+    assert moved["method"] == "manual"
+    assert not moved["needs_review"]
+
+    zipped = client.get(f"/image-sort/download/{run_id}")
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+        assert "CTM H HD9 Pink/CTM_H_HD9_Pink_1.png" in zf.namelist()
+
+
+def test_assign_rejects_a_code_outside_the_master_file(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    index = status["result"]["unmatched"][0]["index"]
+
+    resp = client.post(f"/image-sort/run/{run_id}/assign",
+                       json={"index": index, "code": "NOT A REAL CODE"})
+    assert resp.status_code == 400
+    assert "not an item group" in resp.json()["error"]
+
+
+def test_unassigning_moves_a_photo_back_to_unmatched(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    photo = status["result"]["folders"][0]["photos"][0]
+
+    resp = client.post(f"/image-sort/run/{run_id}/assign",
+                       json={"index": photo["index"], "code": ""})
+    result = resp.json()["result"]
+    assert photo["filename"] in [p["filename"] for p in result["unmatched"]]
+
+
+def test_promoting_a_photo_makes_it_underscore_one(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    second = next(p for p in status["result"]["folders"][0]["photos"] if p["position"] == 2)
+
+    resp = client.post(f"/image-sort/run/{run_id}/main", json={"index": second["index"]})
+    assert resp.status_code == 200
+    photos = {p["filename"]: p for p in resp.json()["result"]["folders"][0]["photos"]}
+    assert photos[second["filename"]]["position"] == 1
+    assert photos[second["filename"]]["output_name"] == "CTM_T_SS1_Black_1.png"
+
+
+def test_photos_are_served_for_the_review_grid(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    photo = status["result"]["folders"][0]["photos"][0]
+
+    resp = client.get(photo["thumb"])
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/")
+
+
+# ── Ownership ────────────────────────────────────────────────────────────────
+
+def test_another_user_cannot_open_or_download_a_run(client, login_as, stub_ai):
+    login_as()
+    run_id, _status = _run_and_wait(client)
+    client.post("/logout")
+
+    login_as(username="bob", email="bob@flendergroup.com")
+    assert client.get(f"/image-sort/run/{run_id}").status_code == 404
+    assert client.get(f"/image-sort/run/{run_id}/photo/1").status_code == 404
+    # Browser navigation must redirect, never hand back a JSON file.
+    resp = client.get(f"/image-sort/download/{run_id}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/image-sort"
+
+
+def test_deleting_a_run_removes_it(client, login_as, stub_ai):
+    login_as()
+    run_id, _status = _run_and_wait(client)
+
+    assert client.post(f"/image-sort/run/{run_id}/delete").json() == {"ok": True}
+    assert client.get(f"/image-sort/run/{run_id}").status_code == 404

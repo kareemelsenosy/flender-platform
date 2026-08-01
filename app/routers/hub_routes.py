@@ -64,6 +64,20 @@ def _tools() -> list[dict]:
             "accent": "#2D6FF7",
             "accent_soft": "#eaf1ff",
         },
+        {
+            "id": "image-sort",
+            "name": "Image Sorter",
+            "description": (
+                "Drop in the brand's unnamed product photos plus the SAP list of "
+                "items missing images — the AI works out which product each photo "
+                "is and files it into a folder named after the Item Group Code, "
+                "main shot named _1."
+            ),
+            "url": "/image-sort",
+            "icon": "image",
+            "accent": "#7C3AED",
+            "accent_soft": "#f1ebfe",
+        },
     ]
 
 

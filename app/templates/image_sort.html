@@ -1,0 +1,470 @@
+{% extends "base.html" %}
+{% block title %}Image Sorter — Product Management System{% endblock %}
+
+{% block content %}
+<div style="max-width:1220px">
+  <div style="margin-bottom:24px">
+    <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Image Sorter</h1>
+    <p style="color:var(--gray-500);margin-top:6px;max-width:760px">
+      Give it the SAP master file of items missing images, plus the brand's photo
+      drop — a ZIP, a Dropbox folder, a Drive catalogue or a Brandboom link. The
+      AI looks at every photo, works out which product it is, and files it into a
+      folder named after the <strong>Item Group Code</strong>, with the main shot
+      named <code>_1</code>. Check its work, fix anything it got wrong, download
+      the ZIP.
+    </p>
+  </div>
+
+  {% if not ai_ready %}
+  <div style="background:#fef3c7;border:1px solid #fcd34d;color:#92400e;border-radius:10px;padding:12px 16px;font-size:0.85rem;margin-bottom:18px">
+    No AI provider is configured, so photos can only be matched when their filename already contains the item or style code.
+  </div>
+  {% endif %}
+
+  <!-- ── Setup ────────────────────────────────────────────────────────── -->
+  <div id="setup-card" style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;padding:28px">
+    <form id="sort-form">
+      <div class="step-label">Step 1 — SAP master file</div>
+      <label for="master-file" class="dz" id="master-dz">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="dz-icon"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <div>
+          <div style="font-weight:600" id="master-title">Drop the export with the missing images, or click to choose</div>
+          <div class="dz-sub">.xlsx — must have an <strong>Item Group Code</strong> column (the highlighted one)</div>
+        </div>
+      </label>
+      <input type="file" id="master-file" name="master" accept=".xlsx,.xlsm" style="display:none">
+      <div class="or-row">
+        <span>or paste a Google Sheets link</span>
+        <input type="url" id="master-url" name="master_url" placeholder="https://docs.google.com/spreadsheets/d/…" class="txt">
+      </div>
+
+      <div class="step-label" style="margin-top:26px">Step 2 — the photos</div>
+      <label for="image-files" class="dz" id="images-dz">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="dz-icon"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <div>
+          <div style="font-weight:600" id="images-title">Drop a ZIP or the image files here, or click to choose</div>
+          <div class="dz-sub">ZIP (including ZIPs inside ZIPs), JPG, PNG, WEBP or a catalogue PDF</div>
+        </div>
+      </label>
+      <input type="file" id="image-files" name="images" accept=".zip,.pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff" multiple style="display:none">
+      <div class="or-row">
+        <span>or paste links</span>
+        <textarea id="image-links" name="image_links" rows="2" class="txt"
+          placeholder="Dropbox folder, Google Drive catalogue or Brandboom link — one per line"></textarea>
+      </div>
+
+      <details style="margin-top:20px">
+        <summary style="cursor:pointer;font-size:0.84rem;color:var(--gray-500);font-weight:600">Advanced</summary>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px">
+          <label style="flex:1;min-width:220px">
+            <div class="fld-label">Brand (helps the AI read the photos)</div>
+            <input type="text" id="brand" name="brand" class="txt" placeholder="Read from the master file if blank">
+          </label>
+          <label style="width:200px">
+            <div class="fld-label">Item Group Code column</div>
+            <input type="text" id="code-column" name="code_column" class="txt" placeholder="Auto-detect (e.g. H)">
+          </label>
+        </div>
+      </details>
+
+      <div style="display:flex;justify-content:flex-end;margin-top:22px">
+        <button type="submit" class="btn btn-primary" id="run-btn">Sort the images</button>
+      </div>
+      <div id="form-error" style="color:var(--danger,#c0392b);font-size:0.85rem;margin-top:10px;display:none"></div>
+    </form>
+  </div>
+
+  <!-- ── Saved runs ───────────────────────────────────────────────────── -->
+  <div id="history-card" style="margin-top:22px;{% if not history %}display:none{% endif %}">
+    <h3 style="font-size:1rem;font-weight:700;margin-bottom:10px">Saved runs</h3>
+    <div id="history-list" style="display:flex;flex-direction:column;gap:8px">
+      {% for h in history %}
+      <div class="hist-row" data-run-id="{{ h.id }}">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ h.name }}</div>
+          <div style="font-size:0.78rem;color:var(--gray-500);margin-top:2px">
+            {{ h.created_at }} · {{ h.images }} photos
+            {% if h.status == 'done' %}· {{ h.folders }} folders · {{ h.matched }} filed{% if h.review %} · <span style="color:#b45309">{{ h.review }} to check</span>{% endif %}
+            {% elif h.status == 'running' %}· <span style="color:#b45309">processing…</span>
+            {% elif h.status == 'error' %}· <span style="color:var(--danger,#c0392b)">failed</span>{% endif %}
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm hist-open" data-run-id="{{ h.id }}" type="button">Open</button>
+        <a class="btn btn-outline btn-sm" href="/image-sort/download/{{ h.id }}">ZIP</a>
+        <button class="btn btn-danger btn-sm hist-del" data-run-id="{{ h.id }}" type="button">Delete</button>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- ── Progress ─────────────────────────────────────────────────────── -->
+  <div id="progress-card" style="display:none;background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;padding:28px;margin-top:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <strong id="progress-title">Reading the photos…</strong>
+      <span id="progress-count" style="color:var(--gray-500);font-variant-numeric:tabular-nums"></span>
+    </div>
+    <div style="background:var(--gray-100,#f1f1f1);height:8px;border-radius:99px;overflow:hidden">
+      <div id="progress-bar" style="height:100%;width:0;background:var(--black,#111);border-radius:99px;transition:width .4s"></div>
+    </div>
+    <p style="color:var(--gray-400);font-size:0.8rem;margin-top:10px">
+      Each photo is described, then matched against the master file. Big drops take a few minutes — you can leave this page and reopen the run later.
+    </p>
+  </div>
+
+  <!-- ── Results ──────────────────────────────────────────────────────── -->
+  <div id="results-card" style="display:none;margin-top:20px">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px">
+      <div class="stat" id="stat-folders"></div>
+      <div class="stat" id="stat-filed"></div>
+      <div class="stat" id="stat-review"></div>
+      <div class="stat" id="stat-missing"></div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap">
+      <a id="download-btn" class="btn btn-primary" href="#">Download folder ZIP</a>
+      <a id="report-btn" class="btn btn-outline" href="#">Match report (CSV)</a>
+      <button class="btn btn-outline" id="reset-btn" type="button">Sort another drop</button>
+      <div style="margin-left:auto;display:flex;gap:6px" id="view-tabs">
+        <button class="tab on" data-view="folders" type="button">Folders</button>
+        <button class="tab" data-view="review" type="button">To check</button>
+        <button class="tab" data-view="unmatched" type="button">Unmatched</button>
+        <button class="tab" data-view="missing" type="button">No photo</button>
+      </div>
+    </div>
+
+    <div id="results-body"></div>
+  </div>
+</div>
+
+<style>
+  .step-label{font-size:0.72rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:var(--gray-400,#999);margin-bottom:10px}
+  .dz{display:flex;align-items:center;gap:14px;border:2px dashed var(--gray-300,#ddd);border-radius:12px;padding:22px 24px;cursor:pointer}
+  .dz.filled{border-style:solid;border-color:#111;background:var(--gray-50,#fafafa)}
+  .dz-icon{color:var(--gray-400,#999);flex-shrink:0}
+  .dz-sub{font-size:0.78rem;color:var(--gray-400,#999);margin-top:3px}
+  .or-row{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
+  .or-row > span{font-size:0.78rem;color:var(--gray-400,#999);white-space:nowrap}
+  .txt{flex:1;min-width:240px;width:100%;font-size:0.85rem;padding:8px 11px;border:1px solid var(--gray-200,#ddd);border-radius:8px;font-family:inherit}
+  .fld-label{font-size:0.75rem;color:var(--gray-500);margin-bottom:4px;font-weight:600}
+  .hist-row{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--gray-200,#eee);border-radius:10px;padding:12px 14px}
+  .stat{background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 18px;min-width:150px}
+  .stat .n{font-size:1.6rem;font-weight:800;letter-spacing:-0.02em}
+  .stat .l{font-size:0.75rem;color:var(--gray-400);text-transform:uppercase;letter-spacing:0.05em;margin-top:2px}
+  .tab{font-size:0.78rem;font-weight:600;padding:5px 12px;border-radius:99px;border:1px solid var(--gray-200,#ddd);background:#fff;cursor:pointer;color:var(--gray-500)}
+  .tab.on{background:#111;color:#fff;border-color:#111}
+  .folder{background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 16px;margin-bottom:10px}
+  .folder.flag{border-color:#fcd34d;background:#fffdf5}
+  .folder-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .folder-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.84rem;font-weight:700}
+  .folder-meta{font-size:0.78rem;color:var(--gray-500)}
+  .shots{display:flex;gap:10px;flex-wrap:wrap}
+  .shot{width:164px;border:1px solid var(--gray-200,#eee);border-radius:10px;overflow:hidden;background:var(--gray-50,#fafafa);position:relative}
+  .shot img{width:100%;height:150px;object-fit:contain;display:block;background:#fff}
+  .shot .cap{padding:6px 8px;font-size:0.68rem;color:var(--gray-500);word-break:break-all;line-height:1.35}
+  .shot .out{font-weight:700;color:#111;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .shot-actions{display:flex;gap:4px;padding:0 8px 8px}
+  .shot-actions button{flex:1;font-size:0.66rem;font-weight:600;padding:3px 4px;border-radius:6px;border:1px solid var(--gray-200,#ddd);background:#fff;cursor:pointer}
+  .shot-actions button:hover{border-color:#111}
+  .badge{position:absolute;top:6px;left:6px;font-size:0.62rem;font-weight:800;padding:2px 6px;border-radius:99px}
+  .badge-main{background:#111;color:#fff}
+  .badge-check{background:#fef3c7;color:#92400e;left:auto;right:6px}
+  .empty{background:#fff;border:1px dashed var(--gray-200,#eee);border-radius:12px;padding:34px;text-align:center;color:var(--gray-400);font-size:0.88rem}
+  .miss-row{display:flex;gap:12px;align-items:baseline;padding:7px 14px;border-top:1px solid var(--gray-100,#f1f1f1);font-size:0.83rem}
+  .picker{width:calc(100% - 16px);font-size:0.68rem;padding:3px 4px;border:1px solid var(--gray-200,#ddd);border-radius:6px;margin:0 8px 8px}
+</style>
+
+<script>
+(function(){
+  const form = document.getElementById('sort-form');
+  const masterInput = document.getElementById('master-file');
+  const imagesInput = document.getElementById('image-files');
+  const runBtn = document.getElementById('run-btn');
+  const formError = document.getElementById('form-error');
+
+  let RUN_ID = null;
+  let DATA = null;
+  let view = 'folders';
+  let poller = null;
+
+  const $ = (id) => document.getElementById(id);
+  const show = (id, on) => { $(id).style.display = on ? '' : 'none'; };
+  const err = (m) => { formError.textContent = m || ''; formError.style.display = m ? 'block' : 'none'; };
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+  // ── Inputs ──────────────────────────────────────────────────────────────
+  masterInput.addEventListener('change', () => {
+    const f = masterInput.files[0];
+    $('master-title').textContent = f ? f.name : 'Drop the export with the missing images, or click to choose';
+    $('master-dz').classList.toggle('filled', !!f);
+    err('');
+  });
+  imagesInput.addEventListener('change', () => {
+    const n = imagesInput.files.length;
+    $('images-title').textContent = n === 0 ? 'Drop a ZIP or the image files here, or click to choose'
+      : n === 1 ? imagesInput.files[0].name : `${n} files selected`;
+    $('images-dz').classList.toggle('filled', n > 0);
+    err('');
+  });
+
+  [['master-dz', masterInput], ['images-dz', imagesInput]].forEach(([dzId, input]) => {
+    const dz = $(dzId);
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('filled'); });
+    dz.addEventListener('dragleave', () => { if (!input.files.length) dz.classList.remove('filled'); });
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length){
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change'));
+      }
+    });
+  });
+
+  // ── Run ─────────────────────────────────────────────────────────────────
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err('');
+    const fd = new FormData();
+    if (masterInput.files[0]) fd.append('master', masterInput.files[0]);
+    fd.append('master_url', $('master-url').value.trim());
+    for (const f of imagesInput.files) fd.append('images', f);
+    fd.append('image_links', $('image-links').value.trim());
+    fd.append('brand', $('brand').value.trim());
+    fd.append('code_column', $('code-column').value.trim());
+
+    runBtn.disabled = true;
+    runBtn.textContent = 'Uploading…';
+    try {
+      const resp = await fetch('/image-sort/run', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (!resp.ok || data.error){ err(data.error || 'Something went wrong.'); return; }
+      RUN_ID = data.run_id;
+      show('setup-card', false);
+      show('history-card', false);
+      show('progress-card', true);
+      $('progress-title').textContent =
+        `Matching ${data.images} photos against ${data.groups} item groups…`;
+      startPolling();
+    } catch (e){
+      err('Upload failed: ' + e.message);
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = 'Sort the images';
+    }
+  });
+
+  function startPolling(){
+    clearInterval(poller);
+    poller = setInterval(pollOnce, 1500);
+    pollOnce();
+  }
+
+  async function pollOnce(){
+    if (!RUN_ID) return;
+    try {
+      const resp = await fetch(`/image-sort/run/${RUN_ID}/status`);
+      const data = await resp.json();
+      const total = data.total || 1;
+      const pct = Math.round(100 * (data.done || 0) / total);
+      $('progress-bar').style.width = pct + '%';
+      $('progress-count').textContent = `${data.done || 0} / ${data.total || 0}`;
+      if (data.status === 'done'){
+        clearInterval(poller);
+        render(data.result);
+      } else if (data.status === 'error'){
+        clearInterval(poller);
+        show('progress-card', false);
+        show('setup-card', true);
+        show('history-card', true);
+        err(data.error || 'The run failed.');
+      }
+    } catch (e){ /* keep polling — a slow response is not a failure */ }
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────────
+  function stat(id, n, label){ $(id).innerHTML = `<div class="n">${n}</div><div class="l">${label}</div>`; }
+
+  function render(result){
+    DATA = result;
+    RUN_ID = result.id;
+    show('progress-card', false);
+    show('setup-card', false);
+    show('history-card', false);
+    show('results-card', true);
+
+    const s = result.summary;
+    stat('stat-folders', s.groups_covered, 'Folders');
+    stat('stat-filed', s.matched, 'Photos filed');
+    stat('stat-review', s.review, 'To check');
+    stat('stat-missing', s.groups_missing, 'Still no photo');
+    $('download-btn').href = `/image-sort/download/${result.id}`;
+    $('report-btn').href = `/image-sort/report/${result.id}`;
+    buildOptions();
+    paint();
+  }
+
+  function paint(){
+    paintInner();
+    applySelected();
+  }
+
+  function paintInner(){
+    const body = $('results-body');
+    if (!DATA){ body.innerHTML = ''; return; }
+
+    if (view === 'missing'){
+      const rows = DATA.missing;
+      body.innerHTML = rows.length
+        ? `<div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+             <div style="padding:12px 14px;font-size:0.82rem;color:var(--gray-500)">
+               ${rows.length} item group${rows.length === 1 ? '' : 's'} in the master file still have no photo in this drop.
+             </div>
+             ${rows.map(r => `<div class="miss-row">
+               <span class="folder-code">${esc(r.code)}</span>
+               <span class="folder-meta">${esc(r.name)}${r.color ? ' · ' + esc(r.color) : ''}</span>
+             </div>`).join('')}
+           </div>`
+        : `<div class="empty">Every item group in the master file got a photo.</div>`;
+      return;
+    }
+
+    if (view === 'unmatched'){
+      const shots = DATA.unmatched;
+      body.innerHTML = shots.length
+        ? `<div class="folder">
+             <div class="folder-head">
+               <span class="folder-code">Unmatched</span>
+               <span class="folder-meta">${shots.length} photo${shots.length === 1 ? '' : 's'} the AI could not place — assign them by hand.</span>
+             </div>
+             <div class="shots">${shots.map(p => shotHtml(p, '')).join('')}</div>
+           </div>`
+        : `<div class="empty">Every photo was filed into a folder.</div>`;
+      return;
+    }
+
+    let folders = DATA.folders;
+    if (view === 'review') folders = folders.filter(f => f.needs_review);
+    if (!folders.length){
+      body.innerHTML = view === 'review'
+        ? `<div class="empty">Nothing needs checking — every match was confident.</div>`
+        : `<div class="empty">No folders yet.</div>`;
+      return;
+    }
+    body.innerHTML = folders.map(folderHtml).join('');
+  }
+
+  function folderHtml(f){
+    let photos = f.photos;
+    if (view === 'review') photos = photos.filter(p => p.needs_review).concat(photos.filter(p => !p.needs_review));
+    return `<div class="folder ${f.needs_review ? 'flag' : ''}">
+      <div class="folder-head">
+        <span class="folder-code">${esc(f.folder)}</span>
+        <span class="folder-meta">${esc(f.name)}${f.color ? ' · ' + esc(f.color) : ''}${f.category ? ' · ' + esc(f.category) : ''}</span>
+        <span class="folder-meta" style="margin-left:auto">${photos.length} photo${photos.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="shots">${photos.map(p => shotHtml(p, f.code)).join('')}</div>
+    </div>`;
+  }
+
+  function shotHtml(p, code){
+    const saw = [p.saw.product_type, p.saw.primary_color].filter(Boolean).join(' · ');
+    return `<div class="shot" data-index="${p.index}">
+      ${p.position === 1 ? '<span class="badge badge-main">MAIN _1</span>' : ''}
+      ${p.needs_review ? '<span class="badge badge-check">CHECK</span>' : ''}
+      <img src="${p.thumb}" alt="${esc(p.filename)}" loading="lazy">
+      <div class="cap">
+        ${p.output_name ? `<div class="out">${esc(p.output_name)}</div>` : ''}
+        <div title="${esc(p.filename)}">${esc(p.filename)}</div>
+        ${saw ? `<div style="margin-top:3px">AI saw: ${esc(saw)}</div>` : ''}
+        ${p.reason ? `<div style="margin-top:3px;color:var(--gray-400)" title="${esc(p.reason)}">${esc(p.reason.slice(0, 70))}</div>` : ''}
+      </div>
+      <select class="picker" data-index="${p.index}" data-code="${esc(code || '')}">${OPTIONS_HTML}</select>
+      <div class="shot-actions">
+        ${p.position > 1 ? `<button type="button" data-main="${p.index}">Make main</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // The item-group list is identical for every photo and can run past a hundred
+  // entries, so the <option> markup is built once per run and the current value
+  // is applied after mount instead of re-rendering the list per photo.
+  let OPTIONS_HTML = '';
+  function buildOptions(){
+    OPTIONS_HTML = '<option value="">— unmatched —</option>'
+      + DATA.all_groups.map(g => `<option value="${esc(g.code)}">${esc(g.code)}</option>`).join('');
+  }
+  function applySelected(){
+    document.querySelectorAll('#results-body .picker').forEach(sel => {
+      sel.value = sel.dataset.code || '';
+    });
+  }
+
+  // ── Corrections ─────────────────────────────────────────────────────────
+  document.addEventListener('change', async (e) => {
+    const sel = e.target.closest('.picker');
+    if (!sel || !RUN_ID) return;
+    sel.disabled = true;
+    const resp = await fetch(`/image-sort/run/${RUN_ID}/assign`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ index: Number(sel.dataset.index), code: sel.value }),
+    });
+    const data = await resp.json();
+    if (data.result) render(data.result); else sel.disabled = false;
+  });
+
+  document.addEventListener('click', async (e) => {
+    const mainBtn = e.target.closest('[data-main]');
+    if (mainBtn && RUN_ID){
+      mainBtn.disabled = true;
+      const resp = await fetch(`/image-sort/run/${RUN_ID}/main`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ index: Number(mainBtn.dataset.main) }),
+      });
+      const data = await resp.json();
+      if (data.result) render(data.result); else mainBtn.disabled = false;
+      return;
+    }
+
+    const tab = e.target.closest('#view-tabs .tab');
+    if (tab){
+      document.querySelectorAll('#view-tabs .tab').forEach(t => t.classList.toggle('on', t === tab));
+      view = tab.dataset.view;
+      paint();
+      return;
+    }
+
+    const openBtn = e.target.closest('.hist-open');
+    if (openBtn){
+      const resp = await fetch(`/image-sort/run/${openBtn.dataset.runId}`);
+      const data = await resp.json();
+      if (data.error){ err(data.error); return; }
+      if (data.status === 'running'){
+        RUN_ID = data.id;
+        show('setup-card', false); show('history-card', false); show('progress-card', true);
+        startPolling();
+        return;
+      }
+      render(data);
+      return;
+    }
+
+    const delBtn = e.target.closest('.hist-del');
+    if (delBtn){
+      if (!confirm('Delete this run and its stored photos?')) return;
+      await fetch(`/image-sort/run/${delBtn.dataset.runId}/delete`, { method: 'POST' });
+      delBtn.closest('.hist-row').remove();
+      if (!document.querySelectorAll('.hist-row').length) show('history-card', false);
+      return;
+    }
+
+    if (e.target.closest('#reset-btn')){
+      RUN_ID = null; DATA = null;
+      show('results-card', false);
+      show('setup-card', true);
+      show('history-card', document.querySelectorAll('.hist-row').length > 0);
+    }
+  });
+})();
+</script>
+{% endblock %}
