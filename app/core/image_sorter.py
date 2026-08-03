@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.services.ai_service import (  # noqa: F401  (private helpers, same app)
     _call_ai_vision,
@@ -493,6 +493,56 @@ def describe_image(
         "view": str(data.get("view") or "other").strip().lower(),
         "quality": _clamp01(data.get("quality")),
     }
+
+
+THUMB_MAX_DIM = 420
+
+
+def build_thumbnail(source_path: str | Path, dest_path: str | Path) -> bool:
+    """Write a small JPEG preview of ``source_path`` for the review grid.
+
+    The review page shows every photo at once. Serving the originals means
+    hundreds of megabytes over hundreds of requests, which is slow enough that
+    browsers give up and render broken images — so the grid gets these instead.
+    Returns False if the source can't be read.
+    """
+    dest_path = Path(dest_path)
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(source_path) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode not in ("RGB", "L"):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                alpha = img.split()[-1] if "A" in img.getbands() else None
+                background.paste(img, mask=alpha)
+                img = background
+            elif img.mode == "L":
+                img = img.convert("RGB")
+            img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM))
+            img.save(dest_path, format="JPEG", quality=80, optimize=True)
+        return True
+    except Exception as e:
+        logger.warning(f"Thumbnail failed for {source_path}: {e}")
+        return False
+
+
+def build_thumbnails(
+    results: list["MatchResult"],
+    thumb_dir: str | Path,
+    max_workers: int = 4,
+) -> int:
+    """Pre-build every preview so the review grid never waits on one."""
+    thumb_dir = Path(thumb_dir)
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+
+    def work(result: "MatchResult") -> bool:
+        dest = thumb_dir / f"{result.index}.jpg"
+        if dest.exists():
+            return True
+        return build_thumbnail(result.path, dest)
+
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        return sum(1 for ok in pool.map(work, results) if ok)
 
 
 def _clamp01(value: Any) -> float:

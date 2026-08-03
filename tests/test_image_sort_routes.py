@@ -280,6 +280,66 @@ def test_photos_are_served_for_the_review_grid(client, login_as, stub_ai):
     assert resp.headers["content-type"].startswith("image/")
 
 
+def test_every_photo_in_the_payload_is_actually_serveable(client, login_as, stub_ai):
+    """The grid requests one URL per photo — a single 404 shows as a broken
+    image, so every URL the payload hands out has to resolve."""
+    login_as()
+    _run_id, status = _run_and_wait(client)
+    result = status["result"]
+    photos = result["unmatched"] + [p for f in result["folders"] for p in f["photos"]]
+    assert len(photos) == 3
+
+    for photo in photos:
+        resp = client.get(photo["thumb"])
+        assert resp.status_code == 200, f"{photo['filename']} → {resp.status_code}"
+        assert resp.headers["content-type"] == "image/jpeg"
+
+
+def test_the_grid_is_served_thumbnails_not_the_originals(client, login_as, stub_ai, test_app):
+    """Serving full-size photos is what left the review grid full of broken
+    images — a season's shots are megabytes each and the server runs one
+    worker. The preview must be a small JPEG, whatever the source was."""
+    login_as()
+    run_id, status = _run_and_wait(client)
+    photo = status["result"]["folders"][0]["photos"][0]
+
+    thumbs = test_app["output_dir"] / "image_sort" / str(run_id) / "thumbs"
+    assert thumbs.is_dir(), "thumbnails should be pre-built when the run finishes"
+
+    resp = client.get(photo["thumb"])
+    assert resp.headers["content-type"] == "image/jpeg"   # the source was a PNG
+
+    # The dimension cap is the invariant that matters. Comparing byte counts
+    # would prove nothing here: these fixtures are 48px flat-colour PNGs that
+    # compress smaller than a JPEG's own header.
+    import io
+
+    from PIL import Image
+    with Image.open(io.BytesIO(resp.content)) as img:
+        assert max(img.size) <= 420
+    with Image.open(next((test_app["output_dir"] / "image_sort" / str(run_id)
+                          / "source").rglob(photo["filename"]))) as src:
+        assert src.format == "PNG"
+
+
+def test_a_missing_thumbnail_is_rebuilt_on_demand(client, login_as, stub_ai, test_app):
+    """Runs created before previews existed, and any interrupted pre-build,
+    must still render rather than 404."""
+    import shutil
+
+    login_as()
+    run_id, status = _run_and_wait(client)
+    photo = status["result"]["folders"][0]["photos"][0]
+
+    thumbs = test_app["output_dir"] / "image_sort" / str(run_id) / "thumbs"
+    shutil.rmtree(thumbs)
+
+    resp = client.get(photo["thumb"])
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert (thumbs / f"{photo['index']}.jpg").is_file()   # and it got cached
+
+
 # ── Ownership ────────────────────────────────────────────────────────────────
 
 def test_another_user_cannot_open_or_download_a_run(client, login_as, stub_ai):

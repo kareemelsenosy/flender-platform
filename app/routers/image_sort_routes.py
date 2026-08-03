@@ -35,6 +35,8 @@ from app.core.image_sorter import (
     assign_positions,
     build_output_zip,
     build_report_csv,
+    build_thumbnail,
+    build_thumbnails,
     collect_images,
     image_file_name,
     match_images,
@@ -245,6 +247,13 @@ def _match_job(run_id: int, images, groups, brand: str) -> None:
             images, groups, brand=brand,
             max_workers=_MAX_WORKERS, on_progress=progress,
         )
+        # Build the review-grid previews before the page can ask for them —
+        # generating a few hundred on demand is what makes the grid look broken.
+        _set_progress(run_id, stage="Preparing previews")
+        try:
+            build_thumbnails(results, Path(_run_dir(run_id)) / "thumbs")
+        except Exception as e:
+            logger.warning(f"Thumbnail pre-build failed for run {run_id}: {e}")
         summary = summarise(results, groups)
         run = db.get(ImageSortRun, run_id)
         if run:
@@ -383,24 +392,56 @@ async def image_sort_open(run_id: int, request: Request, db: DBSession = Depends
 
 
 @router.get("/image-sort/run/{run_id}/photo/{index}")
-async def image_sort_photo(run_id: int, index: int, request: Request, db: DBSession = Depends(get_db)):
-    """Serve one source photo so the review grid can show it."""
-    run = _owned_run(db, request, run_id)
+def image_sort_photo(run_id: int, index: int, request: Request, db: DBSession = Depends(get_db)):
+    """Serve one photo's preview for the review grid.
+
+    Deliberately a sync ``def`` (FastAPI runs it in a threadpool): the review
+    page fires a request per photo, and doing this DB work on the event loop
+    stalls every other request on the page.
+
+    It serves the pre-built thumbnail, not the original — a season's photos are
+    ~2 MB each, and a few hundred of those at once is what left the grid full of
+    broken images. Only the two columns needed are selected, so the run's large
+    results JSON is never parsed on this path.
+    """
+    uid = get_current_user_id(request)
+    if not uid:
+        return Response(status_code=404)
+    row = (
+        db.query(ImageSortRun.user_id, ImageSortRun.work_dir)
+        .filter(ImageSortRun.id == run_id)
+        .first()
+    )
+    if row is None or row.user_id != uid:
+        return Response(status_code=404)
+
+    work_dir = Path(row.work_dir or _run_dir(run_id))
+    thumb = work_dir / "thumbs" / f"{index}.jpg"
+    if thumb.is_file():
+        return FileResponse(thumb, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})
+
+    # No thumbnail yet — a run from before previews existed, or one whose
+    # pre-build was interrupted. Build it now from the source and cache it.
+    run = db.get(ImageSortRun, run_id)
     if run is None:
         return Response(status_code=404)
     result = next((r for r in run.results if int(r.get("index") or 0) == index), None)
     if not result:
         return Response(status_code=404)
 
-    path = Path(str(result.get("path") or ""))
-    # Never serve outside this run's own working directory.
-    work_dir = Path(run.work_dir or _run_dir(run.id)).resolve()
+    source = Path(str(result.get("path") or ""))
+    # Never serve anything outside this run's own working directory.
     try:
-        if not str(path.resolve()).startswith(str(work_dir)) or not path.is_file():
+        if not str(source.resolve()).startswith(str(work_dir.resolve())) or not source.is_file():
             return Response(status_code=404)
     except OSError:
         return Response(status_code=404)
-    return FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
+
+    if build_thumbnail(source, thumb):
+        return FileResponse(thumb, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})
+    return FileResponse(source, headers={"Cache-Control": "private, max-age=3600"})
 
 
 # ── Corrections ──────────────────────────────────────────────────────────────

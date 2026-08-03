@@ -22,6 +22,8 @@ from app.core.image_sorter import (
     build_output_tree,
     build_output_zip,
     build_report_csv,
+    build_thumbnail,
+    build_thumbnails,
     collect_images,
     flag_conflicts,
     image_file_name,
@@ -267,6 +269,53 @@ def test_folder_names_are_filesystem_safe_but_keep_spaces():
     assert safe_folder_name("CTM T SS1 Black") == "CTM T SS1 Black"
     assert safe_folder_name("CTM/T:SS1*Black") == "CTM-T-SS1-Black"
     assert safe_folder_name("  ") == "UNKNOWN"
+
+
+# ── Thumbnails ───────────────────────────────────────────────────────────────
+
+def test_thumbnail_shrinks_a_big_photo_and_keeps_its_aspect(tmp_path):
+    source = tmp_path / "big.png"
+    _make_image(source, size=(2400, 1600))
+    dest = tmp_path / "thumbs" / "1.jpg"
+
+    assert build_thumbnail(source, dest) is True
+    with Image.open(dest) as img:
+        assert img.format == "JPEG"
+        assert max(img.size) <= 420
+        assert abs(img.size[0] / img.size[1] - 1.5) < 0.01
+    assert dest.stat().st_size < source.stat().st_size
+
+
+def test_thumbnail_flattens_transparency_instead_of_failing(tmp_path):
+    """JPEG has no alpha channel — an RGBA PNG must still produce a preview."""
+    source = tmp_path / "alpha.png"
+    Image.new("RGBA", (600, 600), (255, 0, 0, 90)).save(source)
+    dest = tmp_path / "1.jpg"
+
+    assert build_thumbnail(source, dest) is True
+    with Image.open(dest) as img:
+        assert img.mode == "RGB"
+
+
+def test_thumbnail_reports_failure_on_an_unreadable_source(tmp_path):
+    source = tmp_path / "broken.png"
+    source.write_bytes(b"not a png")
+    assert build_thumbnail(source, tmp_path / "1.jpg") is False
+
+
+def test_build_thumbnails_covers_every_photo_by_index(tmp_path):
+    source = tmp_path / "src"
+    for i in range(3):
+        _make_image(source / f"p{i}.png", color=(i * 60, 0, 0))
+    results = [
+        _result(i + 1, "CTM T SS1 Black", f"p{i}.png", path=str(source / f"p{i}.png"))
+        for i in range(3)
+    ]
+    thumbs = tmp_path / "thumbs"
+
+    assert build_thumbnails(results, thumbs) == 3
+    # Named by index, which is what the photo route looks up.
+    assert sorted(p.name for p in thumbs.iterdir()) == ["1.jpg", "2.jpg", "3.jpg"]
 
 
 # ── Output tree ──────────────────────────────────────────────────────────────
