@@ -270,6 +270,53 @@ def test_promoting_a_photo_makes_it_underscore_one(client, login_as, stub_ai):
     assert photos[second["filename"]]["output_name"] == "CTM_T_SS1_Black_1.png"
 
 
+def test_setting_a_main_image_survives_edits_to_other_products(client, login_as, stub_ai):
+    """Hamid's bug, end to end: promote a photo in one folder, then unmatch a
+    photo from a *different* product — the promotion must still hold."""
+    login_as()
+    run_id, status = _run_and_wait(client)
+
+    folder = status["result"]["folders"][0]
+    second = next(p for p in folder["photos"] if p["position"] == 2)
+    promoted = client.post(f"/image-sort/run/{run_id}/main",
+                           json={"index": second["index"]}).json()["result"]
+    assert next(p for p in promoted["folders"][0]["photos"]
+                if p["index"] == second["index"])["position"] == 1
+
+    # Touch a completely unrelated photo.
+    orphan = promoted["unmatched"][0]
+    after = client.post(f"/image-sort/run/{run_id}/assign",
+                        json={"index": orphan["index"], "code": "CTM H HD9 Pink"}).json()["result"]
+
+    tee = next(f for f in after["folders"] if f["code"] == "CTM T SS1 Black")
+    still_main = next(p for p in tee["photos"] if p["position"] == 1)
+    assert still_main["index"] == second["index"], "the hand-set main image was reset"
+
+    # And it holds through the download, which is rebuilt from these results.
+    zipped = client.get(f"/image-sort/download/{run_id}")
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+        assert "CTM T SS1 Black/CTM_T_SS1_Black_1.png" in zf.namelist()
+
+
+def test_reassigning_a_photo_clears_the_pin_it_had_elsewhere(client, login_as, stub_ai):
+    """A pinned slot belongs to the folder it was pinned in — carrying it into
+    a new folder would let a moved photo hijack that folder's main image."""
+    login_as()
+    run_id, status = _run_and_wait(client)
+
+    folder = status["result"]["folders"][0]
+    second = next(p for p in folder["photos"] if p["position"] == 2)
+    client.post(f"/image-sort/run/{run_id}/main", json={"index": second["index"]})
+
+    moved = client.post(f"/image-sort/run/{run_id}/assign",
+                        json={"index": second["index"], "code": "CTM H HD9 Pink"}).json()["result"]
+    pink = next(f for f in moved["folders"] if f["code"] == "CTM H HD9 Pink")
+    assert [p["index"] for p in pink["photos"]] == [second["index"]]
+
+    tee = next(f for f in moved["folders"] if f["code"] == "CTM T SS1 Black")
+    assert len(tee["photos"]) == 1 and tee["photos"][0]["position"] == 1
+
+
 def test_photos_are_served_for_the_review_grid(client, login_as, stub_ai):
     login_as()
     run_id, status = _run_and_wait(client)

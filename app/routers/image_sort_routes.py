@@ -481,6 +481,10 @@ async def image_sort_assign(run_id: int, request: Request, db: DBSession = Depen
     target.method = "manual" if code else "none"
     target.confidence = 1.0 if code else 0.0
     target.reason = "Set by hand." if code else "Unassigned by hand."
+    # It is leaving this folder, so its old pinned slot means nothing in the
+    # new one. Every other folder keeps its own hand-set order untouched.
+    target.manual_rank = 0
+    target.flagged = ""
     _save_results(db, run, results, groups)
     return JSONResponse({"ok": True, "result": _payload(run)})
 
@@ -503,22 +507,17 @@ async def image_sort_set_main(run_id: int, request: Request, db: DBSession = Dep
     if target is None or not target.code:
         return JSONResponse({"error": "that photo is not in a folder"}, status_code=400)
 
-    # Re-number this folder by hand: the chosen photo first, the rest in their
-    # current order behind it. assign_positions() would undo this, so the
-    # positions are written directly.
+    # Pin this folder's order: the chosen photo first, the rest behind it in
+    # their current order. manual_rank is what makes the choice survive later
+    # corrections elsewhere in the run — assign_positions() honours it.
     siblings = sorted(
         [r for r in results if r.code == target.code],
         key=lambda r: (r.index != index, r.position or 999, r.filename.lower()),
     )
-    for position, result in enumerate(siblings, start=1):
-        result.position = position
+    for rank, result in enumerate(siblings, start=1):
+        result.manual_rank = rank
 
-    summary = summarise(results, groups)
-    run.results = [r.to_dict() for r in results]
-    run.matched_count = summary["matched"]
-    run.review_count = summary["review"]
-    run.folder_count = summary["groups_covered"]
-    db.commit()
+    _save_results(db, run, results, groups)
     return JSONResponse({"ok": True, "result": _payload(run)})
 
 

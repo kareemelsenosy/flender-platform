@@ -254,6 +254,58 @@ def test_a_filename_that_already_says_1_keeps_the_main_slot():
     assert {r.filename: r.position for r in results} == {"SHOT_1.jpg": 1, "SHOT_2.jpg": 2}
 
 
+def test_hand_set_order_survives_a_change_to_another_folder():
+    """The bug Hamid hit: fixing the main image of one product, then touching a
+    completely different product, reset the first one back to the AI's pick."""
+    curated = [
+        _result(1, "CTM T SS1 Black", "a.jpg", view="packshot", quality=0.99),
+        _result(2, "CTM T SS1 Black", "b.jpg", view="detail", quality=0.1),
+    ]
+    # The user promoted the detail shot to main in this folder.
+    curated[1].manual_rank = 1
+    curated[0].manual_rank = 2
+    other = [_result(3, "CTM H HD9 Pink", "c.jpg")]
+
+    assign_positions(curated + other)
+
+    assert {r.filename: r.position for r in curated} == {"b.jpg": 1, "a.jpg": 2}
+
+
+def test_a_photo_added_to_a_curated_folder_goes_behind_the_pinned_ones():
+    results = [
+        _result(1, "CTM T SS1 Black", "pinned.jpg", view="detail", quality=0.1),
+        _result(2, "CTM T SS1 Black", "new.jpg", view="packshot", quality=0.99),
+    ]
+    results[0].manual_rank = 1   # only the first was ordered by hand
+
+    assign_positions(results)
+
+    # The newcomer would win on merit, but it must not displace a hand-set main.
+    assert {r.filename: r.position for r in results} == {"pinned.jpg": 1, "new.jpg": 2}
+
+
+def test_folders_with_no_hand_ordering_still_rank_automatically():
+    results = [
+        _result(1, "CTM T SS1 Black", "detail.jpg", view="detail", quality=0.2),
+        _result(2, "CTM T SS1 Black", "packshot.jpg", view="packshot", quality=0.95),
+    ]
+    assign_positions(results)
+    assert {r.filename: r.position for r in results} == {"packshot.jpg": 1, "detail.jpg": 2}
+
+
+def test_a_catalogue_page_never_outranks_the_brands_own_packshot():
+    """Catalogue extracts are crops of a printed layout. Their "_p092_01" suffix
+    is a page index from our own extractor, not a brand main-image marker."""
+    catalogue = _result(1, "CTM T SS1 Black", "DIME SPRING 2027 - CATALOG_p092_01.jpg")
+    catalogue.source = "catalog"
+    packshot = _result(2, "CTM T SS1 Black", "ACCESSORIES_SP27_CARABINER_BLACK.png")
+
+    assign_positions([catalogue, packshot])
+
+    assert packshot.position == 1
+    assert catalogue.position == 2
+
+
 def test_unmatched_photos_get_no_position():
     results = [_result(1, "", "orphan.jpg")]
     assign_positions(results)
@@ -422,6 +474,97 @@ def test_no_conflict_flag_when_every_group_already_has_a_photo(groups):
     ]
     results[2].runner_up = "CTM T SS1 White"
     assert flag_conflicts(results, groups) == 0
+
+
+# ── Catalogue PDFs ───────────────────────────────────────────────────────────
+
+def _pdf_with_smask(path: Path, size: int = 256) -> None:
+    """A one-page PDF holding a black image whose SMask hides the right half.
+
+    This is the shape the real Dime catalogue uses: the colour channels under a
+    transparent area are black, and the transparency lives in a separate SMask
+    stream. Ignoring that mask is what produced black rectangles.
+    """
+    import zlib
+
+    rgb = zlib.compress(b"\x00\x00\x00" * (size * size))
+    half = size // 2
+    mask = zlib.compress(b"".join(
+        b"\xff" * half + b"\x00" * (size - half) for _ in range(size)
+    ))
+    content = b"q 200 0 0 200 0 0 cm /Im0 Do Q"
+
+    objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]"
+        b"/Resources<</XObject<</Im0 4 0 R>>>>/Contents 6 0 R>>",
+        (f"<</Type/XObject/Subtype/Image/Width {size}/Height {size}"
+         f"/ColorSpace/DeviceRGB/BitsPerComponent 8/SMask 5 0 R"
+         f"/Filter/FlateDecode/Length {len(rgb)}>>").encode()
+        + b"stream\n" + rgb + b"\nendstream",
+        (f"<</Type/XObject/Subtype/Image/Width {size}/Height {size}"
+         f"/ColorSpace/DeviceGray/BitsPerComponent 8"
+         f"/Filter/FlateDecode/Length {len(mask)}>>").encode()
+        + b"stream\n" + mask + b"\nendstream",
+        f"<</Length {len(content)}>>".encode() + b"stream\n" + content + b"\nendstream",
+    ]
+
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (f"trailer\n<</Size {len(objects) + 1}/Root 1 0 R>>\n"
+            f"startxref\n{xref_at}\n%%EOF\n").encode()
+    path.write_bytes(bytes(out))
+
+
+def test_pdf_images_are_flattened_onto_white_not_black(tmp_path):
+    """The black-images bug: PDF transparency is a separate SMask stream, and
+    the colour underneath it is black. It must be composited onto white."""
+    from app.core.image_sources import extract_pdf_images
+
+    pdf = tmp_path / "catalog.pdf"
+    _pdf_with_smask(pdf)
+    files = extract_pdf_images(pdf, tmp_path / "out")
+    assert len(files) == 1
+
+    with Image.open(files[0]) as img:
+        img = img.convert("RGB")
+        w, h = img.size
+        opaque = img.getpixel((w // 4, h // 2))       # masked in — the product
+        transparent = img.getpixel((3 * w // 4, h // 2))  # masked out — background
+
+    assert max(opaque) < 40, "the visible part should stay dark"
+    assert min(transparent) > 215, "the transparent part must be white, not black"
+
+
+def test_catalogue_pages_are_marked_so_they_can_be_ranked_lower(tmp_path):
+    """Extracted pages go in their own directory; collect_images tags them so a
+    page crop never outranks the brand's own packshot for the main slot."""
+    from app.core.image_sources import CATALOG_DIR_NAME, expand_pdfs
+
+    source = tmp_path / "source"
+    source.mkdir()
+    _pdf_with_smask(source / "catalog.pdf")
+    _make_image(source / "BRAND_PACKSHOT.png")
+
+    assert expand_pdfs(source) == 1
+    assert not (source / "catalog.pdf").exists()      # replaced by its photos
+
+    images = collect_images(source)
+    by_name = {i.filename: i for i in images}
+    assert by_name["BRAND_PACKSHOT.png"].source != "catalog"
+    page = next(i for i in images if i.filename.startswith("catalog_p"))
+    assert page.source == "catalog"
+    assert CATALOG_DIR_NAME in Path(page.path).parts
 
 
 # ── Link handling ────────────────────────────────────────────────────────────

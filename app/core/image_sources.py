@@ -276,6 +276,113 @@ def fetch_direct(url: str, dest_dir: Path) -> list[Path]:
 
 # ── PDF catalogue → images ───────────────────────────────────────────────────
 
+_PDF_RAW_MODES = {
+    ("DeviceRGB", 8): "RGB",
+    ("DeviceGray", 8): "L",
+    ("DeviceCMYK", 8): "CMYK",
+    ("CalRGB", 8): "RGB",
+    ("CalGray", 8): "L",
+}
+
+
+def _resolve(obj):
+    """Follow a pdfminer indirect reference to the object it points at."""
+    return obj.resolve() if hasattr(obj, "resolve") else obj
+
+
+def _colorspace_name(stream) -> str:
+    cs = _resolve((stream.attrs or {}).get("ColorSpace"))
+    if isinstance(cs, list) and cs:
+        cs = cs[0]
+    return str(getattr(cs, "name", cs) or "").strip("/'\" ")
+
+
+def _open_pdf_image(stream):
+    """Decode one PDF image XObject into a PIL image, or None.
+
+    Most streams (JPEG, JPEG2000, PNG-ish) are self-describing and PIL opens
+    them directly. Flate/LZW-compressed streams are bare samples with no
+    header, so those are rebuilt from the stream's own Width/Height/ColorSpace.
+    """
+    from PIL import Image
+
+    raw = stream.get_data()
+    if not raw:
+        return None
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+        return img
+    except Exception:
+        pass
+
+    attrs = stream.attrs or {}
+    try:
+        width = int(_resolve(attrs.get("Width")))
+        height = int(_resolve(attrs.get("Height")))
+        bpc = int(_resolve(attrs.get("BitsPerComponent")) or 8)
+    except (TypeError, ValueError):
+        return None
+    mode = _PDF_RAW_MODES.get((_colorspace_name(stream), bpc))
+    if not mode or width <= 0 or height <= 0:
+        return None
+    expected = width * height * len(mode)
+    if len(raw) < expected:
+        return None
+    try:
+        return Image.frombytes(mode, (width, height), raw[:expected])
+    except Exception:
+        return None
+
+
+def _pdf_stream_to_rgb(stream):
+    """One PDF image as a flattened RGB image on a white background.
+
+    PDFs keep transparency in a separate **SMask** stream, and the colour
+    channels underneath a transparent area are usually black. Ignoring the
+    SMask is what turned catalogue packshots into black rectangles — so the
+    mask is decoded and used to composite the image onto white, which is what
+    the page itself renders.
+    """
+    from PIL import Image
+
+    base = _open_pdf_image(stream)
+    if base is None:
+        return None
+
+    if base.mode == "CMYK":
+        base = base.convert("RGB")
+    elif base.mode == "P":
+        base = base.convert("RGBA")
+
+    # Transparency carried on the image itself (rare in PDFs, common in PNGs).
+    alpha = None
+    if base.mode in ("RGBA", "LA"):
+        alpha = base.split()[-1]
+        base = base.convert("RGB")
+    elif base.mode != "RGB":
+        base = base.convert("RGB")
+
+    # The PDF's own soft mask wins — it is the real transparency.
+    smask_ref = (stream.attrs or {}).get("SMask")
+    if smask_ref is not None:
+        try:
+            smask = _open_pdf_image(_resolve(smask_ref))
+            if smask is not None:
+                alpha = smask.convert("L")
+        except Exception:
+            pass
+
+    if alpha is None:
+        return base
+
+    if alpha.size != base.size:
+        alpha = alpha.resize(base.size, Image.LANCZOS)
+    flattened = Image.new("RGB", base.size, (255, 255, 255))
+    flattened.paste(base, mask=alpha)
+    return flattened
+
+
 def extract_pdf_images(pdf_path: Path, dest_dir: Path, min_pixels: int = 40_000) -> list[Path]:
     """Pull the embedded photos out of a catalogue/lookbook PDF.
 
@@ -285,8 +392,6 @@ def extract_pdf_images(pdf_path: Path, dest_dir: Path, min_pixels: int = 40_000)
         import pdfplumber
     except ImportError as e:  # pragma: no cover - dependency is in requirements
         raise SourceFetchError("PDF support is unavailable on this server.") from e
-
-    from PIL import Image
 
     saved: list[Path] = []
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -298,15 +403,13 @@ def extract_pdf_images(pdf_path: Path, dest_dir: Path, min_pixels: int = 40_000)
                     if stream is None:
                         continue
                     try:
-                        raw = stream.get_data()
-                        with Image.open(io.BytesIO(raw)) as img:
-                            if img.width * img.height < min_pixels:
-                                continue
-                            if img.mode not in ("RGB", "L"):
-                                img = img.convert("RGB")
-                            dest = dest_dir / f"{pdf_path.stem}_p{page_no:03d}_{img_no:02d}.jpg"
-                            img.save(dest, format="JPEG", quality=92)
-                            saved.append(dest)
+                        img = _pdf_stream_to_rgb(stream)
+                        if img is None or img.width * img.height < min_pixels:
+                            continue
+                        dest = dest_dir / f"{pdf_path.stem}_p{page_no:03d}_{img_no:02d}.jpg"
+                        img.save(dest, format="JPEG", quality=92)
+                        img.close()
+                        saved.append(dest)
                     except Exception:
                         continue
     except Exception as e:
@@ -321,12 +424,17 @@ def extract_pdf_images(pdf_path: Path, dest_dir: Path, min_pixels: int = 40_000)
     return saved
 
 
+# Catalogue pages land in their own directory so the matcher can tell a page
+# crop apart from the brand's own packshot and rank it accordingly.
+CATALOG_DIR_NAME = "_catalog_pages"
+
+
 def expand_pdfs(root: Path) -> int:
     """Replace every PDF under ``root`` with the photos extracted from it."""
     count = 0
     for pdf in list(root.rglob("*.pdf")):
         try:
-            extracted = extract_pdf_images(pdf, pdf.parent / f"{pdf.stem}_images")
+            extracted = extract_pdf_images(pdf, root / CATALOG_DIR_NAME / pdf.stem)
             count += len(extracted)
             pdf.unlink(missing_ok=True)
         except SourceFetchError as e:

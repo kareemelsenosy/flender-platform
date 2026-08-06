@@ -40,6 +40,7 @@ from typing import Any, Callable, Iterable
 
 from PIL import Image, ImageOps
 
+from app.core.image_sources import CATALOG_DIR_NAME
 from app.services.ai_service import (  # noqa: F401  (private helpers, same app)
     _call_ai_vision,
     _extract_json,
@@ -367,11 +368,15 @@ def collect_images(root: str | Path, source_label: str = "") -> list[SourceImage
         if digest in seen:
             continue
 
+        # Pages pulled out of a catalogue PDF are crops of a printed layout,
+        # not the brand's own packshot — the matcher ranks them lower for the
+        # main slot.
+        from_catalog = CATALOG_DIR_NAME in path.parts
         image = SourceImage(
             index=len(images) + 1,
             path=str(path),
             filename=path.name,
-            source=source_label or path.parent.name,
+            source="catalog" if from_catalog else (source_label or path.parent.name),
             width=width, height=height, size_bytes=size, sha1=digest,
         )
         seen[digest] = image
@@ -413,10 +418,18 @@ def _filename_direct_match(image: SourceImage, groups: list[ItemGroup]) -> ItemG
     return None
 
 
+# Catalogue extracts are named "<pdf>_p012_03" by extract_pdf_images. That
+# trailing number is a page/slot index, not the brand's main-image marker.
+_CATALOG_EXTRACT_SUFFIX = re.compile(r"_p\d{2,4}_\d{2}$")
+
+
 def _main_image_order(filename: str) -> int:
     """Trailing ``_1`` / ``-01`` in a filename is the brand's own main-image
     marker; keep that ordering when the photos arrive already named."""
-    m = re.search(r"[_\-\s](\d{1,3})$", Path(filename).stem)
+    stem = Path(filename).stem
+    if _CATALOG_EXTRACT_SUFFIX.search(stem):
+        return 999
+    m = re.search(r"[_\-\s](\d{1,3})$", stem)
     return int(m.group(1)) if m else 999
 
 
@@ -792,6 +805,7 @@ class MatchResult:
     position: int = 0           # 1 = main image inside its folder
     candidates: list[dict] = field(default_factory=list)
     flagged: str = ""           # forced-review note set by the conflict pass
+    manual_rank: int = 0        # >0 when the user ordered this folder by hand
 
     @property
     def needs_review(self) -> bool:
@@ -807,6 +821,7 @@ class MatchResult:
             "method": self.method, "runner_up": self.runner_up,
             "description": self.description, "position": self.position,
             "candidates": self.candidates, "flagged": self.flagged,
+            "manual_rank": self.manual_rank,
             "needs_review": self.needs_review,
         }
 
@@ -826,6 +841,7 @@ class MatchResult:
             position=int(data.get("position") or 0),
             candidates=data.get("candidates") or [],
             flagged=str(data.get("flagged") or ""),
+            manual_rank=int(data.get("manual_rank") or 0),
         )
 
 
@@ -960,9 +976,17 @@ def flag_conflicts(results: list[MatchResult], groups: list[ItemGroup]) -> int:
 def assign_positions(results: list[MatchResult]) -> None:
     """Number the photos inside each item group — 1 is the main image.
 
-    Ranking: the brand's own trailing number if the file was already named,
-    then how well the shot works as a main image (view type, then the model's
-    quality score, then match confidence, then pixel count).
+    Automatic ranking: the brand's own trailing number if the file was already
+    named, then how well the shot works as a main image (view type, then the
+    model's quality score, then match confidence), and a photo pulled out of a
+    catalogue page loses to the brand's own packshot.
+
+    **Hand-set order wins.** This runs again after every correction, so a folder
+    the user has ordered themselves must come back the way they left it —
+    otherwise reassigning one photo silently resets the main image of every
+    other product they had already fixed. Photos carrying a ``manual_rank`` keep
+    that order; anything newly added to the folder is ranked automatically and
+    placed behind them.
     """
     by_code: dict[str, list[MatchResult]] = {}
     for result in results:
@@ -970,17 +994,24 @@ def assign_positions(results: list[MatchResult]) -> None:
         if result.code:
             by_code.setdefault(result.code, []).append(result)
 
+    def auto_rank(r: MatchResult):
+        view = str((r.description or {}).get("view") or "other").lower()
+        return (
+            _main_image_order(r.filename),
+            1 if r.source == "catalog" else 0,
+            _VIEW_RANK.get(view, _VIEW_RANK["other"]),
+            -_clamp01((r.description or {}).get("quality")),
+            -r.confidence,
+            r.filename.lower(),
+        )
+
     for group_results in by_code.values():
-        def rank(r: MatchResult):
-            view = str((r.description or {}).get("view") or "other").lower()
-            return (
-                _main_image_order(r.filename),
-                _VIEW_RANK.get(view, _VIEW_RANK["other"]),
-                -_clamp01((r.description or {}).get("quality")),
-                -r.confidence,
-                r.filename.lower(),
-            )
-        for position, result in enumerate(sorted(group_results, key=rank), start=1):
+        pinned = sorted(
+            (r for r in group_results if r.manual_rank > 0),
+            key=lambda r: r.manual_rank,
+        )
+        rest = sorted((r for r in group_results if r.manual_rank <= 0), key=auto_rank)
+        for position, result in enumerate(pinned + rest, start=1):
             result.position = position
 
 
