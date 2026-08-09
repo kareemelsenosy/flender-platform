@@ -172,6 +172,7 @@ def test_run_files_photos_into_item_group_folders(client, login_as, stub_ai):
     result = status["result"]
     assert result["summary"] == {
         "images": 3, "matched": 2, "unmatched": 1, "review": 2,
+        "reference": 0, "deleted": 0,
         "groups_total": 3, "groups_covered": 1, "groups_missing": 2,
     }
 
@@ -385,6 +386,294 @@ def test_a_missing_thumbnail_is_rebuilt_on_demand(client, login_as, stub_ai, tes
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert (thumbs / f"{photo['index']}.jpg").is_file()   # and it got cached
+
+
+# ── Catalogue images are reference, not product images ───────────────────────
+
+def _catalog_zip() -> bytes:
+    """Brand photos plus catalogue pages, laid out the way expand_pdfs leaves them."""
+    from app.core.image_sources import CATALOG_DIR_NAME
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("MOCK_A.png", _png((10, 10, 10)))
+        zf.writestr(f"{CATALOG_DIR_NAME}/cat/catalog_p001_01.png", _png((70, 70, 70)))
+        zf.writestr(f"{CATALOG_DIR_NAME}/cat/catalog_p002_01.png", _png((90, 90, 90)))
+    return buf.getvalue()
+
+
+@pytest.fixture
+def stub_ai_catalog(monkeypatch):
+    """Everything lands on the same item group, brand photo and pages alike."""
+    sorter = importlib.import_module("app.core.image_sorter")
+    monkeypatch.setattr(sorter, "ai_available", lambda: True)
+    monkeypatch.setattr(sorter, "describe_image", lambda image, cats, colors, brand="": {
+        "category": "T-SHIRTS", "product_type": "t-shirt", "primary_color": "Black",
+        "secondary_colors": [], "pattern": "", "visible_text": [], "graphic": "",
+        "view": "front", "quality": 0.8,
+    })
+    monkeypatch.setattr(sorter, "match_one_image", lambda image, desc, candidates, brand="": {
+        "code": "CTM T SS1 Black", "runner_up": "", "confidence": 0.95, "reason": "stubbed",
+    })
+
+
+def _run_catalog(client, timeout=15):
+    resp = client.post("/image-sort/run", files=[
+        ("master", ("master.xlsx", _master_bytes(), "application/octet-stream")),
+        ("images", ("drop.zip", _catalog_zip(), "application/zip")),
+    ])
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = client.get(f"/image-sort/run/{run_id}/status").json()
+        if status["status"] in ("done", "error"):
+            return run_id, status
+        time.sleep(0.1)
+    pytest.fail("the run never finished")
+
+
+def test_catalogue_pages_are_shown_for_comparison_but_not_downloaded(
+    client, login_as, stub_ai_catalog
+):
+    """Hamid's rule: the brand's photos are the product images; the catalogue is
+    there so you can eyeball that the match is right."""
+    login_as()
+    run_id, status = _run_catalog(client)
+    folder = status["result"]["folders"][0]
+
+    assert [p["filename"] for p in folder["photos"]] == ["MOCK_A.png"]
+    assert len(folder["reference"]) == 2
+    assert all(p["is_reference"] and p["is_catalog"] for p in folder["reference"])
+    # Reference images get no output name — they are not named for SAP.
+    assert all(p["output_name"] == "" for p in folder["reference"])
+    assert status["result"]["summary"]["reference"] == 2
+
+    zipped = client.get(f"/image-sort/download/{run_id}")
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+        assert zf.namelist() == ["CTM T SS1 Black/CTM_T_SS1_Black_1.png"]
+
+
+def test_the_catalogue_fills_in_when_the_brand_sent_no_photo(
+    client, login_as, stub_ai_catalog
+):
+    """The other half: a product with no brand photo still gets an image."""
+    login_as()
+    run_id, status = _run_catalog(client)
+    brand_photo = status["result"]["folders"][0]["photos"][0]
+
+    after = client.post(f"/image-sort/run/{run_id}/delete-photo",
+                        json={"index": brand_photo["index"]}).json()["result"]
+
+    folder = after["folders"][0]
+    assert len(folder["photos"]) == 2, "catalogue pages are promoted when nothing else remains"
+    assert folder["reference"] == []
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/image-sort/download/{run_id}").content)) as zf:
+        assert len(zf.namelist()) == 2
+
+
+def test_the_catalogue_export_toggle_puts_them_in_the_download(
+    client, login_as, stub_ai_catalog
+):
+    login_as()
+    run_id, _status = _run_catalog(client)
+
+    after = client.post(f"/image-sort/run/{run_id}/catalog-export",
+                        json={"export_catalog": True}).json()["result"]
+    assert after["export_catalog"] is True
+    assert len(after["folders"][0]["photos"]) == 3
+    assert after["folders"][0]["reference"] == []
+
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/image-sort/download/{run_id}").content)) as zf:
+        assert len(zf.namelist()) == 3
+    # The brand's own photo still holds the main slot.
+    assert next(p for p in after["folders"][0]["photos"]
+                if p["position"] == 1)["filename"] == "MOCK_A.png"
+
+
+def test_the_report_marks_which_rows_are_reference(client, login_as, stub_ai_catalog):
+    login_as()
+    run_id, _status = _run_catalog(client)
+    text = client.get(f"/image-sort/report/{run_id}").text
+    assert "catalogue reference" in text
+    assert "product image" in text
+
+
+# ── Fast delete ──────────────────────────────────────────────────────────────
+
+def test_deleting_a_photo_removes_it_from_the_folder_and_the_zip(client, login_as, stub_ai):
+    """The X on the tile: one click, gone, and the rest close up behind it."""
+    login_as()
+    run_id, status = _run_and_wait(client)
+    folder = status["result"]["folders"][0]
+    assert len(folder["photos"]) == 2
+    main = next(p for p in folder["photos"] if p["position"] == 1)
+
+    after = client.post(f"/image-sort/run/{run_id}/delete-photo",
+                        json={"index": main["index"]}).json()["result"]
+
+    remaining = after["folders"][0]["photos"]
+    assert [p["index"] for p in remaining] != [main["index"]]
+    assert len(remaining) == 1
+    assert remaining[0]["position"] == 1          # closed up into the main slot
+    assert after["summary"]["deleted"] == 1
+
+    zipped = client.get(f"/image-sort/download/{run_id}")
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+        assert zf.namelist() == ["CTM T SS1 Black/CTM_T_SS1_Black_1.png"]
+
+
+def test_a_deleted_photo_can_be_restored(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    photo = status["result"]["folders"][0]["photos"][0]
+
+    client.post(f"/image-sort/run/{run_id}/delete-photo", json={"index": photo["index"]})
+    after = client.post(f"/image-sort/run/{run_id}/delete-photo",
+                        json={"index": photo["index"], "deleted": False}).json()["result"]
+
+    assert photo["index"] in [p["index"] for p in after["folders"][0]["photos"]]
+    assert after["summary"]["deleted"] == 0
+
+
+# ── Drag to reorder ──────────────────────────────────────────────────────────
+
+def test_reorder_sets_the_output_numbering(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    folder = status["result"]["folders"][0]
+    order = [p["index"] for p in sorted(folder["photos"], key=lambda p: p["position"])]
+    flipped = list(reversed(order))
+
+    after = client.post(f"/image-sort/run/{run_id}/reorder",
+                        json={"code": folder["code"], "order": flipped}).json()["result"]
+
+    got = {p["index"]: p["position"] for p in after["folders"][0]["photos"]}
+    assert [got[i] for i in flipped] == [1, 2]
+
+
+def test_reorder_survives_an_edit_to_another_product(client, login_as, stub_ai):
+    """Same guarantee as Make main — a hand-set order is not recomputed away."""
+    login_as()
+    run_id, status = _run_and_wait(client)
+    folder = status["result"]["folders"][0]
+    order = [p["index"] for p in sorted(folder["photos"], key=lambda p: p["position"])]
+    flipped = list(reversed(order))
+    client.post(f"/image-sort/run/{run_id}/reorder",
+                json={"code": folder["code"], "order": flipped})
+
+    orphan = status["result"]["unmatched"][0]
+    after = client.post(f"/image-sort/run/{run_id}/assign",
+                        json={"index": orphan["index"], "code": "CTM H HD9 Pink"}).json()["result"]
+
+    tee = next(f for f in after["folders"] if f["code"] == "CTM T SS1 Black")
+    assert next(p for p in tee["photos"] if p["position"] == 1)["index"] == flipped[0]
+
+
+def test_reorder_rejects_an_order_that_is_not_the_folders_photos(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    folder = status["result"]["folders"][0]
+
+    resp = client.post(f"/image-sort/run/{run_id}/reorder",
+                       json={"code": folder["code"], "order": [999]})
+    assert resp.status_code == 400
+
+
+# ── Approve ──────────────────────────────────────────────────────────────────
+
+def test_approving_a_folder_moves_it_out_of_the_working_list(client, login_as, stub_ai):
+    """Big collections stop being one endless scroll."""
+    login_as()
+    run_id, status = _run_and_wait(client)
+    code = status["result"]["folders"][0]["code"]
+
+    after = client.post(f"/image-sort/run/{run_id}/approve", json={"code": code}).json()["result"]
+    assert after["approved_count"] == 1
+    assert next(f for f in after["folders"] if f["code"] == code)["approved"] is True
+
+    # Approving is a review state, not a change to the output.
+    zipped = client.get(f"/image-sort/download/{run_id}")
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+        assert len(zf.namelist()) == 2
+
+
+def test_approval_can_be_reopened(client, login_as, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    code = status["result"]["folders"][0]["code"]
+
+    client.post(f"/image-sort/run/{run_id}/approve", json={"code": code})
+    after = client.post(f"/image-sort/run/{run_id}/approve",
+                        json={"code": code, "approved": False}).json()["result"]
+    assert after["approved_count"] == 0
+
+
+def test_approve_rejects_an_unknown_item_group(client, login_as, stub_ai):
+    login_as()
+    run_id, _status = _run_and_wait(client)
+    resp = client.post(f"/image-sort/run/{run_id}/approve", json={"code": "NOPE"})
+    assert resp.status_code == 400
+
+
+# ── Assigning a run to a colleague ───────────────────────────────────────────
+
+def test_a_run_can_be_handed_to_a_colleague_who_can_then_edit_it(client, login_as, make_user, stub_ai):
+    login_as()
+    run_id, status = _run_and_wait(client)
+    bob = make_user(username="bob", email="bob@flendergroup.com")
+
+    resp = client.post(f"/image-sort/run/{run_id}/assign-user", json={"user_id": bob["id"]})
+    assert resp.status_code == 200
+    assert resp.json()["assigned_to_name"] == "bob"
+
+    client.post("/logout")
+    client.post("/login", data={"username": "bob", "password": bob["password"]},
+                follow_redirects=False)
+
+    assert client.get(f"/image-sort/run/{run_id}").status_code == 200
+    photo = status["result"]["folders"][0]["photos"][0]
+    assert client.post(f"/image-sort/run/{run_id}/delete-photo",
+                       json={"index": photo["index"]}).status_code == 200
+    # It shows up in their own list of work.
+    assert "to check for" in client.get("/image-sort").text
+
+
+def test_the_assignee_cannot_delete_or_reassign_the_run(client, login_as, make_user, stub_ai):
+    """They were handed the checking, not the run."""
+    login_as()
+    run_id, _status = _run_and_wait(client)
+    bob = make_user(username="bob", email="bob@flendergroup.com")
+    client.post(f"/image-sort/run/{run_id}/assign-user", json={"user_id": bob["id"]})
+
+    client.post("/logout")
+    client.post("/login", data={"username": "bob", "password": bob["password"]},
+                follow_redirects=False)
+
+    assert client.post(f"/image-sort/run/{run_id}/delete").status_code == 404
+    assert client.post(f"/image-sort/run/{run_id}/assign-user",
+                       json={"user_id": bob["id"]}).status_code == 404
+
+
+def test_a_run_can_be_unassigned(client, login_as, make_user, stub_ai):
+    login_as()
+    run_id, _status = _run_and_wait(client)
+    bob = make_user(username="bob", email="bob@flendergroup.com")
+    client.post(f"/image-sort/run/{run_id}/assign-user", json={"user_id": bob["id"]})
+
+    resp = client.post(f"/image-sort/run/{run_id}/assign-user", json={"user_id": ""})
+    assert resp.json()["assigned_to"] is None
+
+    client.post("/logout")
+    client.post("/login", data={"username": "bob", "password": bob["password"]},
+                follow_redirects=False)
+    assert client.get(f"/image-sort/run/{run_id}").status_code == 404
+
+
+def test_teammates_lists_others_but_not_yourself(client, login_as, make_user):
+    login_as()
+    make_user(username="bob", email="bob@flendergroup.com")
+    names = [u["username"] for u in client.get("/image-sort/teammates").json()["users"]]
+    assert "bob" in names and "alice" not in names
 
 
 # ── Ownership ────────────────────────────────────────────────────────────────

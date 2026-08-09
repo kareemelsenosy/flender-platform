@@ -54,6 +54,31 @@ named `_1`. This tool does that filing.
 `<ITEM_GROUP_CODE>_1.<ext>` for the main image and `_2`, `_3`… for the rest, plus
 a match-report CSV that also lists every item group still without a photo.
 
+### The brand's photos are the product images
+
+The catalogue is a *second opinion*, not a second source of product images. When
+a product has a real photo from the brand, any catalogue page matched to it is
+kept as **reference**: shown next to the photo so you can see at a glance that
+the tool matched the right thing, but not named, not counted, and not in the
+ZIP. Catalogue pages are only promoted to product images when the brand sent no
+photo for that product at all — that is the "fill in the missing images" half of
+the job. A per-run toggle overrides this if you do want the extra views.
+
+### Reviewing
+
+- **✕ on any tile** removes an image in one click (reversible; the report still
+  records it as rejected).
+- **Drag tiles left/right** to set which is `_1`, `_2`, `_3`.
+- **Approve** signs a folder off and drops it out of the working list, so a
+  large collection stops being one endless scroll. The tabs are To do / To
+  check / Approved / Unmatched / No photo.
+- **Hand to a colleague** assigns the run to another user for quality control.
+  They get the same editing rights and see it in their own list; only the owner
+  can reassign or delete it.
+
+Hand-set order and approvals survive every later correction — reassigning one
+photo never re-shuffles a folder you already fixed.
+
 ### How the matching works
 
 1. **Filename fast path** — a photo whose name already carries the item or style

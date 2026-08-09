@@ -117,6 +117,21 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE unique_items ADD COLUMN provenance_json TEXT DEFAULT '{}'"
                 ))
+        # Image Sorter: QC sign-off, hand-off to a colleague, catalogue export
+        if "image_sort_runs" in insp.get_table_names():
+            sort_cols = {c["name"] for c in insp.get_columns("image_sort_runs")}
+            if "approved_json" not in sort_cols:
+                conn.execute(text(
+                    "ALTER TABLE image_sort_runs ADD COLUMN approved_json TEXT DEFAULT '[]'"
+                ))
+            if "assigned_to_id" not in sort_cols:
+                conn.execute(text(
+                    "ALTER TABLE image_sort_runs ADD COLUMN assigned_to_id INTEGER"
+                ))
+            if "export_catalog" not in sort_cols:
+                conn.execute(text(
+                    "ALTER TABLE image_sort_runs ADD COLUMN export_catalog BOOLEAN DEFAULT false"
+                ))
         if "search_cache" in insp.get_table_names():
             cache_cols = {c["name"] for c in insp.get_columns("search_cache")}
             if "search_version" not in cache_cols:

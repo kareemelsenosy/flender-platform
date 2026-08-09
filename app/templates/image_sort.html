@@ -87,11 +87,13 @@
             {% if h.status == 'done' %}· {{ h.folders }} folders · {{ h.matched }} filed{% if h.review %} · <span style="color:#b45309">{{ h.review }} to check</span>{% endif %}
             {% elif h.status == 'running' %}· <span style="color:#b45309">processing…</span>
             {% elif h.status == 'error' %}· <span style="color:var(--danger,#c0392b)">failed</span>{% endif %}
+            {% if not h.mine %}· <span style="color:#7C3AED;font-weight:600">to check for {{ h.owner }}</span>
+            {% elif h.assigned_to %}· <span style="color:#7C3AED">with {{ h.assigned_to }}</span>{% endif %}
           </div>
         </div>
         <button class="btn btn-primary btn-sm hist-open" data-run-id="{{ h.id }}" type="button">Open</button>
         <a class="btn btn-outline btn-sm" href="/image-sort/download/{{ h.id }}">ZIP</a>
-        <button class="btn btn-danger btn-sm hist-del" data-run-id="{{ h.id }}" type="button">Delete</button>
+        {% if h.mine %}<button class="btn btn-danger btn-sm hist-del" data-run-id="{{ h.id }}" type="button">Delete</button>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -120,16 +122,32 @@
       <div class="stat" id="stat-missing"></div>
     </div>
 
-    <div style="display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap">
+    <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
       <a id="download-btn" class="btn btn-primary" href="#">Download folder ZIP</a>
       <a id="report-btn" class="btn btn-outline" href="#">Match report (CSV)</a>
       <button class="btn btn-outline" id="reset-btn" type="button">Sort another drop</button>
       <div style="margin-left:auto;display:flex;gap:6px" id="view-tabs">
-        <button class="tab on" data-view="folders" type="button">Folders</button>
+        <button class="tab on" data-view="folders" type="button">To do</button>
         <button class="tab" data-view="review" type="button">To check</button>
+        <button class="tab" data-view="approved" type="button">Approved</button>
         <button class="tab" data-view="unmatched" type="button">Unmatched</button>
         <button class="tab" data-view="missing" type="button">No photo</button>
       </div>
+    </div>
+
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:18px;
+                font-size:0.8rem;color:var(--gray-500)">
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer">
+        <input type="checkbox" id="catalog-export-toggle">
+        Also export catalogue images
+        <span style="color:var(--gray-400)">— off means they stay a visual check only</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:7px;margin-left:auto">
+        Hand to a colleague to check
+        <select id="assign-select" class="txt" style="width:190px;font-size:0.8rem;padding:5px 8px">
+          <option value="">Nobody — just me</option>
+        </select>
+      </label>
     </div>
 
     <div id="results-body"></div>
@@ -170,6 +188,33 @@
   .shot-actions{display:flex;gap:4px;padding:0 8px 8px}
   .shot-actions button{flex:1;font-size:0.66rem;font-weight:600;padding:3px 4px;border-radius:6px;border:1px solid var(--gray-200,#ddd);background:#fff;cursor:pointer}
   .shot-actions button:hover{border-color:#111}
+
+  /* Delete — always reachable, one click, no dropdown */
+  .shot-x{position:absolute;top:5px;right:5px;width:22px;height:22px;border-radius:50%;
+          border:none;background:rgba(17,17,17,0.55);color:#fff;font-size:0.8rem;line-height:1;
+          cursor:pointer;opacity:0;transition:opacity .12s;z-index:2}
+  .shot:hover .shot-x, .shot-x:focus{opacity:1}
+  .shot-x:hover{background:#c0392b}
+
+  /* Drag to reorder */
+  .shot[draggable="true"]{cursor:grab}
+  .shot.dragging{opacity:0.4}
+  .shot.drop-before{box-shadow:-3px 0 0 0 #111}
+  .shot.drop-after{box-shadow:3px 0 0 0 #111}
+  .drag-hint{font-size:0.7rem;color:var(--gray-400);margin-left:auto}
+
+  /* Catalogue reference — visibly not part of the product images */
+  .ref-strip{margin-top:12px;padding-top:11px;border-top:1px dashed var(--gray-200,#e6e6e6)}
+  .ref-label{font-size:0.7rem;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;
+             color:var(--gray-400,#999);margin-bottom:8px}
+  .ref-shots{display:flex;gap:8px;flex-wrap:wrap}
+  .ref{width:96px;position:relative;opacity:0.9}
+  .ref img{width:96px;height:96px;object-fit:contain;background:#fff;
+           border:1px solid var(--gray-200,#eee);border-radius:8px;display:block}
+  .ref .cap{font-size:0.63rem;color:var(--gray-400);margin-top:3px;line-height:1.3;word-break:break-all}
+  .approved-badge{background:#dcfce7;color:#166534;padding:2px 9px;border-radius:99px;
+                  font-size:0.68rem;font-weight:700}
+  .folder.approved{opacity:0.72}
   .badge{position:absolute;top:6px;left:6px;font-size:0.62rem;font-weight:800;padding:2px 6px;border-radius:99px}
   .badge-main{background:#111;color:#fff}
   .badge-check{background:#fef3c7;color:#92400e;left:auto;right:6px}
@@ -348,12 +393,30 @@
     const s = result.summary;
     stat('stat-folders', s.groups_covered, 'Folders');
     stat('stat-filed', s.matched, 'Photos filed');
-    stat('stat-review', s.review, 'To check');
+    stat('stat-review', `${result.approved_count} / ${result.folders.length}`, 'Approved');
     stat('stat-missing', s.groups_missing, 'Still no photo');
     $('download-btn').href = `/image-sort/download/${result.id}`;
     $('report-btn').href = `/image-sort/report/${result.id}`;
+    $('catalog-export-toggle').checked = !!result.export_catalog;
+    loadTeammates(result.assigned_to);
     buildOptions();
     paint();
+  }
+
+  // Colleagues are fetched once per session; the run's current assignee is
+  // reapplied on every render so the control never drifts from the server.
+  let TEAMMATES = null;
+  async function loadTeammates(assignedTo){
+    const sel = $('assign-select');
+    if (TEAMMATES === null){
+      try {
+        const resp = await fetch('/image-sort/teammates');
+        TEAMMATES = (await resp.json()).users || [];
+      } catch (e){ TEAMMATES = []; }
+      sel.innerHTML = '<option value="">Nobody — just me</option>'
+        + TEAMMATES.map(u => `<option value="${u.id}">${esc(u.username)}</option>`).join('');
+    }
+    sel.value = assignedTo ? String(assignedTo) : '';
   }
 
   function paint(){
@@ -396,11 +459,15 @@
     }
 
     let folders = DATA.folders;
-    if (view === 'review') folders = folders.filter(f => f.needs_review);
+    if (view === 'approved') folders = folders.filter(f => f.approved);
+    else if (view === 'review') folders = folders.filter(f => f.needs_review && !f.approved);
+    else folders = folders.filter(f => !f.approved);   // "To do"
+
     if (!folders.length){
-      body.innerHTML = view === 'review'
-        ? `<div class="empty">Nothing needs checking — every match was confident.</div>`
-        : `<div class="empty">No folders yet.</div>`;
+      const msg = view === 'approved' ? 'Nothing approved yet.'
+        : view === 'review' ? 'Nothing left to check.'
+        : 'Everything has been approved.';
+      body.innerHTML = `<div class="empty">${msg}</div>`;
       return;
     }
     body.innerHTML = folders.map(folderHtml).join('');
@@ -409,19 +476,30 @@
   function folderHtml(f){
     let photos = f.photos;
     if (view === 'review') photos = photos.filter(p => p.needs_review).concat(photos.filter(p => !p.needs_review));
-    return `<div class="folder ${f.needs_review ? 'flag' : ''}">
+    const ref = f.reference || [];
+    return `<div class="folder ${f.needs_review && !f.approved ? 'flag' : ''} ${f.approved ? 'approved' : ''}"
+                 data-code="${esc(f.code)}">
       <div class="folder-head">
         <span class="folder-code">${esc(f.folder)}</span>
         <span class="folder-meta">${esc(f.name)}${f.color ? ' · ' + esc(f.color) : ''}${f.category ? ' · ' + esc(f.category) : ''}</span>
-        <span class="folder-meta" style="margin-left:auto">${photos.length} photo${photos.length === 1 ? '' : 's'}</span>
+        ${f.approved ? '<span class="approved-badge">APPROVED</span>' : ''}
+        <span class="drag-hint">${photos.length > 1 ? 'drag to reorder · ' : ''}${photos.length} image${photos.length === 1 ? '' : 's'}</span>
+        <button type="button" class="btn btn-sm ${f.approved ? 'btn-outline' : 'btn-primary'}"
+                data-approve="${esc(f.code)}" data-approved="${f.approved ? '1' : '0'}"
+                style="margin-left:10px">${f.approved ? 'Reopen' : 'Approve'}</button>
       </div>
-      <div class="shots">${photos.map(p => shotHtml(p, f.code)).join('')}</div>
+      <div class="shots" data-folder="${esc(f.code)}">${photos.map(p => shotHtml(p, f.code)).join('')}</div>
+      ${ref.length ? `<div class="ref-strip">
+        <div class="ref-label">From the catalogue · comparison only, not downloaded</div>
+        <div class="ref-shots">${ref.map(refHtml).join('')}</div>
+      </div>` : ''}
     </div>`;
   }
 
   function shotHtml(p, code){
     const saw = [p.saw.product_type, p.saw.primary_color].filter(Boolean).join(' · ');
-    return `<div class="shot" data-index="${p.index}">
+    return `<div class="shot" data-index="${p.index}" ${code ? 'draggable="true"' : ''}>
+      <button class="shot-x" type="button" data-del="${p.index}" title="Remove this image">✕</button>
       ${p.position === 1 ? '<span class="badge badge-main">MAIN _1</span>' : ''}
       ${p.needs_review ? '<span class="badge badge-check">CHECK</span>' : ''}
       <img src="${p.thumb}" alt="${esc(p.filename)}" loading="lazy">
@@ -435,6 +513,15 @@
       <div class="shot-actions">
         ${p.position > 1 ? `<button type="button" data-main="${p.index}">Make main</button>` : ''}
       </div>
+    </div>`;
+  }
+
+  function refHtml(p){
+    return `<div class="ref" data-index="${p.index}">
+      <button class="shot-x" type="button" data-del="${p.index}" title="Remove this image">✕</button>
+      <img src="${p.thumb}" alt="${esc(p.filename)}" loading="lazy"
+           title="${esc(p.filename)}${p.saw.product_type ? ' — AI saw: ' + esc(p.saw.product_type) : ''}">
+      <div class="cap">${esc(p.filename.slice(0, 34))}</div>
     </div>`;
   }
 
@@ -452,29 +539,70 @@
     });
   }
 
+  /** POST JSON to a run endpoint and re-render from the server's reply. */
+  async function post(path, body){
+    if (!RUN_ID) return null;
+    const resp = await fetch(`/image-sort/run/${RUN_ID}/${path}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return null; }
+    if (data.result) render(data.result);
+    return data;
+  }
+
   // ── Corrections ─────────────────────────────────────────────────────────
   document.addEventListener('change', async (e) => {
     const sel = e.target.closest('.picker');
-    if (!sel || !RUN_ID) return;
-    sel.disabled = true;
-    const resp = await fetch(`/image-sort/run/${RUN_ID}/assign`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ index: Number(sel.dataset.index), code: sel.value }),
-    });
-    const data = await resp.json();
-    if (data.result) render(data.result); else sel.disabled = false;
+    if (sel && RUN_ID){
+      sel.disabled = true;
+      const data = await post('assign', { index: Number(sel.dataset.index), code: sel.value });
+      if (!data) sel.disabled = false;
+      return;
+    }
+
+    if (e.target.id === 'catalog-export-toggle' && RUN_ID){
+      await post('catalog-export', { export_catalog: e.target.checked });
+      return;
+    }
+
+    if (e.target.id === 'assign-select' && RUN_ID){
+      const sel2 = e.target;
+      sel2.disabled = true;
+      const resp = await fetch(`/image-sort/run/${RUN_ID}/assign-user`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ user_id: sel2.value }),
+      });
+      const data = await resp.json();
+      sel2.disabled = false;
+      if (data.error) alert(data.error);
+      return;
+    }
   });
 
   document.addEventListener('click', async (e) => {
+    const delBtn = e.target.closest('[data-del]');
+    if (delBtn && RUN_ID){
+      delBtn.disabled = true;
+      await post('delete-photo', { index: Number(delBtn.dataset.del), deleted: true });
+      return;
+    }
+
+    const approveBtn = e.target.closest('[data-approve]');
+    if (approveBtn && RUN_ID){
+      approveBtn.disabled = true;
+      await post('approve', {
+        code: approveBtn.dataset.approve,
+        approved: approveBtn.dataset.approved !== '1',
+      });
+      return;
+    }
+
     const mainBtn = e.target.closest('[data-main]');
     if (mainBtn && RUN_ID){
       mainBtn.disabled = true;
-      const resp = await fetch(`/image-sort/run/${RUN_ID}/main`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ index: Number(mainBtn.dataset.main) }),
-      });
-      const data = await resp.json();
-      if (data.result) render(data.result); else mainBtn.disabled = false;
+      await post('main', { index: Number(mainBtn.dataset.main) });
       return;
     }
 
@@ -503,11 +631,11 @@
       return;
     }
 
-    const delBtn = e.target.closest('.hist-del');
-    if (delBtn){
+    const histDelBtn = e.target.closest('.hist-del');
+    if (histDelBtn){
       if (!confirm('Delete this run and its stored photos?')) return;
-      await fetch(`/image-sort/run/${delBtn.dataset.runId}/delete`, { method: 'POST' });
-      delBtn.closest('.hist-row').remove();
+      await fetch(`/image-sort/run/${histDelBtn.dataset.runId}/delete`, { method: 'POST' });
+      histDelBtn.closest('.hist-row').remove();
       if (!document.querySelectorAll('.hist-row').length) show('history-card', false);
       return;
     }
@@ -518,6 +646,64 @@
       show('setup-card', true);
       show('history-card', document.querySelectorAll('.hist-row').length > 0);
     }
+  });
+
+  // ── Drag to reorder ─────────────────────────────────────────────────────
+  // Reordering only makes sense within one folder, so a drag that wanders into
+  // another folder is ignored rather than silently moving the photo.
+  let dragged = null;
+
+  function clearDropMarks(){
+    document.querySelectorAll('.shot.drop-before, .shot.drop-after')
+      .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+  }
+
+  document.addEventListener('dragstart', (e) => {
+    const shot = e.target.closest('.shot[draggable="true"]');
+    if (!shot){ return; }
+    dragged = shot;
+    shot.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox needs data set for the drag to start at all.
+    e.dataTransfer.setData('text/plain', shot.dataset.index);
+  });
+
+  document.addEventListener('dragend', () => {
+    if (dragged) dragged.classList.remove('dragging');
+    dragged = null;
+    clearDropMarks();
+  });
+
+  document.addEventListener('dragover', (e) => {
+    if (!dragged) return;
+    const over = e.target.closest('.shot');
+    if (!over || over === dragged) return;
+    if (over.closest('.shots') !== dragged.closest('.shots')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const box = over.getBoundingClientRect();
+    const after = e.clientX > box.left + box.width / 2;
+    clearDropMarks();
+    over.classList.add(after ? 'drop-after' : 'drop-before');
+  });
+
+  document.addEventListener('drop', async (e) => {
+    if (!dragged) return;
+    const over = e.target.closest('.shot');
+    const strip = dragged.closest('.shots');
+    if (!over || over === dragged || !strip || over.closest('.shots') !== strip){
+      clearDropMarks();
+      return;
+    }
+    e.preventDefault();
+
+    const box = over.getBoundingClientRect();
+    const after = e.clientX > box.left + box.width / 2;
+    strip.insertBefore(dragged, after ? over.nextSibling : over);
+    clearDropMarks();
+
+    const order = [...strip.querySelectorAll('.shot')].map(el => Number(el.dataset.index));
+    await post('reorder', { code: strip.dataset.folder, order });
   });
 })();
 </script>

@@ -52,7 +52,7 @@ from app.core.image_sources import (
     save_upload,
 )
 from app.database import SessionLocal, get_db
-from app.models import ImageSortRun
+from app.models import ImageSortRun, User
 from app.services.ai_service import ai_available
 from app.templates_config import templates
 
@@ -85,13 +85,22 @@ async def image_sort_page(request: Request, db: DBSession = Depends(get_db)):
     if not uid:
         return RedirectResponse("/login", status_code=302)
 
+    # Runs this user owns, plus any a colleague handed them to check.
+    from sqlalchemy import or_
     runs = (
         db.query(ImageSortRun)
-        .filter(ImageSortRun.user_id == uid)
+        .filter(or_(ImageSortRun.user_id == uid, ImageSortRun.assigned_to_id == uid))
         .order_by(ImageSortRun.created_at.desc())
         .limit(40)
         .all()
     )
+    names = {
+        u.id: u.username
+        for u in db.query(User.id, User.username).filter(
+            User.id.in_({r.user_id for r in runs} | {r.assigned_to_id for r in runs if r.assigned_to_id})
+        )
+    } if runs else {}
+
     history = [{
         "id": r.id,
         "name": r.name or "Untitled run",
@@ -101,6 +110,9 @@ async def image_sort_page(request: Request, db: DBSession = Depends(get_db)):
         "matched": r.matched_count,
         "review": r.review_count,
         "folders": r.folder_count,
+        "mine": r.user_id == uid,
+        "owner": names.get(r.user_id, ""),
+        "assigned_to": names.get(r.assigned_to_id, "") if r.assigned_to_id else "",
     } for r in runs]
 
     return templates.TemplateResponse(request, "image_sort.html", {
@@ -280,6 +292,19 @@ def _match_job(run_id: int, images, groups, brand: str) -> None:
 # ── Reading a run ────────────────────────────────────────────────────────────
 
 def _owned_run(db: DBSession, request: Request, run_id: int) -> ImageSortRun | None:
+    """The run, if this user may edit it — the owner or the QC assignee."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return None
+    run = db.get(ImageSortRun, run_id)
+    if not run or uid not in (run.user_id, run.assigned_to_id):
+        return None
+    return run
+
+
+def _owner_run(db: DBSession, request: Request, run_id: int) -> ImageSortRun | None:
+    """Stricter: only the owner. Reassigning and deleting are not the
+    assignee's to do — they were handed the checking, not the run."""
     uid = get_current_user_id(request)
     if not uid:
         return None
@@ -296,13 +321,23 @@ def _load(run: ImageSortRun) -> tuple[list[MatchResult], list[ItemGroup]]:
 
 
 def _payload(run: ImageSortRun) -> dict:
-    """Full result view: folders (with their photos) + the unmatched pile."""
+    """Full result view: folders (with their photos) + the unmatched pile.
+
+    Each folder carries two lists. ``photos`` are the product images that get
+    named and exported; ``reference`` are catalogue crops of the same product,
+    shown alongside purely so the user can eyeball that the tool matched the
+    right thing.
+    """
     results, groups = _load(run)
     by_code = {g.code: g for g in groups}
+    approved = set(run.approved)
 
     folders: dict[str, dict] = {}
     unmatched: list[dict] = []
     for result in sorted(results, key=lambda r: (r.code, r.position, r.filename)):
+        if result.deleted:
+            continue
+        exported = bool(result.code) and not result.is_reference
         card = {
             "index": result.index,
             "filename": result.filename,
@@ -311,7 +346,9 @@ def _payload(run: ImageSortRun) -> dict:
             "method": result.method,
             "reason": result.reason,
             "needs_review": result.needs_review,
-            "output_name": image_file_name(result.code, result.position, result.filename) if result.code else "",
+            "is_reference": result.is_reference,
+            "is_catalog": result.is_catalog,
+            "output_name": image_file_name(result.code, result.position, result.filename) if exported else "",
             "thumb": f"/image-sort/run/{run.id}/photo/{result.index}",
             "saw": {
                 "product_type": (result.description or {}).get("product_type", ""),
@@ -332,12 +369,16 @@ def _payload(run: ImageSortRun) -> dict:
             "color": group.color if group else "",
             "category": group.category if group else "",
             "photos": [],
+            "reference": [],
             "needs_review": False,
+            "approved": result.code in approved,
         })
-        folder["photos"].append(card)
+        folder["reference" if result.is_reference else "photos"].append(card)
         folder["needs_review"] = folder["needs_review"] or result.needs_review
 
-    covered = set(folders)
+    # A folder left with only catalogue reference and no product image is not
+    # covered — surface it with the ones that got nothing at all.
+    covered = {code for code, f in folders.items() if f["photos"]}
     missing = [
         {"code": g.code, "name": g.name, "color": g.color, "category": g.category}
         for g in groups if g.code not in covered
@@ -352,6 +393,9 @@ def _payload(run: ImageSortRun) -> dict:
         "sources": run.sources,
         "summary": summarise(results, groups),
         "review_threshold": CONFIDENCE_REVIEW_THRESHOLD,
+        "export_catalog": bool(run.export_catalog),
+        "assigned_to": run.assigned_to_id,
+        "approved_count": len([f for f in folders.values() if f["approved"]]),
         "folders": sorted(folders.values(), key=lambda f: f["code"]),
         "unmatched": unmatched,
         "missing": missing,
@@ -447,7 +491,7 @@ def image_sort_photo(run_id: int, index: int, request: Request, db: DBSession = 
 # ── Corrections ──────────────────────────────────────────────────────────────
 
 def _save_results(db: DBSession, run: ImageSortRun, results: list[MatchResult], groups: list[ItemGroup]) -> None:
-    assign_positions(results)
+    assign_positions(results, export_catalog=bool(run.export_catalog))
     summary = summarise(results, groups)
     run.results = [r.to_dict() for r in results]
     run.matched_count = summary["matched"]
@@ -519,6 +563,172 @@ async def image_sort_set_main(run_id: int, request: Request, db: DBSession = Dep
 
     _save_results(db, run, results, groups)
     return JSONResponse({"ok": True, "result": _payload(run)})
+
+
+@router.post("/image-sort/run/{run_id}/delete-photo")
+async def image_sort_delete_photo(run_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Throw a photo out of the run — the X on the tile.
+
+    Kept as a flag rather than dropping the record so it can be undone and so
+    the match report can still show what was rejected.
+    """
+    run = _owned_run(db, request, run_id)
+    if run is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    data = await request.json()
+    try:
+        index = int(data.get("index"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "index required"}, status_code=400)
+    deleted = bool(data.get("deleted", True))
+
+    results, groups = _load(run)
+    target = next((r for r in results if r.index == index), None)
+    if target is None:
+        return JSONResponse({"error": "photo not found in this run"}, status_code=404)
+
+    target.deleted = deleted
+    if deleted:
+        # Its slot in the folder goes with it; the rest close up automatically.
+        target.manual_rank = 0
+    _save_results(db, run, results, groups)
+    return JSONResponse({"ok": True, "result": _payload(run)})
+
+
+@router.post("/image-sort/run/{run_id}/reorder")
+async def image_sort_reorder(run_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Set a folder's photo order outright — drag and drop sends the new order.
+
+    The order is stored as manual_rank so it survives every later correction,
+    the same way "Make main" does.
+    """
+    run = _owned_run(db, request, run_id)
+    if run is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    data = await request.json()
+    code = str(data.get("code") or "").strip()
+    try:
+        order = [int(i) for i in (data.get("order") or [])]
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "order must be a list of photo indexes"}, status_code=400)
+    if not code or not order:
+        return JSONResponse({"error": "code and order required"}, status_code=400)
+
+    results, groups = _load(run)
+    in_folder = {
+        r.index: r for r in results
+        if r.code == code and not r.deleted and not r.is_reference
+    }
+    if set(order) != set(in_folder):
+        return JSONResponse(
+            {"error": "the order must list exactly the photos in that folder"},
+            status_code=400)
+
+    for rank, index in enumerate(order, start=1):
+        in_folder[index].manual_rank = rank
+    _save_results(db, run, results, groups)
+    return JSONResponse({"ok": True, "result": _payload(run)})
+
+
+@router.post("/image-sort/run/{run_id}/approve")
+async def image_sort_approve(run_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Sign a folder off (or put it back). Approved folders drop out of the
+    working list so a big collection stops being one endless scroll."""
+    run = _owned_run(db, request, run_id)
+    if run is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    data = await request.json()
+    codes = data.get("codes")
+    if codes is None:
+        codes = [data.get("code")]
+    codes = [str(c).strip() for c in codes if str(c or "").strip()]
+    if not codes:
+        return JSONResponse({"error": "code required"}, status_code=400)
+
+    known = {g["code"] for g in run.groups}
+    unknown = [c for c in codes if c not in known]
+    if unknown:
+        return JSONResponse({"error": f"'{unknown[0]}' is not an item group in this run"},
+                            status_code=400)
+
+    approved = set(run.approved)
+    if bool(data.get("approved", True)):
+        approved |= set(codes)
+    else:
+        approved -= set(codes)
+    run.approved = list(approved)
+    db.commit()
+    return JSONResponse({"ok": True, "result": _payload(run)})
+
+
+@router.post("/image-sort/run/{run_id}/catalog-export")
+async def image_sort_catalog_export(run_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Toggle whether catalogue pages are exported as product images.
+
+    Off (the default) they stay reference-only; on, they are named and land in
+    the ZIP like any other photo.
+    """
+    run = _owned_run(db, request, run_id)
+    if run is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    data = await request.json()
+    run.export_catalog = bool(data.get("export_catalog"))
+    results, groups = _load(run)
+    _save_results(db, run, results, groups)
+    return JSONResponse({"ok": True, "result": _payload(run)})
+
+
+@router.get("/image-sort/teammates")
+async def image_sort_teammates(request: Request, db: DBSession = Depends(get_db)):
+    """Colleagues a run can be handed to for checking."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    users = (
+        db.query(User.id, User.username)
+        .filter(User.id != uid, User.is_active.is_(True))
+        .order_by(User.username)
+        .limit(200)
+        .all()
+    )
+    return JSONResponse({"users": [{"id": u.id, "username": u.username} for u in users]})
+
+
+@router.post("/image-sort/run/{run_id}/assign-user")
+async def image_sort_assign_user(run_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Hand the run to a colleague to finish the quality check.
+
+    They get the same editing rights; only the owner can reassign or delete.
+    """
+    run = _owner_run(db, request, run_id)
+    if run is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    data = await request.json()
+    raw = data.get("user_id")
+    if raw in (None, "", 0, "0"):
+        run.assigned_to_id = None
+        db.commit()
+        return JSONResponse({"ok": True, "assigned_to": None, "assigned_to_name": ""})
+
+    try:
+        user_id = int(raw)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "user_id must be a number"}, status_code=400)
+    if user_id == run.user_id:
+        return JSONResponse({"error": "that is already the owner of this run"}, status_code=400)
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        return JSONResponse({"error": "no such user"}, status_code=404)
+
+    run.assigned_to_id = user.id
+    db.commit()
+    return JSONResponse({"ok": True, "assigned_to": user.id, "assigned_to_name": user.username})
 
 
 # ── Downloads ────────────────────────────────────────────────────────────────
@@ -604,7 +814,8 @@ def prune_old_image_sort_dirs(db_session, max_age_days: int = GENERATED_FILE_RET
 
 @router.post("/image-sort/run/{run_id}/delete")
 async def image_sort_delete(run_id: int, request: Request, db: DBSession = Depends(get_db)):
-    run = _owned_run(db, request, run_id)
+    # Deleting the whole run is the owner's call, not the assignee's.
+    run = _owner_run(db, request, run_id)
     if run is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     from app.core.image_sources import cleanup_dir

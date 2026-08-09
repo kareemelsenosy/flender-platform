@@ -806,9 +806,20 @@ class MatchResult:
     candidates: list[dict] = field(default_factory=list)
     flagged: str = ""           # forced-review note set by the conflict pass
     manual_rank: int = 0        # >0 when the user ordered this folder by hand
+    deleted: bool = False       # thrown out by the user; never exported
+    is_reference: bool = False  # shown to confirm the match, not exported
+
+    @property
+    def is_catalog(self) -> bool:
+        """Came out of a catalogue PDF rather than the brand's photo folder."""
+        return self.source == "catalog"
 
     @property
     def needs_review(self) -> bool:
+        # A reference image is only there for comparison — it is never the
+        # thing being checked, so it must not swell the "to check" count.
+        if self.deleted or self.is_reference:
+            return False
         return bool(self.flagged) or not self.code or (
             self.method == "ai" and self.confidence < CONFIDENCE_REVIEW_THRESHOLD
         )
@@ -822,6 +833,8 @@ class MatchResult:
             "description": self.description, "position": self.position,
             "candidates": self.candidates, "flagged": self.flagged,
             "manual_rank": self.manual_rank,
+            "deleted": self.deleted, "is_reference": self.is_reference,
+            "is_catalog": self.is_catalog,
             "needs_review": self.needs_review,
         }
 
@@ -842,6 +855,8 @@ class MatchResult:
             candidates=data.get("candidates") or [],
             flagged=str(data.get("flagged") or ""),
             manual_rank=int(data.get("manual_rank") or 0),
+            deleted=bool(data.get("deleted")),
+            is_reference=bool(data.get("is_reference")),
         )
 
 
@@ -973,13 +988,25 @@ def flag_conflicts(results: list[MatchResult], groups: list[ItemGroup]) -> int:
     return flagged
 
 
-def assign_positions(results: list[MatchResult]) -> None:
+def assign_positions(results: list[MatchResult], *, export_catalog: bool = False) -> None:
     """Number the photos inside each item group — 1 is the main image.
+
+    **The brand's own photos are the product images.** A catalogue page is a
+    crop of a printed layout: useful to eyeball next to the real photo to
+    confirm the match is right, but not something to ship to SAP. So a
+    catalogue image is normally kept as *reference* — it gets no position and
+    no output name, and it stays out of the ZIP.
+
+    The exception is a product the brand sent no photo for at all. There the
+    catalogue is the only thing we have, so it is promoted and exported; that
+    is the "fill in the missing images" half of the job.
+
+    ``export_catalog=True`` overrides all of this and treats catalogue pages as
+    ordinary photos, for users who do want the extra views in the download.
 
     Automatic ranking: the brand's own trailing number if the file was already
     named, then how well the shot works as a main image (view type, then the
-    model's quality score, then match confidence), and a photo pulled out of a
-    catalogue page loses to the brand's own packshot.
+    model's quality score, then match confidence).
 
     **Hand-set order wins.** This runs again after every correction, so a folder
     the user has ordered themselves must come back the way they left it —
@@ -991,14 +1018,15 @@ def assign_positions(results: list[MatchResult]) -> None:
     by_code: dict[str, list[MatchResult]] = {}
     for result in results:
         result.position = 0
-        if result.code:
+        result.is_reference = False
+        if result.code and not result.deleted:
             by_code.setdefault(result.code, []).append(result)
 
     def auto_rank(r: MatchResult):
         view = str((r.description or {}).get("view") or "other").lower()
         return (
             _main_image_order(r.filename),
-            1 if r.source == "catalog" else 0,
+            1 if r.is_catalog else 0,
             _VIEW_RANK.get(view, _VIEW_RANK["other"]),
             -_clamp01((r.description or {}).get("quality")),
             -r.confidence,
@@ -1006,11 +1034,23 @@ def assign_positions(results: list[MatchResult]) -> None:
         )
 
     for group_results in by_code.values():
-        pinned = sorted(
-            (r for r in group_results if r.manual_rank > 0),
-            key=lambda r: r.manual_rank,
-        )
-        rest = sorted((r for r in group_results if r.manual_rank <= 0), key=auto_rank)
+        own = [r for r in group_results if not r.is_catalog]
+        catalog = [r for r in group_results if r.is_catalog]
+
+        # Catalogue pages only become product images when there is no real
+        # photo to use, or when the user asked for them in the download.
+        if export_catalog or not own:
+            exported, reference = group_results, []
+        else:
+            exported, reference = own, catalog
+
+        for result in reference:
+            result.is_reference = True
+            result.position = 0
+
+        pinned = sorted((r for r in exported if r.manual_rank > 0),
+                        key=lambda r: r.manual_rank)
+        rest = sorted((r for r in exported if r.manual_rank <= 0), key=auto_rank)
         for position, result in enumerate(pinned + rest, start=1):
             result.position = position
 
@@ -1047,6 +1087,11 @@ def build_output_tree(results: list[MatchResult], out_dir: str | Path) -> dict:
     filed = 0
     folders: dict[str, list[str]] = {}
     for result in sorted(results, key=lambda r: (r.code, r.position)):
+        # Deleted and reference-only images are never written. They already
+        # carry position 0, but say so outright — this is the guarantee that
+        # catalogue crops stay out of what goes to SAP.
+        if result.deleted or result.is_reference:
+            continue
         if not result.code or result.position < 1:
             continue
         if not os.path.exists(result.path):
@@ -1061,7 +1106,7 @@ def build_output_tree(results: list[MatchResult], out_dir: str | Path) -> dict:
     return {
         "folders": len(folders),
         "images": filed,
-        "unmatched": sum(1 for r in results if not r.code),
+        "unmatched": sum(1 for r in results if not r.code and not r.deleted),
         "folder_map": folders,
     }
 
@@ -1083,48 +1128,72 @@ def build_output_zip(results: list[MatchResult], zip_path: str | Path, work_dir:
 
 
 def build_report_csv(results: list[MatchResult], groups: list[ItemGroup]) -> str:
-    """A match report: every photo, and every item group still without one."""
+    """A match report: every photo, and every item group still without one.
+
+    Reference and deleted rows are listed too — the point of the report is to
+    show what the tool decided — but their Role column says so, and only
+    exported photos count towards an item group having an image.
+    """
     by_code = {g.code: g for g in groups}
-    matched_codes = {r.code for r in results if r.code}
+    exported_codes = {
+        r.code for r in results if r.code and not r.deleted and not r.is_reference
+    }
 
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow([
-        "Item Group Code", "Product", "Colour", "Category",
+        "Item Group Code", "Product", "Colour", "Category", "Role",
         "Output File", "Source File", "Position", "Method", "Confidence", "Reason",
     ])
     for result in sorted(results, key=lambda r: (r.code == "", r.code, r.position)):
         group = by_code.get(result.code)
+        if result.deleted:
+            role = "deleted"
+        elif result.is_reference:
+            role = "catalogue reference"
+        else:
+            role = "product image"
+        exported = bool(result.code) and not result.deleted and not result.is_reference
         writer.writerow([
             result.code or "(unmatched)",
             group.name if group else "",
             group.color if group else "",
             group.category if group else "",
-            image_file_name(result.code, result.position, result.filename) if result.code else "",
+            role,
+            image_file_name(result.code, result.position, result.filename) if exported else "",
             result.filename,
             result.position or "",
             result.method,
             f"{result.confidence:.2f}",
             result.reason,
         ])
+    matched_codes = exported_codes
     for group in groups:
         if group.code not in matched_codes:
             writer.writerow([
-                group.code, group.name, group.color, group.category,
+                group.code, group.name, group.color, group.category, "no image",
                 "", "", "", "no-image", "0.00", "No photo matched this item group.",
             ])
     return out.getvalue()
 
 
 def summarise(results: list[MatchResult], groups: list[ItemGroup]) -> dict:
-    """Headline counts for the UI."""
-    matched = [r for r in results if r.code]
-    codes = {r.code for r in matched}
+    """Headline counts for the UI.
+
+    Counts what actually ships: deleted photos are gone, and catalogue
+    reference images are comparison material rather than product images, so
+    neither inflates "photos filed".
+    """
+    live = [r for r in results if not r.deleted]
+    exported = [r for r in live if r.code and not r.is_reference]
+    codes = {r.code for r in exported}
     return {
-        "images": len(results),
-        "matched": len(matched),
-        "unmatched": len(results) - len(matched),
-        "review": sum(1 for r in results if r.needs_review),
+        "images": len(live),
+        "matched": len(exported),
+        "unmatched": sum(1 for r in live if not r.code),
+        "review": sum(1 for r in live if r.needs_review),
+        "reference": sum(1 for r in live if r.is_reference),
+        "deleted": sum(1 for r in results if r.deleted),
         "groups_total": len(groups),
         "groups_covered": len(codes),
         "groups_missing": len(groups) - len(codes),

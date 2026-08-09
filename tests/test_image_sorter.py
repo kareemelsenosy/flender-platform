@@ -293,9 +293,10 @@ def test_folders_with_no_hand_ordering_still_rank_automatically():
     assert {r.filename: r.position for r in results} == {"packshot.jpg": 1, "detail.jpg": 2}
 
 
-def test_a_catalogue_page_never_outranks_the_brands_own_packshot():
-    """Catalogue extracts are crops of a printed layout. Their "_p092_01" suffix
-    is a page index from our own extractor, not a brand main-image marker."""
+def test_a_catalogue_page_is_reference_when_a_real_photo_exists():
+    """A catalogue page is a crop of a printed layout. Next to the brand's own
+    photo it is only there to confirm the match — it gets no position, no
+    output name, and never reaches the download."""
     catalogue = _result(1, "CTM T SS1 Black", "DIME SPRING 2027 - CATALOG_p092_01.jpg")
     catalogue.source = "catalog"
     packshot = _result(2, "CTM T SS1 Black", "ACCESSORIES_SP27_CARABINER_BLACK.png")
@@ -303,7 +304,55 @@ def test_a_catalogue_page_never_outranks_the_brands_own_packshot():
     assign_positions([catalogue, packshot])
 
     assert packshot.position == 1
+    assert catalogue.position == 0
+    assert catalogue.is_reference is True
+
+
+def test_a_catalogue_page_is_used_when_the_brand_sent_no_photo():
+    """The other half of the job: fill in the missing images. With nothing else
+    for this product, the catalogue page becomes the product image."""
+    catalogue = _result(1, "CTM T SS1 Black", "CATALOG_p092_01.jpg")
+    catalogue.source = "catalog"
+
+    assign_positions([catalogue])
+
+    assert catalogue.position == 1
+    assert catalogue.is_reference is False
+
+
+def test_export_catalog_turns_reference_images_back_into_product_images():
+    catalogue = _result(1, "CTM T SS1 Black", "CATALOG_p092_01.jpg")
+    catalogue.source = "catalog"
+    packshot = _result(2, "CTM T SS1 Black", "PACKSHOT.png")
+
+    assign_positions([catalogue, packshot], export_catalog=True)
+
+    assert packshot.position == 1
     assert catalogue.position == 2
+    assert catalogue.is_reference is False
+
+
+def test_reference_images_are_not_counted_as_needing_review():
+    """They are comparison material, so they must not swell the to-check pile."""
+    catalogue = _result(1, "CTM T SS1 Black", "CATALOG_p092_01.jpg", confidence=0.2)
+    catalogue.source = "catalog"
+    packshot = _result(2, "CTM T SS1 Black", "PACKSHOT.png", confidence=0.99)
+
+    assign_positions([catalogue, packshot])
+
+    assert catalogue.needs_review is False
+
+
+def test_deleted_photos_drop_out_of_their_folder():
+    keep = _result(1, "CTM T SS1 Black", "keep.png", view="detail", quality=0.1)
+    binned = _result(2, "CTM T SS1 Black", "bin.png", view="packshot", quality=0.99)
+    binned.deleted = True
+
+    assign_positions([keep, binned])
+
+    assert keep.position == 1          # closes up behind the deleted one
+    assert binned.position == 0
+    assert binned.needs_review is False
 
 
 def test_unmatched_photos_get_no_position():
@@ -432,8 +481,28 @@ def test_summarise_counts_coverage(groups):
     assign_positions(results)
     assert summarise(results, groups) == {
         "images": 3, "matched": 2, "unmatched": 1, "review": 1,
+        "reference": 0, "deleted": 0,
         "groups_total": 3, "groups_covered": 1, "groups_missing": 2,
     }
+
+
+def test_summarise_excludes_reference_and_deleted_from_what_ships(groups):
+    catalogue = _result(1, "CTM T SS1 Black", "CATALOG_p001_01.jpg")
+    catalogue.source = "catalog"
+    results = [
+        catalogue,
+        _result(2, "CTM T SS1 Black", "packshot.png"),
+        _result(3, "CTM T SS1 White", "binned.png"),
+    ]
+    results[2].deleted = True
+    assign_positions(results)
+
+    summary = summarise(results, groups)
+    assert summary["matched"] == 1        # only the real packshot ships
+    assert summary["reference"] == 1
+    assert summary["deleted"] == 1
+    assert summary["images"] == 2         # the deleted one is gone
+    assert summary["groups_covered"] == 1
 
 
 # ── Review flags ─────────────────────────────────────────────────────────────

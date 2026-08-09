@@ -405,6 +405,16 @@ class ImageSortRun(Base):
     work_dir = Column(String(1000))                  # on-disk source images for this run
     groups_json = Column(Text, default="[]")         # the master file's item groups
     results_json = Column(Text, default="[]")        # per-image match results
+    approved_json = Column(Text, default="[]")       # item group codes signed off in QC
+
+    # A run can be handed to a colleague to finish the quality check. The
+    # assignee gets the same edit rights as the owner; only the owner can
+    # reassign or delete it.
+    assigned_to_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    # Catalogue pages are reference-only by default; set when the user wants
+    # them named and included in the download too.
+    export_catalog = Column(Boolean, default=False)
 
     def _json(self, field: str, default):
         try:
@@ -435,3 +445,11 @@ class ImageSortRun(Base):
     @sources.setter
     def sources(self, val: list):
         self.sources_json = json.dumps(val or [])
+
+    @property
+    def approved(self) -> list:
+        return self._json("approved_json", "[]")
+
+    @approved.setter
+    def approved(self, val: list):
+        self.approved_json = json.dumps(sorted(set(val or [])))
