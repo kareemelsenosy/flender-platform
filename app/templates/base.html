@@ -1278,6 +1278,26 @@
     // full browser navigation than the content-swap.
     const SKIP = ['/upload', '/upload/file', '/download', '/download-zip', '/review', '/search', '/products', '/image-sort'];
 
+    // Hovering a link must never do real work. GET /generate/{id} writes to the
+    // database and fetches the linked Google Sheet (2-6s each), and /mapping
+    // re-reads the source file, so sweeping the mouse down a 50-row dashboard
+    // used to fire 50 concurrent Sheets fetches and stall the whole server.
+    // These are still navigable — just never speculatively.
+    const NO_PREFETCH = ['/generate', '/mapping'];
+    const HOVER_INTENT_MS = 90;   // sustained hover before we spend a request
+    const MAX_INFLIGHT = 3;       // concurrent prefetches
+    const MAX_CACHED = 20;
+    let inflight = 0;
+    let hoverTimer = null;
+
+    function canPrefetch(href) {
+      if (!canInstantNav(href)) return false;
+      try {
+        const p = new URL(href, location.origin).pathname;
+        return !NO_PREFETCH.some(s => p === s || p.startsWith(s + '/'));
+      } catch { return false; }
+    }
+
     function canInstantNav(href) {
       try {
         const url = new URL(href, location.origin);
@@ -1293,18 +1313,28 @@
       document.open(); document.write(html); document.close();
     }
 
-    // Prefetch on hover (any internal link)
+    // Prefetch on sustained hover, a few at a time. A mouse sweeping across a
+    // list should cost nothing; only a link the pointer settles on is fetched.
     document.addEventListener('mouseover', function(e) {
       const a = e.target.closest('a[href]');
-      if (!a || a.hasAttribute('download') || !canInstantNav(a.href)) return;
+      clearTimeout(hoverTimer);
+      if (!a || a.hasAttribute('download') || !canPrefetch(a.href)) return;
       const url = new URL(a.href, location.origin);
       const key = url.pathname + url.search;
-      if (!cache[key]) {
+      if (cache[key] || inflight >= MAX_INFLIGHT) return;
+      hoverTimer = setTimeout(function() {
+        if (cache[key] || inflight >= MAX_INFLIGHT) return;
+        if (Object.keys(cache).length >= MAX_CACHED) delete cache[Object.keys(cache)[0]];
+        inflight++;
         cache[key] = fetch(url.href, { credentials: 'same-origin' })
           .then(r => r.ok ? r.text() : null)
-          .catch(() => null);
-      }
+          .catch(() => null)
+          .finally(() => { inflight--; });
+      }, HOVER_INTENT_MS);
     }, { passive: true });
+
+    document.addEventListener('mouseout', function() { clearTimeout(hoverTimer); },
+                              { passive: true });
 
     function showBar() {
       clearTimeout(barTimer);
@@ -1362,6 +1392,16 @@
         // Update title
         const newTitle = doc.querySelector('title');
         if (newTitle) document.title = newTitle.textContent;
+
+        // The swap replaces only .main-content, so a nav change shipped in a
+        // deploy would otherwise never reach anyone still navigating in-page —
+        // they would keep clicking links that no longer exist. Take the sidebar
+        // from the served HTML whenever it differs.
+        const newNav = doc.querySelector('.sidebar-nav');
+        const curNav = document.querySelector('.sidebar-nav');
+        if (newNav && curNav && newNav.innerHTML !== curNav.innerHTML) {
+          curNav.innerHTML = newNav.innerHTML;
+        }
 
         // Update active sidebar link based on new path
         const newPath = url.pathname;
