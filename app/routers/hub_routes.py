@@ -2,8 +2,8 @@
 
 ``/`` is the Operations Overview: which collections are being processed, where
 each one is blocked, and what needs a person. The individual tools still exist
-and still work — they moved to ``/tools``, because a collection is the unit of
-work now, not a spreadsheet.
+and still work; they are reached from the sidebar, because a collection is the
+unit of work now, not a spreadsheet.
 """
 from __future__ import annotations
 
@@ -112,18 +112,4 @@ async def operations_overview(request: Request, db: DBSession = Depends(get_db))
         "total_styles": sum(j.total_styles or 0 for j in jobs),
         "total_skus": sum(j.total_skus or 0 for j in jobs),
         "tools": _tools(),
-    })
-
-
-@router.get("/tools", response_class=HTMLResponse)
-async def tools_hub(request: Request, db: DBSession = Depends(get_db)):
-    """The individual tools. Still here, still working — just not the front door."""
-    uid = get_current_user_id(request)
-    if not uid:
-        return RedirectResponse("/login", status_code=302)
-    user = db.get(User, uid)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse(request, "hub.html", {
-        "user": user, "tools": _tools(),
     })
