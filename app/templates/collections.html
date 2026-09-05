@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Collections — Product Management System{% endblock %}
+
+{% block content %}
+<div style="max-width:1150px">
+  <div style="margin-bottom:24px">
+    <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Collections</h1>
+    <p style="color:var(--gray-500);margin-top:6px;max-width:760px">
+      Every supplier collection the Operations OS is working on. A collection is
+      created automatically when a supplier email is forwarded to the operations
+      mailbox — brand, season and the four inputs are detected on arrival. You can
+      also start one here by dropping the files in directly.
+    </p>
+  </div>
+
+  <!-- Manual intake — same pipeline as the email route -->
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;padding:24px;margin-bottom:28px">
+    <form action="/collections/upload" method="post" enctype="multipart/form-data">
+      <label for="collection-files"
+        style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+               border:2px dashed var(--gray-300,#ddd);border-radius:12px;padding:34px;cursor:pointer;text-align:center">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--gray-400,#999)"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <div style="font-weight:600" id="dz-title">Drop the supplier files here, or click to choose</div>
+        <div style="font-size:0.8rem;color:var(--gray-400,#999)">
+          Order sheet, price list, catalog and image package together — .xlsx, .csv, .pdf, .zip
+        </div>
+      </label>
+      <input type="file" id="collection-files" name="files" multiple style="display:none"
+             accept=".xlsx,.xls,.csv,.pdf,.zip">
+
+      <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;align-items:center">
+        <input type="text" name="brand" placeholder="Brand (optional — detected)"
+               style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit">
+        <input type="text" name="season" placeholder="Season (optional — detected)"
+               style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit">
+        <button type="submit"
+          style="padding:10px 22px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer">
+          Create collection
+        </button>
+      </div>
+    </form>
+  </div>
+
+  {% if jobs %}
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;overflow:hidden">
+    <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+      <thead>
+        <tr style="background:var(--gray-50,#fafafa);text-align:left">
+          <th style="padding:12px 16px;font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">Collection</th>
+          <th style="padding:12px 16px;font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">Inputs</th>
+          <th style="padding:12px 16px;font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777);text-align:right">Styles</th>
+          <th style="padding:12px 16px;font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777);text-align:right">SKUs</th>
+          <th style="padding:12px 16px;font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        {% set report = job.report %}
+        <tr style="border-top:1px solid var(--gray-100,#f4f4f4)">
+          <td style="padding:12px 16px">
+            <a href="/collections/{{ job.id }}" style="font-weight:600;color:#111;text-decoration:none">{{ job.label }}</a>
+            <div style="font-size:0.76rem;color:var(--gray-400,#999);margin-top:2px">
+              {{ job.created_at.strftime('%d %b %Y') if job.created_at else '' }}
+              {% if job.source == 'email' %}· by email{% endif %}
+            </div>
+          </td>
+          <td style="padding:12px 16px">
+            {% for kind in ['order_sheet','price_list','catalog','images'] %}
+              {% if kind in report.get('received', []) %}
+                <span title="{{ labels[kind] }}"
+                  style="display:inline-block;padding:2px 7px;margin:1px;border-radius:5px;font-size:0.7rem;
+                         background:#e8f3ec;color:#1b6e4f">{{ labels[kind] }}</span>
+              {% else %}
+                <span title="{{ labels[kind] }} missing"
+                  style="display:inline-block;padding:2px 7px;margin:1px;border-radius:5px;font-size:0.7rem;
+                         background:#f6f6f6;color:#aaa;text-decoration:line-through">{{ labels[kind] }}</span>
+              {% endif %}
+            {% endfor %}
+          </td>
+          <td style="padding:12px 16px;text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(job.total_styles or 0) }}</td>
+          <td style="padding:12px 16px;text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(job.total_skus or 0) }}</td>
+          <td style="padding:12px 16px">
+            {% if job.status == 'analysed' %}
+              <span style="padding:3px 9px;border-radius:6px;font-size:0.74rem;background:#e8f3ec;color:#1b6e4f">Analysed</span>
+            {% elif job.status == 'needs_input' %}
+              <span style="padding:3px 9px;border-radius:6px;font-size:0.74rem;background:#fdf3e0;color:#8a6011">Needs input</span>
+            {% elif job.status == 'error' %}
+              <span style="padding:3px 9px;border-radius:6px;font-size:0.74rem;background:#fbe9e6;color:#993325">Error</span>
+            {% else %}
+              <span style="padding:3px 9px;border-radius:6px;font-size:0.74rem;background:#f0f0f0;color:#666">Received</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:14px;padding:44px;text-align:center;color:var(--gray-500,#777)">
+    No collections yet. Forward a supplier email to the operations mailbox, or drop the files in above.
+  </div>
+  {% endif %}
+</div>
+
+<script>
+  // Show the chosen filenames so it is obvious what will be submitted.
+  document.getElementById('collection-files').addEventListener('change', function () {
+    var n = this.files.length;
+    document.getElementById('dz-title').textContent =
+      n ? n + (n === 1 ? ' file selected' : ' files selected') : 'Drop the supplier files here, or click to choose';
+  });
+</script>
+{% endblock %}

@@ -453,3 +453,100 @@ class ImageSortRun(Base):
     @approved.setter
     def approved(self, val: list):
         self.approved_json = json.dumps(sorted(set(val or [])))
+
+
+class CollectionJob(Base):
+    """One supplier collection moving through the Operations OS.
+
+    Created by the email intake (or a manual upload) and owns everything that
+    belongs to one brand + season + supplier version: the original attachments,
+    the intake analysis, and later the four SAP output packages and their
+    approval state. Replaces the one-file-per-Session model for collection work
+    — a Session is one spreadsheet, a CollectionJob is one collection.
+    """
+    __tablename__ = "collection_jobs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"),
+                     nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    # Identity of the collection.
+    brand = Column(String(255), index=True)
+    season = Column(String(50), index=True)
+    supplier = Column(String(255))
+    version = Column(Integer, default=1)          # supplier file version (V1, V2...)
+
+    # Where it came from. The original email is preserved unchanged so an
+    # intake can always be re-run against the source of record.
+    source = Column(String(20), default="email")  # email, upload
+    email_from = Column(String(320))
+    email_subject = Column(Text)
+    received_at = Column(DateTime, default=_utcnow)
+
+    # Lifecycle. Kept deliberately short for the pilot; the full status model
+    # (approval gates, SAP import, B2B) extends this list rather than replacing
+    # it.
+    status = Column(String(30), default="received", index=True)
+    # received -> analysed -> needs_input -> ready -> error
+    error = Column(Text)
+
+    total_styles = Column(Integer, default=0)
+    total_skus = Column(Integer, default=0)
+
+    report_json = Column(Text, default="{}")      # the intake report (see core/intake.py)
+
+    files = relationship("CollectionFile", back_populates="job",
+                         cascade="all, delete-orphan",
+                         order_by="CollectionFile.id")
+
+    __table_args__ = (
+        Index("ix_collection_jobs_user_status", "user_id", "status"),
+    )
+
+    @property
+    def report(self) -> dict:
+        try:
+            return json.loads(self.report_json or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    @report.setter
+    def report(self, val: dict):
+        self.report_json = json.dumps(val or {})
+
+    @property
+    def label(self) -> str:
+        """Human name for the collection, e.g. 'Carhartt WIP SS27 (V2)'."""
+        parts = [p for p in (self.brand, self.season) if p]
+        name = " ".join(parts) or (self.email_subject or "Untitled collection")
+        return f"{name} (V{self.version})" if (self.version or 1) > 1 else name
+
+
+class CollectionFile(Base):
+    """One attachment belonging to a CollectionJob, with its detected kind.
+
+    The uploaded bytes are never modified — ``file_path`` points at the original
+    attachment. When a supplier PDF line sheet is converted for parsing, the
+    derived spreadsheet is recorded in ``parse_path`` and the PDF is kept.
+    """
+    __tablename__ = "collection_files"
+
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey("collection_jobs.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    filename = Column(String(500), nullable=False)   # original attachment name
+    file_path = Column(String(1000), nullable=False)  # the untouched original
+    parse_path = Column(String(1000))                 # derived .xlsx, if any
+    kind = Column(String(20), default="other", index=True)
+    file_size = Column(Integer)
+    # Set when a human corrects the automatic classification, so the intake
+    # rules can be reviewed against real supplier files later.
+    kind_corrected = Column(Boolean, default=False)
+    parse_error = Column(Text)
+    # How the file had to be read when the default layout failed, e.g.
+    # "header row 6, sheet(s): ACL FW26". Shown so a wrong guess is correctable.
+    parse_note = Column(Text)
+
+    job = relationship("CollectionJob", back_populates="files")

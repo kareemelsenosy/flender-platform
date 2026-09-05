@@ -48,6 +48,18 @@ EMAIL_VERIFICATION_REQUIRED = _env_bool(
 )
 INTERNAL_API_ENABLED = _env_bool("INTERNAL_API_ENABLED", False)
 
+# ── Operations OS: supplier email intake ─────────────────────────────────────
+# n8n (or any mail workflow) posts the forwarded supplier email here. The
+# endpoint stays disabled — a plain 404 — until a key is set, so it can never
+# be left open by accident on a deploy that has not configured it.
+INTAKE_API_KEY = os.getenv("INTAKE_API_KEY", "")
+# Which account owns collections created by the mailbox. Falls back to the
+# first active user so a fresh install still works in testing.
+INTAKE_OWNER_EMAIL = os.getenv("INTAKE_OWNER_EMAIL", "")
+# Per-attachment cap for intake. Image packages are the big ones; a season
+# drop of packshots is routinely several hundred megabytes.
+INTAKE_MAX_FILE_MB = int(os.getenv("INTAKE_MAX_FILE_MB", "500"))
+
 # URL of the Social Media Tracker tool — shown as a tile on the AI Tools hub.
 # Local dev default; in production set SMT_URL=https://smt.flendergroup.com
 SMT_URL = os.getenv("SMT_URL", "http://localhost:3000")

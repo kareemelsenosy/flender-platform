@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}{{ job.label }} — Collections{% endblock %}
+
+{% block content %}
+<div style="max-width:1000px">
+  <a href="/collections" style="font-size:0.85rem;color:var(--gray-500,#777);text-decoration:none">&larr; All collections</a>
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:10px 0 26px;flex-wrap:wrap">
+    <div>
+      <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">{{ job.label }}</h1>
+      <p style="color:var(--gray-500,#777);margin-top:6px;font-size:0.9rem">
+        {% if job.source == 'email' %}
+          Received by email{% if job.email_from %} from {{ job.email_from }}{% endif %}
+        {% else %}Created from a direct upload{% endif %}
+        {% if job.created_at %} · {{ job.created_at.strftime('%d %b %Y, %H:%M') }}{% endif %}
+      </p>
+      {% if job.email_subject %}
+      <p style="color:var(--gray-400,#999);margin-top:2px;font-size:0.84rem">{{ job.email_subject }}</p>
+      {% endif %}
+    </div>
+    <form action="/collections/{{ job.id }}/delete" method="post"
+          onsubmit="return confirm('Delete this collection and its files?')">
+      <button type="submit"
+        style="padding:8px 16px;background:#fff;color:#993325;border:1px solid #e6cdc9;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem">
+        Delete
+      </button>
+    </form>
+  </div>
+
+  <!-- Volume -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:26px">
+    {% set t = report.get('totals', {}) %}
+    {% for label, value in [
+        ('Styles', t.get('styles', 0)),
+        ('Colour styles', t.get('colour_styles', 0)),
+        ('SKUs', t.get('skus', 0))] %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px">
+      <div style="font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">{{ label }}</div>
+      <div style="font-size:1.7rem;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums">{{ '{:,}'.format(value) }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Inputs -->
+  <h2 style="font-size:1.05rem;font-weight:700;margin-bottom:12px">Inputs</h2>
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:6px 18px;margin-bottom:14px">
+    {% for kind in expected %}
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 0;
+                {% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+      {% if kind in report.get('received', []) %}
+        <span style="color:#1b6e4f;font-weight:700">&check;</span>
+        <span style="font-weight:600">{{ labels[kind] }}</span>
+        <span style="color:var(--gray-400,#999);font-size:0.85rem">received</span>
+      {% else %}
+        <span style="color:#c9a227;font-weight:700">&times;</span>
+        <span style="font-weight:600;color:var(--gray-500,#777)">{{ labels[kind] }}</span>
+        <span style="color:#8a6011;font-size:0.85rem">missing</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Files, with the detected kind correctable -->
+  <h2 style="font-size:1.05rem;font-weight:700;margin:24px 0 12px">Files received</h2>
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden;margin-bottom:14px">
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem">
+      <tbody>
+        {% for f in job.files %}
+        <tr style="{% if not loop.first %}border-top:1px solid var(--gray-100,#f4f4f4){% endif %}">
+          <td style="padding:11px 16px">
+            <span style="font-weight:600">{{ f.filename }}</span>
+            {% if f.file_size %}
+            <span style="color:var(--gray-400,#999);font-size:0.8rem"> · {{ (f.file_size / 1048576) | round(1) }} MB</span>
+            {% endif %}
+            {% if f.kind_corrected %}
+            <span style="color:var(--gray-400,#999);font-size:0.76rem"> · corrected</span>
+            {% endif %}
+            {% if f.parse_error %}
+            <div style="color:#993325;font-size:0.8rem;margin-top:3px">{{ f.parse_error }}</div>
+            {% endif %}
+          </td>
+          <td style="padding:11px 16px;text-align:right;white-space:nowrap">
+            <form action="/collections/{{ job.id }}/files/{{ f.id }}/kind" method="post" style="display:inline">
+              <select name="kind" onchange="this.form.submit()"
+                style="padding:5px 8px;border:1px solid var(--gray-200,#eee);border-radius:7px;font:inherit;font-size:0.82rem">
+                {% for value, text in labels.items() %}
+                <option value="{{ value }}" {% if f.kind == value %}selected{% endif %}>{{ text }}</option>
+                {% endfor %}
+              </select>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- What needs attention -->
+  {% if report.get('warnings') %}
+  <h2 style="font-size:1.05rem;font-weight:700;margin:24px 0 12px">Needs attention</h2>
+  <div style="background:#fdfaf3;border:1px solid #efe0c2;border-left:3px solid #c9a227;border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:14px">
+    <ul style="margin:0;padding-left:18px;color:#5f4a12">
+      {% for w in report['warnings'] %}
+      <li style="margin:3px 0">{{ w }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <!-- The intake summary, exactly as the status email sends it -->
+  <h2 style="font-size:1.05rem;font-weight:700;margin:24px 0 12px">Intake summary</h2>
+  <pre style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:18px;
+              font-family:ui-monospace,Menlo,monospace;font-size:0.82rem;line-height:1.6;
+              white-space:pre-wrap;color:#333;margin:0">{{ summary }}</pre>
+</div>
+{% endblock %}

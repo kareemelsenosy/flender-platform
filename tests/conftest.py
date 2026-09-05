@@ -60,6 +60,8 @@ def _clear_database(test_app):
     db = test_app["database"].SessionLocal()
     try:
         for model in (
+            models.CollectionFile,
+            models.CollectionJob,
             models.GeneratedFile,
             models.PasswordResetToken,
             models.EmailVerificationCode,

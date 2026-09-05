@@ -1,8 +1,9 @@
-"""AI Tools hub — the landing page after login.
+"""Operations OS front door.
 
-Shows a tile for each FLENDER AI tool. Each tile opens in a new tab.
-This is the shared front door; it uses the same authentication and user
-database as the rest of the platform.
+``/`` is the Operations Overview: which collections are being processed, where
+each one is blocked, and what needs a person. The individual tools still exist
+and still work — they moved to ``/tools``, because a collection is the unit of
+work now, not a spreadsheet.
 """
 from __future__ import annotations
 
@@ -18,7 +19,8 @@ from app.database import get_db
 # as a fallback when an absolute URL is needed; the tile uses the path so the
 # session cookie carries across naturally.
 SMT_HUB_LINK = "/smt"
-from app.models import User
+from app.core.lifecycle import PACKAGES, STAGES, collection_progress
+from app.models import CollectionJob, User
 from app.templates_config import templates
 
 router = APIRouter()
@@ -82,16 +84,46 @@ def _tools() -> list[dict]:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def hub(request: Request, db: DBSession = Depends(get_db)):
+async def operations_overview(request: Request, db: DBSession = Depends(get_db)):
+    """Operations Overview — the first dashboard the roadmap asks for."""
     uid = get_current_user_id(request)
     if not uid:
         return RedirectResponse("/login", status_code=302)
-
     user = db.get(User, uid)
     if not user:
         return RedirectResponse("/login", status_code=302)
 
-    return templates.TemplateResponse(request, "hub.html", {
+    jobs = (db.query(CollectionJob)
+              .filter(CollectionJob.user_id == uid)
+              .order_by(CollectionJob.created_at.desc())
+              .limit(50).all())
+
+    rows = [{"job": j, **collection_progress(j)} for j in jobs]
+    blocked = [r for r in rows if r["job"].status in ("needs_input", "error")]
+    open_warnings = sum(len((r["job"].report or {}).get("warnings", [])) for r in rows)
+
+    return templates.TemplateResponse(request, "operations.html", {
         "user": user,
+        "rows": rows,
+        "stages": STAGES,
+        "packages": PACKAGES,
+        "blocked": blocked,
+        "open_warnings": open_warnings,
+        "total_styles": sum(j.total_styles or 0 for j in jobs),
+        "total_skus": sum(j.total_skus or 0 for j in jobs),
         "tools": _tools(),
+    })
+
+
+@router.get("/tools", response_class=HTMLResponse)
+async def tools_hub(request: Request, db: DBSession = Depends(get_db)):
+    """The individual tools. Still here, still working — just not the front door."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    user = db.get(User, uid)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    return templates.TemplateResponse(request, "hub.html", {
+        "user": user, "tools": _tools(),
     })

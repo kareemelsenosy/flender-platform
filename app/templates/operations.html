@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Operations Overview — Flender Operations OS{% endblock %}
+
+{% block content %}
+<div style="max-width:1180px">
+
+  <div style="margin-bottom:26px">
+    <div style="font-size:0.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--gray-400,#999);font-weight:700">
+      Flender Operations OS
+    </div>
+    <h1 style="font-size:1.95rem;font-weight:800;letter-spacing:-0.02em;margin-top:4px">Operations Overview</h1>
+    <p style="color:var(--gray-500,#777);margin-top:6px;max-width:760px">
+      Which collections are being processed, where each one is blocked, and what needs a person.
+      A collection starts when a supplier email is forwarded to the operations mailbox.
+    </p>
+  </div>
+
+  <!-- KPI strip -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:26px">
+    {% for label, value, tone in [
+        ('Collections', rows|length, 'plain'),
+        ('Styles', total_styles, 'plain'),
+        ('SKUs', total_skus, 'plain'),
+        ('Blocked', blocked|length, 'stop' if blocked else 'ok'),
+        ('Open warnings', open_warnings, 'warn' if open_warnings else 'ok')] %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px">
+      <div style="font-size:0.7rem;letter-spacing:.07em;text-transform:uppercase;color:var(--gray-500,#777)">{{ label }}</div>
+      <div style="font-size:1.75rem;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;
+        {% if tone=='stop' %}color:#993325{% elif tone=='warn' %}color:#8a6011{% elif tone=='ok' %}color:#1b6e4f{% endif %}">
+        {{ '{:,}'.format(value) }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- The lifecycle, so the stage names on each row mean something -->
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:18px 20px;margin-bottom:26px">
+    <div style="font-size:0.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--gray-500,#777);font-weight:700;margin-bottom:12px">
+      Collection lifecycle
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      {% for key, label, hint in stages %}
+      <div title="{{ hint }}" style="flex:1;min-width:118px;border:1px solid var(--gray-200,#eee);
+           border-top:2px solid #111;border-radius:0 0 8px 8px;padding:9px 11px">
+        <div style="font-family:ui-monospace,Menlo,monospace;font-size:0.66rem;color:var(--gray-400,#999)">
+          {{ '%02d'|format(loop.index) }}
+        </div>
+        <div style="font-size:0.8rem;font-weight:600;margin-top:2px">{{ label }}</div>
+        <div style="font-size:0.68rem;color:var(--gray-400,#999);margin-top:2px;line-height:1.35">{{ hint }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Collections in flight -->
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px">
+    <h2 style="font-size:1.08rem;font-weight:700">Collections</h2>
+    <a href="/collections" style="font-size:0.84rem;color:#111">Open collections &rarr;</a>
+  </div>
+
+  {% if rows %}
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem">
+      <thead>
+        <tr style="background:var(--gray-50,#fafafa);text-align:left">
+          {% for h in ['Collection','Stage','Styles','SKUs','Product','Pricing','Attributes','Images'] %}
+          <th style="padding:11px 14px;font-size:0.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777);
+                     {% if h in ['Styles','SKUs'] %}text-align:right{% endif %}">{{ h }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr style="border-top:1px solid var(--gray-100,#f4f4f4)">
+          <td style="padding:11px 14px">
+            <a href="/collections/{{ r.job.id }}" style="font-weight:600;color:#111;text-decoration:none">{{ r.job.label }}</a>
+            <div style="font-size:0.74rem;color:var(--gray-400,#999);margin-top:2px">
+              {{ r.job.created_at.strftime('%d %b') if r.job.created_at else '' }}{% if r.job.source == 'email' %} · by email{% endif %}
+            </div>
+          </td>
+          <td style="padding:11px 14px;min-width:190px">
+            <div style="display:flex;gap:2px;margin-bottom:4px">
+              {% for i in range(r.stage_count) %}
+              <span style="flex:1;height:4px;border-radius:2px;
+                background:{% if i <= r.stage_index %}#111{% else %}#e8e8e8{% endif %}"></span>
+              {% endfor %}
+            </div>
+            <span style="font-size:0.76rem;
+              {% if r.job.status in ['needs_input','error'] %}color:#8a6011;font-weight:600{% else %}color:var(--gray-500,#777){% endif %}">
+              {{ r.status_label }}
+            </span>
+          </td>
+          <td style="padding:11px 14px;text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(r.job.total_styles or 0) }}</td>
+          <td style="padding:11px 14px;text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(r.job.total_skus or 0) }}</td>
+          {% for key, plabel, approver, dest in packages %}
+          {% set st = r.packages[key] %}
+          <td style="padding:11px 14px">
+            {% if st.state == 'not_started' %}
+              <span title="Not started" style="font-size:0.72rem;color:#bbb">—</span>
+            {% elif st.approved %}
+              <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#e8f3ec;color:#1b6e4f">Approved</span>
+            {% elif st.exceptions %}
+              <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#fdf3e0;color:#8a6011">{{ st.exceptions }}</span>
+            {% else %}
+              <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#eef1f5;color:#48607a">Ready</span>
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:44px;text-align:center">
+    <div style="color:var(--gray-500,#777);margin-bottom:14px">
+      No collections yet. Forward a supplier email to the operations mailbox, or start one by dropping the files in.
+    </div>
+    <a href="/collections" style="display:inline-block;padding:10px 22px;background:#111;color:#fff;border-radius:9px;
+       font-weight:600;text-decoration:none;font-size:0.88rem">Start a collection</a>
+  </div>
+  {% endif %}
+
+  <!-- Needs attention -->
+  {% if blocked %}
+  <h2 style="font-size:1.08rem;font-weight:700;margin:28px 0 12px">Needs attention</h2>
+  <div style="background:#fdfaf3;border:1px solid #efe0c2;border-left:3px solid #c9a227;border-radius:0 10px 10px 0;padding:14px 18px">
+    {% for r in blocked %}
+    <div style="padding:6px 0{% if not loop.last %};border-bottom:1px solid #f0e6d0{% endif %}">
+      <a href="/collections/{{ r.job.id }}" style="font-weight:600;color:#5f4a12;text-decoration:none">{{ r.job.label }}</a>
+      <span style="color:#7a6420;font-size:0.85rem"> — {{ r.status_label }}</span>
+      {% for w in (r.job.report or {}).get('warnings', [])[:2] %}
+      <div style="font-size:0.8rem;color:#7a6420;margin-top:2px">· {{ w }}</div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Supporting tools -->
+  <h2 style="font-size:1.08rem;font-weight:700;margin:28px 0 12px">Tools</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px">
+    {% for t in tools %}
+    <a href="{{ t.url }}" style="display:block;background:#fff;border:1px solid var(--gray-200,#eee);
+       border-radius:12px;padding:15px 17px;text-decoration:none;color:inherit">
+      <div style="width:8px;height:8px;border-radius:50%;background:{{ t.accent }};margin-bottom:8px"></div>
+      <div style="font-weight:650;font-size:0.92rem">{{ t.name }}</div>
+      <div style="font-size:0.78rem;color:var(--gray-500,#777);margin-top:3px;line-height:1.45">
+        {{ t.description[:105] }}{% if t.description|length > 105 %}…{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}

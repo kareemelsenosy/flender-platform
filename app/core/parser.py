@@ -247,6 +247,16 @@ class FileParser:
         unique_items = self._dedupe(rows)
         return rows, unique_items
 
+    def parse_frame(self, df: "pd.DataFrame") -> list[dict]:
+        """Build rows from a table whose header is already applied.
+
+        Used when the default header detection returns nothing and the sheet
+        layout detector has located the real header for us.
+        """
+        df = df.loc[:, [c for c in df.columns if str(c).strip()]]
+        col_map = detect_columns([str(c) for c in df.columns])
+        return self._build_rows(df, col_map)
+
     def _load_raw(self, filepath: str, ext: str,
                   selected_sheets: list[str] | None = None) -> pd.DataFrame:
         if ext in (".xlsx", ".xls"):
