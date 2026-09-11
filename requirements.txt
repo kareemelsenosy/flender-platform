@@ -16,6 +16,7 @@ itsdangerous>=2.1.0
 
 # Excel processing
 openpyxl>=3.1.0
+xlrd>=2.0.1          # legacy .xls (BIFF) — openpyxl cannot read it
 pandas>=2.0.0
 
 # PDF line-sheet ingest (extract product tables from supplier PDFs)

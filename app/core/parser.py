@@ -80,15 +80,28 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
 
+# A header this short is a size code (S, M, L, XL, OS) or a bare number, never a
+# field name. The substring boost below would otherwise read "S" as part of
+# "whs" and "M" as part of "model", claim those columns for prices and codes,
+# and silently drop every S/M/L row from the order sheet.
+_MIN_SUBSTRING_HEADER = 3
+
+
 def _best_match(col_header: str, patterns: list[str]) -> float:
     col_clean = re.sub(r"[_\-/\\]+", " ", col_header.lower().strip())
     best = 0.0
     for pat in patterns:
         score = _similarity(col_clean, pat)
-        if pat in col_clean or col_clean in pat:
+        if len(col_clean) >= _MIN_SUBSTRING_HEADER and (pat in col_clean or col_clean in pat):
             score = max(score, 0.85)
         best = max(best, score)
     return best
+
+
+# Columns that summarise a row rather than describe the product. "Grand Total"
+# scores 0.57 against "brand name" on shared letters alone and would otherwise
+# be mapped; nothing in a totals column is ever a product field.
+_SUMMARY_HEADER = re.compile(r"\b(grand\s+)?(sub)?total(s)?\b|\bsum\b", re.I)
 
 
 def detect_columns(headers: list[str]) -> dict[str, str | None]:
@@ -97,6 +110,8 @@ def detect_columns(headers: list[str]) -> dict[str, str | None]:
     scores: dict[str, dict[str, float]] = {key: {} for key in COLUMN_PATTERNS}
 
     for header in headers:
+        if _SUMMARY_HEADER.search(str(header)):
+            continue
         for key, patterns in COLUMN_PATTERNS.items():
             s = _best_match(str(header), patterns)
             if s >= THRESHOLD:
@@ -193,15 +208,51 @@ def _coerce_numeric(value: Any) -> Any:
         return None
 
 
+def _excel_engine(filepath: str) -> str:
+    """The pandas engine that can actually read this workbook.
+
+    openpyxl handles the zip-based .xlsx/.xlsm; the legacy binary .xls needs
+    xlrd. Choosing by content rather than extension matters because suppliers
+    routinely mislabel — a file called .xls that is really .xlsx and vice
+    versa both turn up — and the wrong engine fails with openpyxl's
+    "File contains no valid workbook part", which tells the user nothing.
+    """
+    with open(filepath, "rb") as fh:
+        head = fh.read(8)
+    if head.startswith(b"PK\x03\x04"):
+        return "openpyxl"                       # zip container -> xlsx/xlsm
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return "xlrd"                           # OLE2 compound doc -> xls
+    ext = os.path.splitext(filepath)[1].lower()
+    return "xlrd" if ext == ".xls" else "openpyxl"
+
+
+class UnreadableWorkbook(ValueError):
+    """The file is not a spreadsheet pandas can open, in words a user can act on."""
+
+
+def _open_workbook(filepath: str) -> "pd.ExcelFile":
+    engine = _excel_engine(filepath)
+    try:
+        return pd.ExcelFile(filepath, engine=engine)
+    except ImportError as exc:
+        raise UnreadableWorkbook(
+            f"This is a legacy .xls file and the server cannot read that format "
+            f"({exc}). Re-save it as .xlsx in Excel and upload again.") from exc
+    except Exception as exc:
+        raise UnreadableWorkbook(
+            f"This file could not be opened as a spreadsheet ({type(exc).__name__}). "
+            f"If it was exported from another system, re-save it as .xlsx in Excel.") from exc
+
+
 class FileParser:
     """Parse Excel/CSV files with auto-column detection."""
 
     def get_sheet_names(self, filepath: str) -> list[str]:
         """Return list of sheet names for Excel files (empty list for CSV)."""
         ext = os.path.splitext(filepath)[1].lower()
-        if ext in (".xlsx", ".xls"):
-            xl = pd.ExcelFile(filepath, engine="openpyxl")
-            return xl.sheet_names
+        if ext in (".xlsx", ".xlsm", ".xls"):
+            return _open_workbook(filepath).sheet_names
         return []
 
     def parse(self, filepath: str, selected_sheets: list[str] | None = None) -> tuple[list[dict], list[dict], list[str]]:
@@ -259,8 +310,8 @@ class FileParser:
 
     def _load_raw(self, filepath: str, ext: str,
                   selected_sheets: list[str] | None = None) -> pd.DataFrame:
-        if ext in (".xlsx", ".xls"):
-            xl = pd.ExcelFile(filepath, engine="openpyxl")
+        if ext in (".xlsx", ".xlsm", ".xls"):
+            xl = _open_workbook(filepath)
             skip = {"export summary", "summary", "index", "toc", "contents"}
             if selected_sheets:
                 # Use only selected sheets (ignore skip list when user explicitly chose)
