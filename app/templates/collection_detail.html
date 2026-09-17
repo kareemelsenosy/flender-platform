@@ -41,6 +41,92 @@
     {% endfor %}
   </div>
 
+  <!-- Brand and season, correctable -->
+  {% if not job.brand or not job.season %}
+  <div style="background:#fdfaf3;border:1px solid #efe0c2;border-left:3px solid #c9a227;border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:22px">
+    <strong style="color:#5f4a12">
+      {% if not job.brand and not job.season %}Brand and season not detected
+      {% elif not job.brand %}Brand not detected
+      {% else %}Season not detected{% endif %}
+    </strong>
+    <div style="font-size:0.85rem;color:#7a6420;margin:4px 0 11px">
+      Set them here — the brand is what the SAP history and the output packages hang on.
+    </div>
+    <form action="/collections/{{ job.id }}/identity" method="post" style="display:flex;gap:9px;flex-wrap:wrap">
+      <input type="text" name="brand" value="{{ job.brand or '' }}" placeholder="Brand"
+             style="padding:8px 11px;border:1px solid #e3d5b4;border-radius:8px;font:inherit;font-size:0.86rem;min-width:190px">
+      <input type="text" name="season" value="{{ job.season or '' }}" placeholder="Season (SS27)"
+             style="padding:8px 11px;border:1px solid #e3d5b4;border-radius:8px;font:inherit;font-size:0.86rem;width:150px">
+      <button type="submit"
+        style="padding:8px 17px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem">Save</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <!-- Output packages -->
+  <h2 style="font-size:1.05rem;font-weight:700;margin-bottom:12px">Output packages</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:13px;margin-bottom:26px">
+    {% for kind, label in package_kinds.items() %}
+    {% set st = package_state[kind] %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+        <div style="font-weight:650;font-size:0.94rem">{{ label }}</div>
+        {% if st.approved %}
+          <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#e8f3ec;color:#1b6e4f">Approved</span>
+        {% elif st.state == 'needs_decisions' %}
+          <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#fdf3e0;color:#8a6011">{{ st.exceptions }} to decide</span>
+        {% elif st.state == 'ready' %}
+          <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#eef4f9;color:#33536e">Ready</span>
+        {% elif st.state == 'error' %}
+          <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#fbe9e6;color:#993325">Error</span>
+        {% else %}
+          <span style="font-size:0.72rem;color:var(--gray-400,#bbb)">Not started</span>
+        {% endif %}
+      </div>
+      <div style="font-size:0.8rem;color:var(--gray-500,#777);margin-top:4px">
+        {% if st.rows %}{{ '{:,}'.format(st.rows) }} rows{% else %}&nbsp;{% endif %}
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        {% if st.state == 'not_started' %}
+        <form action="/collections/{{ job.id }}/packages/{{ kind }}/generate" method="post">
+          <button type="submit"
+            style="padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">
+            Generate
+          </button>
+        </form>
+        {% else %}
+        <a href="/collections/{{ job.id }}/packages/{{ kind }}"
+           style="padding:7px 15px;background:#111;color:#fff;border-radius:8px;font-weight:600;
+                  text-decoration:none;font-size:0.83rem">Open</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- SAP history connection -->
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px;margin-bottom:26px">
+    <div style="font-weight:650;font-size:0.94rem">SAP history for {{ job.brand or 'this brand' }}</div>
+    <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:5px 0 12px;max-width:680px">
+      The brand's nightly SAP sheet — the "{{ job.brand or 'Brand' }} Stock" report. It tells the system which
+      products already exist, what SAP calls them and what they sold for last season, so it stops asking
+      questions history has already answered.
+    </p>
+    <form action="/collections/{{ job.id }}/brand-config" method="post"
+          style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input type="text" name="sap_sheet_id" value="{{ brand_config.sap_sheet_id if brand_config else '' }}"
+             placeholder="Google Sheet link or id"
+             style="flex:1;min-width:280px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
+      <input type="text" name="earliest_ship_date" value="{{ brand_config.earliest_ship_date if brand_config else '' }}"
+             placeholder="Earliest ship date (optional)"
+             style="width:210px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
+      <button type="submit"
+        style="padding:9px 18px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.85rem">
+        Save
+      </button>
+    </form>
+  </div>
+
   <!-- Inputs -->
   <h2 style="font-size:1.05rem;font-weight:700;margin-bottom:12px">Inputs</h2>
   <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:6px 18px;margin-bottom:14px">

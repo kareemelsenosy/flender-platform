@@ -143,6 +143,11 @@ _BRAND_DISPLAY = {
     "thisisneverthat": "thisisneverthat",
     "dsquared2": "DSQUARED2",
     "off-white": "Off-White",
+    "acl": "ACL",
+    "twojeys": "TwoJeys",
+    "rip n dip": "Rip N Dip",
+    "ripndip": "RIPNDIP",
+    "arte antwerp": "Arte Antwerp",
 }
 
 

@@ -95,7 +95,8 @@ def build_row(src: dict, *, season: str, collection: str,
 
     code, reason = season_code(season)
     if not code:
-        exceptions.append({"field": "Season", "severity": "critical",
+        exceptions.append({"field": "Season", "subject": season or "unknown",
+                           "severity": "critical",
                            "reason": reason, "suggestion": "Confirm the SAP season code"})
     out["Season"] = code or ""
     out["Collection"] = collection
@@ -116,12 +117,12 @@ def build_row(src: dict, *, season: str, collection: str,
     out["BASE COLOR"] = base["value"] or ""
     if not base["value"]:
         exceptions.append({
-            "field": "BASE COLOR", "severity": "manual_review",
+            "field": "BASE COLOR", "subject": colour_name, "severity": "manual_review",
             "reason": f"'{colour_name}' has never been classified — {base['reason']}",
             "suggestion": f"Choose a base colour for '{colour_name}'"})
     elif base["confidence"] < 1.0:
         exceptions.append({
-            "field": "BASE COLOR", "severity": "warning",
+            "field": "BASE COLOR", "subject": colour_name, "severity": "warning",
             "reason": f"proposed {base['value']} for '{colour_name}' ({base['reason']})",
             "suggestion": "Approve or correct the proposed base colour"})
 
@@ -135,7 +136,7 @@ def build_row(src: dict, *, season: str, collection: str,
     for col in REQUIRED:
         if not out[col] and col != "BASE COLOR":
             exceptions.append({
-                "field": col, "severity": "critical",
+                "field": col, "subject": col, "severity": "critical",
                 "reason": f"{col} is empty and SAP requires it",
                 "suggestion": f"Supply {col} for this line"})
     return out, exceptions

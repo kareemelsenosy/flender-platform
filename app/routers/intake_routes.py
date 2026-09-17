@@ -297,9 +297,15 @@ async def collection_detail(job_id: int, request: Request,
         CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
     if not job:
         return RedirectResponse("/collections", status_code=302)
+    from app.models import BrandConfig
+    from app.services import packages as pkg
     report = job.report
+    brand_config = db.query(BrandConfig).filter(
+        BrandConfig.user_id == uid, BrandConfig.brand == (job.brand or "")).first()
     return templates.TemplateResponse(request, "collection_detail.html", {
         "user": db.get(User, uid), "job": job, "report": report,
+        "package_kinds": pkg.KINDS, "package_state": pkg.package_state(job),
+        "brand_config": brand_config,
         "summary": intake_core.format_intake_email(report),
         "labels": intake_core.KIND_LABELS,
         "expected": intake_core.EXPECTED_KINDS,

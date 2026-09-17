@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}{{ kind_label }} — {{ job.label }}{% endblock %}
+
+{% block content %}
+<div style="max-width:1080px">
+  <a href="/collections/{{ job.id }}" style="font-size:0.85rem;color:var(--gray-500,#777);text-decoration:none">&larr; {{ job.label }}</a>
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:10px 0 24px;flex-wrap:wrap">
+    <div>
+      <h1 style="font-size:1.85rem;font-weight:800;letter-spacing:-0.02em">{{ kind_label }}</h1>
+      <p style="color:var(--gray-500,#777);margin-top:5px;font-size:0.92rem">
+        {{ job.label }}{% if run %} · {{ '{:,}'.format(run.row_count) }} rows generated{% endif %}
+      </p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      {% if run and run.file_path %}
+      <a href="/collections/{{ job.id }}/packages/{{ kind }}/download"
+         style="padding:9px 18px;border:1px solid var(--gray-200,#e4e4e4);border-radius:9px;
+                text-decoration:none;color:#111;font-weight:600;font-size:0.86rem">Download</a>
+      {% endif %}
+      <form action="/collections/{{ job.id }}/packages/{{ kind }}/generate" method="post" style="display:inline">
+        <button type="submit"
+          style="padding:9px 18px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);border-radius:9px;
+                 font-weight:600;cursor:pointer;font-size:0.86rem">
+          {% if run %}Regenerate{% else %}Generate{% endif %}
+        </button>
+      </form>
+      {% if run and not run.is_approved %}
+      <form action="/collections/{{ job.id }}/packages/{{ kind }}/approve" method="post" style="display:inline">
+        <button type="submit" {% if run.critical_count %}disabled{% endif %}
+          title="{% if run.critical_count %}Resolve the critical errors first{% endif %}"
+          style="padding:9px 20px;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.86rem;
+                 {% if run.critical_count %}background:#eee;color:#aaa;cursor:not-allowed{% else %}background:#111;color:#fff{% endif %}">
+          Approve
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not run %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:40px;text-align:center;color:var(--gray-500,#777)">
+      Not generated yet. Press Generate to build this package from the supplier file.
+    </div>
+  {% elif run.status == 'error' %}
+    <div style="background:#fbe9e6;border:1px solid #e6cdc9;border-left:3px solid #993325;border-radius:0 10px 10px 0;padding:16px 18px">
+      <strong style="color:#993325">Could not generate</strong>
+      <div style="color:#7a2b20;margin-top:4px">{{ run.error }}</div>
+    </div>
+  {% else %}
+
+  {% if run.is_approved %}
+  <div style="background:#e8f3ec;border:1px solid #cfe5d8;border-left:3px solid #1b6e4f;border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:20px">
+    <strong style="color:#1b6e4f">Approved</strong>
+    <span style="color:#2c5e48"> — the sheet is ready for the SAP import folder.</span>
+  </div>
+  {% endif %}
+
+  <!-- counts -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:13px;margin-bottom:24px">
+    {% for label, value, tone in [
+        ('Rows', run.row_count, 'plain'),
+        ('Critical', run.critical_count, 'stop'),
+        ('Need a decision', run.review_count, 'warn'),
+        ('Warnings', run.warning_count, 'plain')] %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:15px 17px">
+      <div style="font-size:0.7rem;letter-spacing:.07em;text-transform:uppercase;color:var(--gray-500,#777)">{{ label }}</div>
+      <div style="font-size:1.6rem;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;
+        {% if value and tone=='stop' %}color:#993325{% elif value and tone=='warn' %}color:#8a6011{% endif %}">
+        {{ '{:,}'.format(value or 0) }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if run.summary.get('reference_note') %}
+  <div style="background:#fdfaf3;border:1px solid #efe0c2;border-radius:10px;padding:11px 15px;margin-bottom:20px;font-size:0.86rem;color:#7a6420">
+    {{ run.summary['reference_note'] }} — connect the brand's SAP sheet on the collection page and regenerate to fill more automatically.
+  </div>
+  {% elif run.summary.get('sap_compared') %}
+  <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:11px 15px;margin-bottom:20px;font-size:0.86rem;color:#33536e">
+    Compared against {{ '{:,}'.format(run.summary['sap_compared']) }} records in SAP.
+  </div>
+  {% endif %}
+
+  <!-- the questions -->
+  {% if open_questions %}
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">
+    <h2 style="font-size:1.05rem;font-weight:700">
+      {{ open_questions|length }} decision{{ '' if open_questions|length == 1 else 's' }} needed
+    </h2>
+    <span style="font-size:0.83rem;color:var(--gray-500,#777)">
+      covering {{ '{:,}'.format(rows_covered) }} rows
+    </span>
+  </div>
+
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+    {% for q in open_questions %}
+    <div style="padding:14px 18px;{% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+      <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span style="padding:2px 7px;border-radius:5px;font-size:0.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+              {% if q.severity=='critical' %}background:#fbe9e6;color:#993325
+              {% elif q.severity=='manual_review' %}background:#fdf3e0;color:#8a6011
+              {% else %}background:#eef1f5;color:#48607a{% endif %}">
+              {{ 'Critical' if q.severity=='critical' else ('Decide' if q.severity=='manual_review' else 'Check') }}
+            </span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:0.76rem;color:var(--gray-500,#777)">{{ q.field }}</span>
+            <strong style="font-size:0.98rem">{{ q.subject }}</strong>
+            <span style="font-size:0.78rem;color:var(--gray-400,#999)">
+              · {{ '{:,}'.format(q.rows) }} row{{ '' if q.rows == 1 else 's' }}
+            </span>
+          </div>
+          <div style="color:var(--gray-500,#777);font-size:0.87rem;margin-top:4px">{{ q.reason }}</div>
+          {% if q.skus %}
+          <div style="font-family:ui-monospace,Menlo,monospace;font-size:0.72rem;color:var(--gray-400,#bbb);margin-top:3px">
+            {{ q.skus|join(', ') }}{% if q.rows > q.skus|length %} …{% endif %}
+          </div>
+          {% endif %}
+        </div>
+
+        <form action="/collections/{{ job.id }}/packages/{{ kind }}/decide" method="post"
+              style="display:flex;gap:8px;align-items:center">
+          <input type="hidden" name="key" value="{{ q.key }}">
+          {% if q.options %}
+          <select name="value" required
+            style="padding:7px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.85rem;min-width:150px">
+            <option value="">{{ q.suggestion or 'Choose…' }}</option>
+            {% for o in q.options %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
+          </select>
+          {% else %}
+          <input type="text" name="value" required placeholder="{{ q.suggestion or 'Value' }}"
+            style="padding:7px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.85rem;min-width:150px">
+          {% endif %}
+          <button type="submit"
+            style="padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem">
+            Apply
+          </button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div style="background:#e8f3ec;border:1px solid #cfe5d8;border-radius:10px;padding:16px 18px;margin-bottom:20px">
+    <strong style="color:#1b6e4f">Nothing left to decide.</strong>
+    <span style="color:#2c5e48"> The package is ready{% if not run.is_approved %} to approve{% endif %}.</span>
+  </div>
+  {% endif %}
+
+  <!-- answered -->
+  {% if answered %}
+  <h2 style="font-size:1.05rem;font-weight:700;margin:26px 0 10px">
+    {{ answered|length }} answered
+  </h2>
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+    {% for q in answered %}
+    <div style="padding:11px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+                {% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+      <span style="color:#1b6e4f;font-weight:700">&check;</span>
+      <span style="font-family:ui-monospace,Menlo,monospace;font-size:0.74rem;color:var(--gray-500,#777)">{{ q.field }}</span>
+      <strong style="font-size:0.9rem">{{ q.subject }}</strong>
+      <span style="color:var(--gray-400,#999);font-size:0.84rem">&rarr;</span>
+      <span style="font-weight:600;font-size:0.9rem">{{ q.answer }}</span>
+      {% if q.rows %}<span style="font-size:0.76rem;color:var(--gray-400,#999)">{{ '{:,}'.format(q.rows) }} rows</span>{% endif %}
+      {% if not run.is_approved %}
+      <form action="/collections/{{ job.id }}/packages/{{ kind }}/decide" method="post" style="margin-left:auto">
+        <input type="hidden" name="key" value="{{ q.key }}">
+        <input type="hidden" name="value" value="">
+        <button type="submit"
+          style="padding:4px 10px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;
+                 cursor:pointer;font-size:0.78rem;color:var(--gray-500,#777)">Undo</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% endif %}
+</div>
+{% endblock %}

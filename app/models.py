@@ -500,6 +500,9 @@ class CollectionJob(Base):
     files = relationship("CollectionFile", back_populates="job",
                          cascade="all, delete-orphan",
                          order_by="CollectionFile.id")
+    packages = relationship("PackageRun", back_populates="job",
+                            cascade="all, delete-orphan",
+                            order_by="PackageRun.id")
 
     __table_args__ = (
         Index("ix_collection_jobs_user_status", "user_id", "status"),
@@ -550,3 +553,130 @@ class CollectionFile(Base):
     parse_note = Column(Text)
 
     job = relationship("CollectionJob", back_populates="files")
+
+
+class BrandConfig(Base):
+    """Per-brand settings the Operations OS needs to work a collection.
+
+    Chiefly the SAP nightly stock sheet, which is where the history lives:
+    what SAP already calls a style, which products are repeats rather than
+    new, and what the brand charged last season.
+    """
+    __tablename__ = "brand_configs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"),
+                     nullable=False, index=True)
+    brand = Column(String(255), nullable=False, index=True)
+    # Google Sheet id of the "<Brand> Stock" nightly SAP report.
+    sap_sheet_id = Column(String(255))
+    # Supplier subcategory -> SAP item group, learned from corrections.
+    group_map_json = Column(Text, default="{}")
+    # Supplier colour name -> SAP base colour, learned from history.
+    colour_map_json = Column(Text, default="{}")
+    earliest_ship_date = Column(String(50))
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (UniqueConstraint("user_id", "brand"),)
+
+    def _json(self, field, default):
+        try:
+            return json.loads(getattr(self, field) or default)
+        except (TypeError, ValueError):
+            return json.loads(default)
+
+    @property
+    def group_map(self) -> dict:
+        return self._json("group_map_json", "{}")
+
+    @group_map.setter
+    def group_map(self, val: dict):
+        self.group_map_json = json.dumps(val or {})
+
+    @property
+    def colour_map(self) -> dict:
+        return self._json("colour_map_json", "{}")
+
+    @colour_map.setter
+    def colour_map(self, val: dict):
+        self.colour_map_json = json.dumps(val or {})
+
+
+class PackageRun(Base):
+    """One output package generated for a collection.
+
+    Rows are not stored. A package is a pure function of the supplier file and
+    the decisions a human has made, so it is regenerated on demand and only the
+    decisions, the exceptions and the approved file are kept. That keeps a
+    10,000-row collection out of the database and guarantees the sheet someone
+    downloads matches the decisions currently on record.
+    """
+    __tablename__ = "package_runs"
+
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey("collection_jobs.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    kind = Column(String(30), nullable=False, index=True)
+    # draft -> needs_decisions -> ready -> approved   (error on failure)
+    status = Column(String(30), default="draft", index=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    row_count = Column(Integer, default=0)
+    critical_count = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    warning_count = Column(Integer, default=0)
+
+    exceptions_json = Column(Text, default="[]")
+    # {"BASE COLOR::Pumice": "Grey", "U_ItmsGrpCod::TOP": "T-SHIRTS"}
+    decisions_json = Column(Text, default="{}")
+    summary_json = Column(Text, default="{}")
+
+    file_path = Column(String(1000))
+    error = Column(Text)
+
+    approved_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                            nullable=True)
+    approved_at = Column(DateTime)
+
+    job = relationship("CollectionJob", back_populates="packages")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "kind"),
+        Index("ix_package_runs_job_status", "job_id", "status"),
+    )
+
+    def _json(self, field, default):
+        try:
+            return json.loads(getattr(self, field) or default)
+        except (TypeError, ValueError):
+            return json.loads(default)
+
+    @property
+    def exceptions(self) -> list:
+        return self._json("exceptions_json", "[]")
+
+    @exceptions.setter
+    def exceptions(self, val: list):
+        self.exceptions_json = json.dumps(val or [])
+
+    @property
+    def decisions(self) -> dict:
+        return self._json("decisions_json", "{}")
+
+    @decisions.setter
+    def decisions(self, val: dict):
+        self.decisions_json = json.dumps(val or {})
+
+    @property
+    def summary(self) -> dict:
+        return self._json("summary_json", "{}")
+
+    @summary.setter
+    def summary(self, val: dict):
+        self.summary_json = json.dumps(val or {})
+
+    @property
+    def is_approved(self) -> bool:
+        return self.status == "approved"

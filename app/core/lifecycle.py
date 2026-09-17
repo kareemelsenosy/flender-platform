@@ -91,7 +91,7 @@ def status_label(status: str) -> str:
     return STATUS_LABEL.get(status or "", (status or "unknown").replace("_", " ").title())
 
 
-def package_state(job, key: str) -> dict:
+def package_state(job, key: str) -> dict:  # noqa: D401 — kept for compatibility
     """Status of one output package for a job.
 
     Until a package has actually run, it reports ``not_started`` rather than
@@ -109,6 +109,12 @@ def package_state(job, key: str) -> dict:
     }
 
 
+def _packages_for(job) -> dict:
+    """Real package state, from the runs actually stored against the job."""
+    from app.services.packages import package_state as real_state
+    return real_state(job)
+
+
 def collection_progress(job) -> dict:
     """Everything the overview needs about one collection, in one call."""
     return {
@@ -116,5 +122,5 @@ def collection_progress(job) -> dict:
         "stage_index": stage_index(job.status),
         "stage_count": len(STAGES),
         "status_label": status_label(job.status),
-        "packages": {k: package_state(job, k) for k in PACKAGE_KEYS},
+        "packages": _packages_for(job),
     }

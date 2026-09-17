@@ -60,6 +60,21 @@ _HEADERS = {
 }
 
 BRAND_DOMAINS: dict[str, str] = {
+    # Flender's own roster. Ten of the fourteen brands on the season tracker
+    # were missing, so brand detection returned nothing for them and image
+    # search had no domain to work from — it would return confident nonsense.
+    "gramicci": "gramicci.com",
+    "arte": "arte-antwerp.com",
+    "arte antwerp": "arte-antwerp.com",
+    "acl": "anothercottonlab.com",
+    "market": "marketstudios.com",
+    "twojeys": "twojeys.com",
+    "edwin": "edwin-europe.com",
+    "hiking patrol": "hikingpatrol.com",
+    "rip n dip": "ripndipclothing.com",
+    "ripndip": "ripndipclothing.com",
+    "dime": "dimemtl.com",
+    "liberaiders": "liberaiders.com",
     "patagonia": "patagonia.com",
     "stone island": "stoneisland.com",
     "golden goose": "goldengoose.com",

@@ -149,7 +149,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
     exceptions: list[dict] = []
 
     if is_blank(earliest_ship_date):
-        exceptions.append({"sku": "", "field": "U_ESDate", "severity": "manual_review",
+        exceptions.append({"sku": "", "field": "U_ESDate", "subject": "this collection",
+                           "severity": "manual_review",
                            "reason": "the collection has no earliest shipment date "
                                      "(it differs from the supplier's ship date)",
                            "suggestion": "Set the earliest shipment date for this collection"})
@@ -172,14 +173,17 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         sizes = expand_sizes(src)
         if not sizes:
             exceptions.append({"sku": style, "field": "U_SizeCode",
-                               "severity": "critical",
+                               "subject": style, "severity": "critical",
                                "reason": "no sizes on this order row",
                                "suggestion": "Check the size columns"})
             continue
 
         list_code, list_why = size_list_code([s["size"] for s in sizes])
         if not list_code:
+            # The subject is the size run, not the style: two styles sharing
+            # an unknown run are one decision, not two.
             exceptions.append({"sku": style, "field": "U_def_size_list_code",
+                               "subject": "/".join(normalise_size(x["size"]) for x in sizes),
                                "severity": "manual_review", "reason": list_why,
                                "suggestion": "Add this size run to the SAP size lists"})
 
@@ -190,20 +194,22 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         group = candidates[0] if len(candidates) == 1 else ""
         if len(candidates) > 1:
             exceptions.append({
-                "sku": style, "field": "U_ItmsGrpCod", "severity": "manual_review",
+                "sku": style, "field": "U_ItmsGrpCod", "subject": subcat,
+                "severity": "manual_review",
                 "reason": f"'{subcat}' maps to {' or '.join(candidates)} — "
                           f"the description decides",
                 "suggestion": f"Choose the SAP group for '{name}'"})
         elif not candidates and subcat:
             exceptions.append({
-                "sku": style, "field": "U_ItmsGrpCod", "severity": "manual_review",
+                "sku": style, "field": "U_ItmsGrpCod", "subject": subcat,
+                "severity": "manual_review",
                 "reason": f"no SAP item group known for '{subcat}'",
                 "suggestion": f"Map '{subcat}' to a SAP item group"})
 
         base = propose_base_color(colour, vocab, colour_lookup)
         if not base["value"]:
             exceptions.append({"sku": style, "field": "U_BaseColor",
-                               "severity": "manual_review",
+                               "subject": colour, "severity": "manual_review",
                                "reason": f"'{colour}' has never been classified",
                                "suggestion": f"Choose a base colour for '{colour}'"})
 
@@ -211,7 +217,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         for field in FROM_HISTORY:
             if not hist.get(field):
                 exceptions.append({
-                    "sku": style, "field": field, "severity": "warning",
+                    "sku": style, "field": field, "subject": style,
+                    "severity": "warning",
                     "reason": f"{field} is not in the order form and "
                               f"{style} has no history",
                     "suggestion": f"Supply {field} for {style}"})
