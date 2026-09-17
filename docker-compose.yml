@@ -71,12 +71,14 @@ services:
 
   # ── Social Media Tracker — object storage (S3-compatible) ───────────────────
   minio:
-    image: minio/minio:latest
-    # missing, not always: the deploy does a full down/up, and a transient
-    # Docker Hub refusal on this image once aborted the whole thing and left
-    # the app on the previous build. The tag is deliberately left as-is —
-    # pinning a different one would force a pull of an image the server does
-    # not have and reintroduce the failure it is meant to prevent.
+    # quay.io, not Docker Hub. Docker Hub now refuses minio/minio to
+    # anonymous pulls (401 even with a valid anonymous token), and because
+    # the deploy does a full down/up, that refusal took the whole site down
+    # with it — the app cannot start while compose is still trying to pull an
+    # image for a service it does not depend on. quay.io is MinIO's own
+    # registry and is public. Pinned, so a future tag change is a decision
+    # rather than a surprise on the next deploy.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     pull_policy: missing
     restart: unless-stopped
     command: server /data --console-address ":9001"
