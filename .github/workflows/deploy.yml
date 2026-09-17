@@ -50,11 +50,14 @@ jobs:
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
           CARHARTT_B2B_USER:   ${{ secrets.CARHARTT_B2B_USER }}
           CARHARTT_B2B_PASS:   ${{ secrets.CARHARTT_B2B_PASS }}
+          INTAKE_API_KEY:      ${{ secrets.INTAKE_API_KEY }}
+          INTAKE_OWNER_EMAIL:  ${{ secrets.INTAKE_OWNER_EMAIL }}
+          DELIVERY_ROOT:       ${{ secrets.DELIVERY_ROOT }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: CLAUDE_API_KEY,SMT_DB_PASSWORD,MINIO_ROOT_USER,MINIO_ROOT_PASSWORD,CARHARTT_B2B_USER,CARHARTT_B2B_PASS
+          envs: CLAUDE_API_KEY,SMT_DB_PASSWORD,MINIO_ROOT_USER,MINIO_ROOT_PASSWORD,CARHARTT_B2B_USER,CARHARTT_B2B_PASS,INTAKE_API_KEY,INTAKE_OWNER_EMAIL,DELIVERY_ROOT
           script_stop: true
           script: |
             set -e
@@ -66,6 +69,7 @@ jobs:
             # the keys it already has (POSTGRES_PASSWORD, SECRET_KEY, etc.).
             export CLAUDE_API_KEY SMT_DB_PASSWORD MINIO_ROOT_USER MINIO_ROOT_PASSWORD
             export CARHARTT_B2B_USER CARHARTT_B2B_PASS
+            export INTAKE_API_KEY INTAKE_OWNER_EMAIL DELIVERY_ROOT
 
             docker compose pull
             docker compose build --no-cache

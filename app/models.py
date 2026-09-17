@@ -679,4 +679,5 @@ class PackageRun(Base):
 
     @property
     def is_approved(self) -> bool:
-        return self.status == "approved"
+        """Delivered implies approved — it cannot be delivered otherwise."""
+        return self.status in ("approved", "delivered")

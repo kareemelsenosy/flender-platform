@@ -25,6 +25,15 @@
           {% if run %}Regenerate{% else %}Generate{% endif %}
         </button>
       </form>
+      {% if run and run.is_approved and run.status != 'delivered' %}
+      <form action="/collections/{{ job.id }}/packages/{{ kind }}/deliver" method="post" style="display:inline">
+        <button type="submit"
+          style="padding:9px 20px;background:#1b6e4f;color:#fff;border:0;border-radius:9px;
+                 font-weight:600;cursor:pointer;font-size:0.86rem">
+          Send to SAP folder
+        </button>
+      </form>
+      {% endif %}
       {% if run and not run.is_approved %}
       <form action="/collections/{{ job.id }}/packages/{{ kind }}/approve" method="post" style="display:inline">
         <button type="submit" {% if run.critical_count %}disabled{% endif %}
@@ -49,10 +58,17 @@
     </div>
   {% else %}
 
-  {% if run.is_approved %}
+  {% if run.status == 'delivered' %}
+  <div style="background:#e8f3ec;border:1px solid #cfe5d8;border-left:3px solid #1b6e4f;border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:20px">
+    <strong style="color:#1b6e4f">Delivered to SAP</strong>
+    <div style="color:#2c5e48;font-size:0.85rem;margin-top:3px;font-family:ui-monospace,Menlo,monospace">
+      {{ run.summary.get('delivered_to', '') }}
+    </div>
+  </div>
+  {% elif run.is_approved %}
   <div style="background:#e8f3ec;border:1px solid #cfe5d8;border-left:3px solid #1b6e4f;border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:20px">
     <strong style="color:#1b6e4f">Approved</strong>
-    <span style="color:#2c5e48"> — the sheet is ready for the SAP import folder.</span>
+    <span style="color:#2c5e48"> — send it to the SAP import folder when you are ready.</span>
   </div>
   {% endif %}
 

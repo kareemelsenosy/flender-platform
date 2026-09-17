@@ -113,7 +113,13 @@ def barcode(style: str, colour: str, size: str) -> str:
 
 
 def expand_sizes(row: dict, max_cols: int = 12) -> list[dict]:
-    """One order row becomes one record per populated size column."""
+    """The sizes on one order row.
+
+    Suppliers lay them out two ways and both are common: across the row as
+    ``Size 1``…``Size 5`` with a price each (Hiking Patrol, NuORDER), or one
+    row per size with a single ``Size`` column (Carhartt). Handling only the
+    first produced an empty sheet for every brand using the second.
+    """
     out = []
     for n in range(1, max_cols + 1):
         size = row.get(f"Size {n}")
@@ -123,7 +129,18 @@ def expand_sizes(row: dict, max_cols: int = 12) -> list[dict]:
                     "size_price": row.get(f"Size price {n}"),
                     "qty": row.get(f"Qty {n}"),
                     "position": len(out)})
-    return out
+    if out:
+        return out
+
+    # Already one row per size.
+    for key in ("Size", "Size Description", "size"):
+        size = row.get(key)
+        if not is_blank(size):
+            return [{"size": str(size).strip(),
+                     "size_price": row.get("Wholesale Price EUR") or row.get("Size price 1"),
+                     "qty": row.get("Quantity") or row.get("Qty 1"),
+                     "position": 0}]
+    return []
 
 
 def build_temp_sheet(rows, *, brand: str, season: str,
@@ -138,6 +155,9 @@ def build_temp_sheet(rows, *, brand: str, season: str,
 
     ``history`` supplies the per-style values the order form lacks, keyed by
     style code: ``{"HP0127001": {"U_HS_Code": ..., "U_COO": ...}}``.
+
+    When the supplier writes one row per size, the size run for a style is
+    assembled across its rows rather than read off one of them.
 
     ``earliest_ship_date`` is set once for the collection. It is not the
     supplier's ship date — Hiking Patrol SS27 shipped 20 January on the order

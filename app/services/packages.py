@@ -29,11 +29,15 @@ from app.core.temp_template import TEMP_COLUMNS, build_temp_sheet
 PRODUCT_CREATION = "product_creation"
 TEMP = "temp"
 PRICING = "pricing"
+ATTRIBUTES = "attributes"
+IMAGES = "images"
 
 KINDS = {
     PRODUCT_CREATION: "SAP Product Creation",
     TEMP: "TEMP Standard Template",
     PRICING: "SAP Pricing",
+    ATTRIBUTES: "Product Attributes",
+    IMAGES: "Product Images",
 }
 
 # Which supplier file each package is built from.
@@ -41,7 +45,13 @@ SOURCE_KIND = {
     PRODUCT_CREATION: intake_core.ORDER_SHEET,
     TEMP: intake_core.ORDER_SHEET,
     PRICING: intake_core.PRICE_LIST,
+    ATTRIBUTES: intake_core.ORDER_SHEET,
+    IMAGES: intake_core.ORDER_SHEET,
 }
+
+# Attributes ask a model about every style, which takes minutes on a real
+# collection, so that package runs in the background.
+ASYNC_KINDS = {ATTRIBUTES}
 
 
 def _utcnow():
@@ -185,7 +195,41 @@ def generate(db, job, kind: str, decisions=None) -> dict:
             group_map=group_map, vocab=vocab, colour_lookup=colour_lookup,
             history=_history_from(reference, rows),
             earliest_ship_date=(config.earliest_ship_date if config else "") or "")
+    elif kind == ATTRIBUTES:
+        from app.core.attribute_engine import enrich_style
+        from app.core.collection_attributes import (
+            build_attribute_package, styles_from_rows)
+        styles = styles_from_rows(rows, brand=job.brand or "",
+                                  season=job.season or "")
+        # A decision names the product type outright; that style is not
+        # sent to the model again.
+        chosen = {k.partition("::")[2]: v for k, v in decisions.items()
+                  if k.startswith("product_type::")}
+
+        def resolve(style):
+            picked = chosen.get(style["style_code"])
+            if picked:
+                return {"product_type": picked, "confidence": 1.0}
+            return enrich_style(style)
+
+        out = build_attribute_package(styles, resolve)
+
+    elif kind == IMAGES:
+        from app.core.collection_images import build_image_package
+        supplied = [f.filename for f in job.files
+                    if f.kind == intake_core.IMAGES]
+        out = build_image_package(rows, reference=reference,
+                                  supplied_files=supplied, decisions=decisions)
+
     elif kind == PRICING:
+        priced = {"Flender WHS USD", "Flender Cost Prices (EUR-USD)",
+                  "Flender RRP USD", "Flender WHS AED", "Flender RRP AED"}
+        if rows and not (priced & set(rows[0])):
+            # Flagging all ten thousand rows for the same missing column tells
+            # nobody anything. The file is simply not a Flender price sheet.
+            return {"error": "this file carries no Flender price columns — "
+                             "attach the pricing sheet for this collection",
+                    "columns": [], "rows": [], "exceptions": [], "summary": {}}
         history = _price_history(reference)
         strategy = learn_strategy(history) if history else {"known": False}
         review = review_prices(rows, strategy)
@@ -240,7 +284,7 @@ def run_package(db, job, kind: str):
         db.commit()
         db.refresh(run)
 
-    if run.is_approved:
+    if run.status in ("approved", "delivered"):
         return run
 
     out = generate(db, job, kind, run.decisions)
@@ -302,6 +346,56 @@ def approve(db, run, user_id: int):
     return run, ""
 
 
+def delivery_root() -> "Path":
+    """Where approved sheets are put for SAP to collect."""
+    import os
+    from pathlib import Path
+    return Path(os.getenv("DELIVERY_ROOT") or (OUTPUT_DIR / "outbox"))
+
+
+# SAP watches a folder per package. The names mirror Flender's import folders.
+DELIVERY_FOLDER = {
+    PRODUCT_CREATION: "product_creation",
+    TEMP: "temp",
+    PRICING: "prices",
+    ATTRIBUTES: "attributes",
+    IMAGES: "images",
+}
+
+
+def deliver(db, run):
+    """Copy an approved package into the SAP import folder.
+
+    Only an approved package is ever delivered — that is the whole point of
+    the gate. The file is stamped so a redelivery never silently overwrites
+    the sheet SAP may already be reading.
+    """
+    import shutil
+    if not run.is_approved:
+        return run, "approve the package first"
+    if not run.file_path or not os.path.exists(run.file_path):
+        return run, "the package file is missing — regenerate it"
+
+    folder = delivery_root() / DELIVERY_FOLDER.get(run.kind, run.kind)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = _utcnow().strftime("%Y%m%d_%H%M%S")
+        name = f"{stamp}_{os.path.basename(run.file_path)}"
+        target = folder / name
+        shutil.copy2(run.file_path, target)
+    except Exception as exc:
+        return run, f"could not write to the import folder ({type(exc).__name__})"
+
+    summary = run.summary
+    summary["delivered_to"] = str(target)
+    summary["delivered_at"] = _utcnow().isoformat()
+    run.summary = summary
+    run.status = "delivered"
+    db.commit()
+    db.refresh(run)
+    return run, ""
+
+
 def package_state(job) -> dict:
     """Per-kind state for the collection and overview screens."""
     runs = {r.kind: r for r in (job.packages or [])}
@@ -312,6 +406,7 @@ def package_state(job) -> dict:
             "state": r.status if r else "not_started",
             "rows": r.row_count if r else 0,
             "exceptions": (r.critical_count + r.review_count) if r else 0,
-            "approved": bool(r and r.is_approved),
+            "approved": bool(r and r.status in ("approved", "delivered")),
+            "delivered": bool(r and r.status == "delivered"),
         }
     return out

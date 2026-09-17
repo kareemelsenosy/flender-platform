@@ -46,6 +46,13 @@ services:
       # search for Carhartt items. Leave blank to disable the integration.
       CARHARTT_B2B_USER: ${CARHARTT_B2B_USER:-}
       CARHARTT_B2B_PASS: ${CARHARTT_B2B_PASS:-}
+      # Supplier email intake. The endpoint stays a 404 until the key is set,
+      # so an unconfigured deploy cannot be posted to.
+      INTAKE_API_KEY: ${INTAKE_API_KEY:-}
+      INTAKE_OWNER_EMAIL: ${INTAKE_OWNER_EMAIL:-}
+      # Approved packages are written here for SAP to pick up. Point it at the
+      # synced Dropbox import root on the server.
+      DELIVERY_ROOT: ${DELIVERY_ROOT:-/app/output/outbox}
     volumes:
       - app_uploads:/app/uploads
       - app_output:/app/output

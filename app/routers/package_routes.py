@@ -38,6 +38,13 @@ def _options_for(field: str, job, db) -> list[str]:
     if field in ("U_ItmsGrpCod", "Main Waregroup"):
         from app.core.attribute_taxonomy import SAP_MASTER_GROUPS
         return list(SAP_MASTER_GROUPS)
+    if field == "image_status":
+        from app.core.collection_images import STATUS_LABELS
+        return list(STATUS_LABELS.values())
+    if field == "product_type":
+        from app.core.attribute_taxonomy import PRODUCT_TYPES_BY_GROUP
+        return sorted({code for pairs in PRODUCT_TYPES_BY_GROUP.values()
+                       for code, _name in pairs})
     return []
 
 
@@ -126,6 +133,23 @@ async def approve_package(job_id: int, kind: str, request: Request,
                                           PackageRun.kind == kind).first()
         if run:
             pkg.approve(db, run, uid)
+    return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
+                            status_code=302)
+
+
+@router.post("/collections/{job_id}/packages/{kind}/deliver")
+async def deliver_package(job_id: int, kind: str, request: Request,
+                          db: DBSession = Depends(get_db)):
+    """Put an approved package in the SAP import folder."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    if job:
+        run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
+                                          PackageRun.kind == kind).first()
+        if run:
+            pkg.deliver(db, run)
     return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
                             status_code=302)
 

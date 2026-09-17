@@ -242,3 +242,28 @@ def test_ship_date_is_asked_for_not_copied_from_the_order_form():
                              earliest_ship_date="2027-01-15 00:00:00")
     assert given["rows"][0]["U_ESDate"] == "2027-01-15 00:00:00"
     assert not [e for e in given["exceptions"] if e["field"] == "U_ESDate"]
+
+
+def test_one_row_per_size_sheets_produce_rows_too():
+    """Carhartt writes a row per size; Hiking Patrol spreads Size 1..5 across.
+
+    Only the horizontal layout was handled, so every Carhartt collection came
+    back with zero rows and a critical error on every line.
+    """
+    vertical = [{"Item No.": "I026462", "Color": "Black", "Size": "M",
+                 "Item Description": "Bib Overall", "Item Group": "Pants",
+                 "Season": "FW26", "Barcode": "1"},
+                {"Item No.": "I026462", "Color": "Black", "Size": "L",
+                 "Item Description": "Bib Overall", "Item Group": "Pants",
+                 "Season": "FW26", "Barcode": "2"}]
+    out = build_temp_sheet(vertical, brand="Carhartt WIP", season="FW26",
+                           group_map={"PANTS": ["PANTS"]})
+    assert out["summary"]["rows"] == 2
+    assert {r["U_SizeCode"] for r in out["rows"]} == {"M", "L"}
+    assert not [e for e in out["exceptions"] if e["field"] == "U_SizeCode"]
+
+
+def test_expand_sizes_prefers_the_horizontal_layout_when_both_look_present():
+    from app.core.temp_template import expand_sizes
+    row = {"Size": "IGNORED", "Size 1": "S", "Size 2": "M"}
+    assert [s["size"] for s in expand_sizes(row)] == ["S", "M"]
