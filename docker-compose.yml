@@ -2,6 +2,7 @@ services:
   # ── Order Sheet platform — database ─────────────────────────────────────────
   db:
     image: postgres:16-alpine
+    pull_policy: missing
     restart: unless-stopped
     environment:
       POSTGRES_DB: flender
@@ -54,6 +55,7 @@ services:
   # ── Social Media Tracker — isolated database ────────────────────────────────
   smt-db:
     image: postgres:16-alpine
+    pull_policy: missing
     restart: unless-stopped
     environment:
       POSTGRES_DB: smt
@@ -70,6 +72,12 @@ services:
   # ── Social Media Tracker — object storage (S3-compatible) ───────────────────
   minio:
     image: minio/minio:latest
+    # missing, not always: the deploy does a full down/up, and a transient
+    # Docker Hub refusal on this image once aborted the whole thing and left
+    # the app on the previous build. The tag is deliberately left as-is —
+    # pinning a different one would force a pull of an image the server does
+    # not have and reintroduce the failure it is meant to prevent.
+    pull_policy: missing
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
