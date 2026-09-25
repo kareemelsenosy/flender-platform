@@ -37,6 +37,10 @@ lxml>=4.9.0
 # Google Sheets
 gspread>=6.1.0
 google-auth>=2.29.0
+# Drive search, for finding a brand's nightly SAP stock sheet. gspread does
+# not pull this in, so without it the search fails on the server while
+# working locally.
+google-api-python-client>=2.120.0
 
 # AI
 anthropic>=0.40.0
