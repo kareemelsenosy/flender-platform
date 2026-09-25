@@ -82,12 +82,16 @@ async def package_detail(job_id: int, kind: str, request: Request,
     # Once a question is answered the engine stops raising it, so the answered
     # list is built from the decisions on record rather than from what is left
     # outstanding — otherwise an answer would simply vanish from the screen.
-    open_q = []
+    # A warning is something to be aware of, not something to answer. Listing
+    # both under one heading told a reviewer of Hiking Patrol there were 112
+    # decisions when there were 8, the other 104 being notes.
+    open_q, warnings = [], []
     for q in questions:
         if decisions.get(q["key"]):
             continue
         q["options"] = q.get("options") or _options_for(q["field"], job, db)
-        open_q.append(q)
+        (open_q if q["severity"] in ("critical", "manual_review")
+         else warnings).append(q)
 
     answered = []
     for key, value in decisions.items():
@@ -102,6 +106,7 @@ async def package_detail(job_id: int, kind: str, request: Request,
         "user": db.get(User, uid), "job": job, "run": run, "kind": kind,
         "kind_label": pkg.KINDS[kind],
         "open_questions": open_q, "answered": answered,
+        "warnings": warnings,
         "rows_covered": sum(q["rows"] for q in open_q),
     })
 

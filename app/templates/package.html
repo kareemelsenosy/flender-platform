@@ -217,6 +217,32 @@
   </div>
   {% endif %}
 
+  <!-- warnings: worth knowing, nothing to answer -->
+  {% if warnings %}
+  <h2 style="font-size:1.05rem;font-weight:700;margin:26px 0 10px">
+    {{ warnings|length }} to be aware of
+    <span style="font-weight:400;font-size:0.84rem;color:var(--gray-500,#777)">
+      — nothing to decide, but check if any look wrong
+    </span>
+  </h2>
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+    {% for q in warnings[:40] %}
+    <div style="padding:10px 18px;display:flex;gap:11px;align-items:baseline;flex-wrap:wrap;
+                {% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+      <span style="font-family:ui-monospace,Menlo,monospace;font-size:0.73rem;color:var(--gray-500,#777)">{{ q.field }}</span>
+      <strong style="font-size:0.88rem">{{ q.subject }}</strong>
+      <span style="font-size:0.84rem;color:var(--gray-500,#777)">{{ q.reason }}</span>
+      <span style="font-size:0.75rem;color:var(--gray-400,#bbb);margin-left:auto">{{ '{:,}'.format(q.rows) }} rows</span>
+    </div>
+    {% endfor %}
+    {% if warnings|length > 40 %}
+    <div style="padding:10px 18px;font-size:0.82rem;color:var(--gray-500,#777)">
+      and {{ warnings|length - 40 }} more — they are all in the downloaded sheet
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <!-- answered -->
   {% if answered %}
   <h2 style="font-size:1.05rem;font-weight:700;margin:26px 0 10px">

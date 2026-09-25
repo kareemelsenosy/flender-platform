@@ -304,3 +304,52 @@ def test_a_collection_with_no_detected_brand_can_still_be_named(client, collecti
     job = db.get(CollectionJob, collection)
     assert job.brand == "Liberaiders" and job.season == "FW27"
     db.close()
+
+
+def test_warnings_are_not_counted_as_decisions(client, collection):
+    """A warning is something to be aware of, not something to answer.
+
+    Listing both under one heading told a Hiking Patrol reviewer there were
+    112 decisions when there were 8 — the other 104 were notes.
+    """
+    client.post(f"/collections/{collection}/packages/temp/generate")
+    page = client.get(f"/collections/{collection}/packages/temp").text
+
+    from app.database import SessionLocal
+    from app.models import PackageRun
+    db = SessionLocal()
+    run = db.query(PackageRun).filter(PackageRun.job_id == collection).first()
+    decisions, notes = run.review_count + run.critical_count, run.warning_count
+    db.close()
+
+    assert f"{decisions} decision" in page
+    if notes:
+        assert "to be aware of" in page
+        # The inflated figure must not appear as a decision count.
+        assert f"{decisions + notes} decisions needed" not in page
+
+
+def test_the_overview_renders_for_a_user_who_has_collections(client, collection):
+    """The overview kept its own list of packages and the service kept
+    another. Adding TEMP made them disagree, and '/' raised a 500 for
+    anyone with a collection — invisible to a logged-out check."""
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "Hiking Patrol" in page.text
+
+
+def test_the_two_package_lists_cannot_drift_again():
+    from app.core.lifecycle import PACKAGE_KEYS
+    from app.services.packages import KINDS
+    assert set(PACKAGE_KEYS) == set(KINDS)
+
+
+def test_overview_package_columns_line_up_with_their_values(client, collection):
+    """The header listed four packages while the cells looped over five, so
+    every value sat one column to the left — TEMP's count under Pricing."""
+    client.post(f"/collections/{collection}/packages/temp/generate")
+    page = client.get("/").text
+    from app.services.packages import KINDS
+    header_area = page.split("<tbody>")[0]
+    for label in KINDS.values():
+        assert label in header_area, f"{label} missing from the overview header"

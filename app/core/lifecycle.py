@@ -56,14 +56,29 @@ STATUS_LABEL = {
 }
 
 # ── Output packages ──────────────────────────────────────────────────────────
-# key, label, who approves it, where it goes.
-PACKAGES = [
-    ("product", "SAP Product Creation", "Sam / Mizra / Hamid", "SAP import Dropbox"),
-    ("pricing", "SAP Pricing",          "Mo / Julius / Hamid", "SAP price Dropbox"),
-    ("attributes", "Product Attributes", "Data approver",      "Attribute import"),
-    ("images",  "Product Images",        "Image approver",     "SAP image Dropbox"),
-]
-PACKAGE_KEYS = [k for k, _, _, _ in PACKAGES]
+# Derived from the package service, never listed twice. Two hand-kept lists
+# drifted the moment TEMP was added — the service said "product_creation" and
+# this said "product", and the overview raised a 500 for anyone who had a
+# collection.
+def _package_rows():
+    from app.services.packages import KINDS
+    approvers = {
+        "product_creation": "Sam / Mizra / Hamid",
+        "temp": "Sam / Mizra / Hamid",
+        "pricing": "Mo / Julius / Hamid",
+        "attributes": "Sam",
+        "images": "Joshua",
+    }
+    destinations = {
+        "product_creation": "SAP import Dropbox",
+        "temp": "SAP import Dropbox",
+        "pricing": "SAP price Dropbox",
+        "attributes": "Attribute import",
+        "images": "SAP image Dropbox",
+    }
+    return [(key, label, approvers.get(key, ""), destinations.get(key, ""))
+            for key, label in KINDS.items()]
+
 
 # ── Severities, in the order a reviewer should care about them ───────────────
 SEVERITIES = [
@@ -72,6 +87,10 @@ SEVERITIES = [
     ("warning",       "Warning",        "Unusual but plausibly correct"),
     ("passed",        "Passed",         "No material anomaly"),
 ]
+
+
+PACKAGES = _package_rows()
+PACKAGE_KEYS = [k for k, _, _, _ in PACKAGES]
 
 
 def stage_for(status: str) -> str:
