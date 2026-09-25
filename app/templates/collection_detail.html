@@ -32,7 +32,7 @@
     {% set t = report.get('totals', {}) %}
     {% for label, value in [
         ('Styles', t.get('styles', 0)),
-        ('Colour styles', t.get('colour_styles', 0)),
+        ('Colourways', t.get('colour_styles', 0)),
         ('SKUs', t.get('skus', 0))] %}
     <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px">
       <div style="font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">{{ label }}</div>

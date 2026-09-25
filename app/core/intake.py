@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import re
 
-from app.core.product_identity import count_styles, line_key
+from app.core.product_identity import count_style_only, count_styles, line_key
 
 # ── File kinds ───────────────────────────────────────────────────────────────
 ORDER_SHEET = "order_sheet"
@@ -267,8 +267,12 @@ def analyse_rows(rows: list[dict]) -> dict:
             missing_size += 1
 
     return {
-        "styles": count_styles(rows),
-        "colour_styles": len(colours),
+        # Styles collapse colour; colour styles are the master records per
+        # colour. Reporting the latter as "styles" multiplied a collection by
+        # the number of colourways it happens to come in.
+        "styles": count_style_only(rows),
+        "colour_styles": count_styles(rows),
+        "distinct_colours": len(colours),
         "skus": skus,
         "missing_barcode": missing_barcode,
         "missing_wholesale_price": missing_wholesale,

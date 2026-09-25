@@ -95,8 +95,10 @@ def test_analyse_counts_styles_colours_and_skus():
     ]
     out = analyse_rows(rows)
     assert out["skus"] == 3
-    assert out["styles"] == 2          # I0001/Black and I0002/Navy
-    assert out["colour_styles"] == 2   # Black, Navy
+    # I0001 in two sizes and I0002: two styles, two colourways, three SKUs.
+    assert out["styles"] == 2
+    assert out["colour_styles"] == 2
+    assert out["distinct_colours"] == 2
 
 
 def test_analyse_counts_the_gaps_that_block_sap_creation():
@@ -295,3 +297,76 @@ def test_single_brand_collection_gets_no_multi_brand_warning():
                                  analyse_rows([_row()]),
                                  all_brands=["Carhartt WIP"])
     assert not any("brands named" in w for w in report["warnings"])
+
+
+def test_a_price_list_does_not_inflate_the_product_count(client, intake_key, login_as):
+    """Order sheet plus price list describe the same products.
+
+    Adding both files' rows together reported Hiking Patrol as 332 styles
+    when the order sheet has 60 — 60 order rows plus 272 price rows.
+    """
+    import pandas as pd
+    order = io.BytesIO()
+    pd.DataFrame([{"Style Number": "A", "Color": "Black", "Size": "M",
+                   "Barcode": "1", "Wholesale Price": 10, "RRP": 20},
+                  {"Style Number": "B", "Color": "Navy", "Size": "L",
+                   "Barcode": "2", "Wholesale Price": 10, "RRP": 20}]
+                 ).to_excel(order, index=False)
+    prices = io.BytesIO()
+    pd.DataFrame([{"Item No.": f"SAP-{i}", "Flender WHS AED": 10,
+                   "Flender RRP AED": 21} for i in range(50)]
+                 ).to_excel(prices, index=False)
+
+    login_as()
+    body = client.post(
+        "/api/intake/email", headers={"X-Intake-Key": "test-key"},
+        data={"subject": "Carhartt WIP SS27"},
+        files=[("files", ("SS27_ORDER_SHEET.xlsx", order.getvalue())),
+               ("files", ("SS27_PRICE_LIST.xlsx", prices.getvalue()))],
+    ).json()
+
+    assert set(body["received"]) == {ORDER_SHEET, PRICE_LIST}
+    assert body["styles"] == 2          # not 52
+    assert body["skus"] == 2
+
+
+def test_supplier_column_names_are_recognised_for_identity():
+    """Identity was computed only on parser-renamed columns, so a raw
+    supplier row produced an empty key and counted as its own style."""
+    from app.core.product_identity import count_styles, style_key
+    rows = [{"Style Number": "A", "Color": "Black", "Size": "S"},
+            {"Style Number": "A", "Color": "Black", "Size": "M"},
+            {"Style Number": "B", "Color": "Navy", "Size": "S"}]
+    assert style_key(rows[0]) != ""
+    assert count_styles(rows) == 2       # A/Black and B/Navy
+
+
+def test_styles_and_colourways_are_counted_separately():
+    """A style in six colours is one style, not six.
+
+    Reporting the colour-level key as "styles" multiplied every collection by
+    its number of colourways: Carhartt SS27 read as 1,537 styles when it is
+    508 styles in 1,537 colourways.
+    """
+    rows = [{"Style Number": "I026462", "Color": c, "Size": s, "Barcode": f"{c}{s}"}
+            for c in ("Black", "Navy", "Olive") for s in ("S", "M")]
+    out = analyse_rows(rows)
+    assert out["styles"] == 1
+    assert out["colour_styles"] == 3
+    assert out["skus"] == 6
+
+
+def test_a_season_column_is_not_read_as_a_barcode():
+    """"ean" scored 0.667 against "season" on shared letters, so every row
+    shared one barcode and a 60-line order sheet reported a single SKU."""
+    from app.core.parser import detect_columns
+    m = detect_columns(["Season", "Color", "Style Number", "Name", "Size 1"])
+    assert m["barcode"] is None
+    assert m["item_code"] == "Style Number"
+
+
+def test_a_style_level_code_outranks_a_size_level_sku():
+    """Carhartt sheets carry both; mapping SKU made every line its own style."""
+    from app.core.parser import detect_columns
+    m = detect_columns(["SKU", "Item No.", "Color", "Size", "Barcode"])
+    assert m["item_code"] == "Item No."

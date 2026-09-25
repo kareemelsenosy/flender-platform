@@ -87,15 +87,38 @@ def _similarity(a: str, b: str) -> float:
 _MIN_SUBSTRING_HEADER = 3
 
 
-def _best_match(col_header: str, patterns: list[str]) -> float:
-    col_clean = re.sub(r"[_\-/\\]+", " ", col_header.lower().strip())
-    best = 0.0
-    for pat in patterns:
-        score = _similarity(col_clean, pat)
-        if len(col_clean) >= _MIN_SUBSTRING_HEADER and (pat in col_clean or col_clean in pat):
-            score = max(score, 0.85)
-        best = max(best, score)
-    return best
+# A pattern this short carries no fuzzy signal. "ean" scores 0.667 against
+# "season" on shared letters alone, which is how the Season column became the
+# barcode — every row then shared one barcode and a 60-line order sheet
+# reported a single SKU. Short patterns must match a whole word.
+_MIN_FUZZY_PATTERN = 4
+
+
+def _best_match(col_header: str, patterns: list[str]) -> "tuple[float, int]":
+    """How well a header matches a field, and how specific the match was.
+
+    Returns (score, specificity). Patterns are listed most specific first, so
+    an exact hit on an earlier one outranks an equal hit on a later: a sheet
+    carrying both "Item No." and "SKU" maps the style-level column, not the
+    size-level one.
+    """
+    # Collapse every separator, punctuation included: "Item No." must match
+    # the pattern "item no" exactly, or it scores 0.93 and loses to a literal
+    # "SKU" column at 1.0 — which on a Carhartt sheet means the size-level
+    # code becomes the style, and every line counts as its own style.
+    col_clean = re.sub(r"[^a-z0-9]+", " ", col_header.lower()).strip()
+    words = set(col_clean.split())
+    best, best_rank = 0.0, -1
+    for rank, pat in enumerate(patterns):
+        if len(pat) < _MIN_FUZZY_PATTERN:
+            score = 1.0 if (col_clean == pat or pat in words) else 0.0
+        else:
+            score = _similarity(col_clean, pat)
+            if len(col_clean) >= _MIN_SUBSTRING_HEADER and (pat in col_clean or col_clean in pat):
+                score = max(score, 0.85)
+        if score > best or (score == best and rank < best_rank):
+            best, best_rank = score, rank
+    return best, (len(patterns) - best_rank if best_rank >= 0 else 0)
 
 
 # Columns that summarise a row rather than describe the product. "Grand Total"
@@ -113,9 +136,10 @@ def detect_columns(headers: list[str]) -> dict[str, str | None]:
         if _SUMMARY_HEADER.search(str(header)):
             continue
         for key, patterns in COLUMN_PATTERNS.items():
-            s = _best_match(str(header), patterns)
+            s, specificity = _best_match(str(header), patterns)
             if s >= THRESHOLD:
-                scores[key][header] = s
+                # Specificity only separates headers that score the same.
+                scores[key][header] = s + specificity / 1000.0
 
     mapping: dict[str, str | None] = {key: None for key in COLUMN_PATTERNS}
     assigned: set[str] = set()
@@ -139,7 +163,7 @@ def _find_header_row(df_raw: pd.DataFrame) -> int:
         hits = 0
         for cell in row_values:
             for patterns in COLUMN_PATTERNS.values():
-                if _best_match(cell, patterns) >= 0.55:
+                if _best_match(cell, patterns)[0] >= 0.55:
                     hits += 1
                     break
         if hits > best_hits:

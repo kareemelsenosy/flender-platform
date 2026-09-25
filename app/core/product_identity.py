@@ -30,11 +30,29 @@ def _norm(value) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
+def _key_name(name) -> str:
+    """Header identity: case and separators do not distinguish a column."""
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
 def _get(row: dict, *keys: str) -> str:
-    """First non-empty value among ``keys`` (rows come from varied sources)."""
+    """First non-empty value among ``keys``, matching headers loosely.
+
+    Rows reach these functions from two places: the parser, which has already
+    renamed columns to ``item_code``/``color_name``, and the supplier file
+    itself, which says ``Style Number`` and ``Color``. Matching exactly meant
+    every raw supplier row produced an empty key, so each one counted as its
+    own style — a 60-row order sheet reported 60 styles, and a collection of
+    two files reported the sum of their rows.
+    """
+    lookup = {}
+    for k, v in row.items():
+        norm = _key_name(k)
+        if norm and norm not in lookup:
+            lookup[norm] = v
     for k in keys:
-        v = row.get(k)
-        if v is not None and str(v).strip():
+        v = lookup.get(_key_name(k))
+        if v is not None and str(v).strip() and str(v).strip().lower() != "nan":
             return str(v).strip()
     return ""
 
@@ -46,15 +64,44 @@ def style_key(row: dict) -> str:
     Barcode is intentionally NOT used here: an EAN identifies a single size,
     so it cannot key a whole style.
     """
-    code = _norm(_get(row, "item_code", "manufacturer_code", "style_code", "sap_code"))
-    colour = _norm(_get(row, "color_name", "colour", "color"))
+    code = _norm(_get(row, "item_code", "style_number", "item_no", "style_code",
+                      "manufacturer_code", "mfr_catalog_no", "sap_code"))
+    colour = _norm(_get(row, "color_name", "colour", "color", "colour_code",
+                        "color_code", "web_color"))
     if code:
         return f"code:{code}" + (f"|{colour}" if colour else "")
     brand = _norm(_get(row, "brand", "brand_name"))
-    name = _norm(_get(row, "style_name", "description", "name", "web_description_2"))
+    name = _norm(_get(row, "style_name", "description", "name",
+                      "web_description_2", "item_description"))
     if brand or name:
         return f"nm:{brand}|{name}" + (f"|{colour}" if colour else "")
     return ""
+
+
+def style_only_key(row: dict) -> str:
+    """Identity of the style itself, ignoring colour.
+
+    ``style_key`` is colour-level — it identifies a master record per colour,
+    which is what the merge and image work need. Reporting that as "styles"
+    overstates a collection several times over: Carhartt SS27 is 508 styles in
+    1,537 colourways, not 1,537 styles.
+    """
+    code = _norm(_get(row, "item_code", "style_number", "item_no", "style_code",
+                      "manufacturer_code", "mfr_catalog_no", "sap_code"))
+    if code:
+        return f"code:{code}"
+    brand = _norm(_get(row, "brand", "brand_name"))
+    name = _norm(_get(row, "style_name", "description", "name",
+                      "web_description_2", "item_description"))
+    return f"nm:{brand}|{name}" if (brand or name) else ""
+
+
+def count_style_only(rows: list[dict]) -> int:
+    """Distinct styles, colours collapsed."""
+    keys = {style_only_key(r) for r in rows}
+    keys.discard("")
+    # A row with no derivable code is its own style rather than merged away.
+    return len(keys) + sum(1 for r in rows if not style_only_key(r))
 
 
 def line_key(row: dict) -> str:
@@ -63,13 +110,13 @@ def line_key(row: dict) -> str:
     Precedence: barcode → style_key (+size). This is what lets the exact same
     size be matched across two different sources, and what we dedupe on.
     """
-    barcode = _norm(_get(row, "barcode", "ean", "gtin"))
+    barcode = _norm(_get(row, "barcode", "bar_code", "ean", "gtin", "codebars"))
     if barcode:
         return f"ean:{barcode}"
     base = style_key(row)
     if not base:
         return ""
-    size = _norm(_get(row, "size"))
+    size = _norm(_get(row, "size", "size_description", "size_code"))
     return base + (f"|sz:{size}" if size else "")
 
 

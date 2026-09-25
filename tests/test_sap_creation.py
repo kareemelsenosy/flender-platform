@@ -254,3 +254,29 @@ def test_an_unrelated_summary_tab_is_left_out():
                          ["A", "Black", "M"], ["B", "Blue", "L"]])
     other = pd.DataFrame([["Date", "Quantity", "Amount"], ["x", "1", "2"]])
     assert pick_data_sheets({"ACL FW26": data, "Total": other}) == ["ACL FW26"]
+
+
+def test_horizontal_size_columns_expand_into_sap_lines():
+    """SAP needs one line per size however the supplier laid them out.
+
+    Reading only a single Size column produced 60 lines for a Hiking Patrol
+    collection that has 272.
+    """
+    row = {"Item No.": "HP1", "Colour Code": "8902", "Color": "Black",
+           "Brand": "HP", "Barcode": "1", "Item Description": "Jacket",
+           "Item Group": "JACKETS", "New/Repeat Style": "New",
+           "Wholesale Price EUR": "50", "SKU": "HP1",
+           "Size 1": "S", "Size 2": "M", "Size 3": "L"}
+    out = build_creation_sheet([row], season="SS27")
+    assert out["summary"]["rows"] == 3
+    assert {r["Size"] for r in out["rows"]} == {"S", "M", "L"}
+
+
+def test_a_row_per_size_sheet_is_left_alone():
+    row = {"Item No.": "I1", "Colour Code": "8902", "Color": "Black",
+           "Brand": "C", "Barcode": "1", "Item Description": "Bib",
+           "Item Group": "PANTS", "New/Repeat Style": "Repeat",
+           "Wholesale Price EUR": "78", "SKU": "I1", "Size": "26"}
+    out = build_creation_sheet([row], season="FW26")
+    assert out["summary"]["rows"] == 1
+    assert out["rows"][0]["Size"] == "26"

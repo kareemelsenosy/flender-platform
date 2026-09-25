@@ -142,6 +142,30 @@ def build_row(src: dict, *, season: str, collection: str,
     return out, exceptions
 
 
+def _expand_horizontal_sizes(rows):
+    """One row per size, whatever layout the supplier used.
+
+    Carhartt writes a row per size; NuORDER brands spread Size 1..5 across the
+    row. Reading only the first produced one SAP line per style-colour instead
+    of one per size — 60 rows where the collection has 272.
+    """
+    from app.core.temp_template import expand_sizes, normalise_size
+
+    out = []
+    for row in rows:
+        sizes = expand_sizes(row)
+        if len(sizes) <= 1:
+            out.append(row)
+            continue
+        for s in sizes:
+            copy = dict(row)
+            copy["Size"] = normalise_size(s["size"])
+            if s.get("size_price") is not None:
+                copy.setdefault("Wholesale Price EUR", s["size_price"])
+            out.append(copy)
+    return out
+
+
 def build_creation_sheet(rows, *, season: str, collection: str = "Main",
                          vocab=None, lookup=None) -> dict:
     """Build the whole package.
@@ -149,7 +173,8 @@ def build_creation_sheet(rows, *, season: str, collection: str = "Main",
     Returns the rows, one exception record per problem (carrying the SKU so the
     approval screen can group them), and a summary of what needs a human.
     """
-    src_rows = [{normalise_header(k): v for k, v in r.items()} for r in rows]
+    src_rows = [{normalise_header(k): v for k, v in r.items()}
+                for r in _expand_horizontal_sizes(rows)]
     out_rows: list[dict] = []
     exceptions: list[dict] = []
 

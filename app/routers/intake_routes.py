@@ -110,6 +110,7 @@ def analyse_job(db: DBSession, job: CollectionJob) -> CollectionJob:
     """
     parser = FileParser()
     rows: list[dict] = []
+    by_kind: dict[str, list[dict]] = {}
 
     for cf in job.files:
         if cf.kind not in (intake_core.ORDER_SHEET, intake_core.PRICE_LIST):
@@ -131,10 +132,16 @@ def analyse_job(db: DBSession, job: CollectionJob) -> CollectionJob:
                         f"header row {info['header_row']}, "
                         f"sheet(s): {', '.join(info['sheets_used'])}")
             rows.extend(parsed)
+            by_kind.setdefault(cf.kind, []).extend(parsed)
         except Exception as exc:
             cf.parse_error = str(exc)[:500]
 
-    analysis = intake_core.analyse_rows(rows)
+    # Volume comes from the order sheet, never from the sum of every file. A
+    # price list describes the same products, so adding the two together
+    # double-counts: Hiking Patrol read as 332 styles when it has 60, because
+    # 60 order rows and 272 price rows were simply added up.
+    counted = by_kind.get(intake_core.ORDER_SHEET) or rows
+    analysis = intake_core.analyse_rows(counted)
     # Re-detect across every filename so a multi-brand drop is still flagged
     # when the job is re-analysed after a correction.
     all_brands = intake_core.detect_brands(
