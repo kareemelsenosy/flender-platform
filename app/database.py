@@ -9,10 +9,16 @@ from app.config import DATABASE_URL
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 _is_postgres = DATABASE_URL.startswith("postgresql") or DATABASE_URL.startswith("postgres")
 
-# Normalize postgres:// → postgresql:// (Heroku/Railway use the older scheme)
+# Normalize postgres:// → postgresql:// (Heroku/Railway use the older scheme),
+# then name the driver explicitly. A bare postgresql:// lets SQLAlchemy pick,
+# and 2.1 changed that pick from psycopg2 to psycopg 3 — the app crash-looped
+# on the first rebuild that installed it. Saying psycopg2 outright means no
+# future default can move it again.
 _url = DATABASE_URL
 if _url.startswith("postgres://"):
     _url = "postgresql://" + _url[len("postgres://"):]
+if _url.startswith("postgresql://"):
+    _url = "postgresql+psycopg2://" + _url[len("postgresql://"):]
 
 connect_args = {"check_same_thread": False} if _is_sqlite else {}
 engine_kwargs: dict = {"connect_args": connect_args}

@@ -645,3 +645,36 @@ def test_sheets_batch_progress_requires_batch_ownership(
 
     response = client.get(f"/sheets/batch/{batch_id}/progress")
     assert response.status_code == 403
+
+
+def test_postgres_urls_always_name_the_driver():
+    """SQLAlchemy 2.1 changed the default DBAPI for postgresql:// from
+    psycopg2 to psycopg 3. A rebuild picked the new release up, psycopg 3
+    was not installed, and the app crash-looped with 502s until the driver
+    was named outright."""
+    import importlib
+    import os
+
+    import app.config
+    import app.database
+
+    original = os.environ.get("DATABASE_URL")
+    try:
+        for given in ("postgres://u:p@db:5432/flender",
+                      "postgresql://u:p@db:5432/flender"):
+            os.environ["DATABASE_URL"] = given
+            importlib.reload(app.config)
+            importlib.reload(app.database)
+            assert app.database._url.startswith("postgresql+psycopg2://")
+    finally:
+        if original is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = original
+        importlib.reload(app.config)
+        importlib.reload(app.database)
+
+
+def test_sqlite_urls_are_left_alone():
+    import app.database
+    assert app.database._url.startswith("sqlite:")
