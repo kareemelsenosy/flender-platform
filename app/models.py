@@ -575,6 +575,9 @@ class BrandConfig(Base):
     # Supplier colour name -> SAP base colour, learned from history.
     colour_map_json = Column(Text, default="{}")
     earliest_ship_date = Column(String(50))
+    # Where approved packages are written for this install. Set here rather
+    # than only in the environment so it can be corrected without a deploy.
+    delivery_root = Column(String(1000))
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -636,6 +639,19 @@ class PackageRun(Base):
     file_path = Column(String(1000))
     error = Column(Text)
 
+    # Attributes ask a model about every style, which takes minutes on a real
+    # collection, so that package runs in a thread and reports progress.
+    progress_done = Column(Integer, default=0)
+    progress_total = Column(Integer, default=0)
+    stage = Column(String(120))
+
+    # Reconciliation: a file reaching the import folder is not the same as SAP
+    # having created anything, so the feed is re-read afterwards.
+    reconciled_at = Column(DateTime)
+    expected_count = Column(Integer, default=0)
+    found_count = Column(Integer, default=0)
+    missing_json = Column(Text, default="[]")
+
     approved_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
                             nullable=True)
     approved_at = Column(DateTime)
@@ -678,6 +694,18 @@ class PackageRun(Base):
         self.summary_json = json.dumps(val or {})
 
     @property
+    def missing_in_sap(self) -> list:
+        return self._json("missing_json", "[]")
+
+    @missing_in_sap.setter
+    def missing_in_sap(self, val: list):
+        self.missing_json = json.dumps(list(val or [])[:500])
+
+    @property
     def is_approved(self) -> bool:
-        """Delivered implies approved — it cannot be delivered otherwise."""
-        return self.status in ("approved", "delivered")
+        """Delivered and reconciled both imply approved."""
+        return self.status in ("approved", "delivered", "reconciled")
+
+    @property
+    def is_running(self) -> bool:
+        return self.status == "running"

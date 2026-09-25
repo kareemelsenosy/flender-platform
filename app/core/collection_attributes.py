@@ -66,14 +66,18 @@ def styles_from_rows(rows, *, brand: str = "", season: str = "") -> list[dict]:
     return list(styles.values())
 
 
-def build_attribute_package(styles, enrich, *, vocab_note: str = "") -> dict:
+def build_attribute_package(styles, enrich, *, vocab_note: str = "",
+                            on_progress=None) -> dict:
     """Run the attribute assignment and separate the confident from the rest.
 
     ``enrich`` is injected so the package can be built and tested without
     calling a model.
     """
     rows, exceptions = [], []
-    for style in styles:
+    total = len(styles)
+    for index, style in enumerate(styles, start=1):
+        if on_progress is not None:
+            on_progress(index, total)
         try:
             result = enrich(style)
         except Exception as exc:                     # one bad style, not a dead run

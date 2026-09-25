@@ -25,7 +25,16 @@
           {% if run %}Regenerate{% else %}Generate{% endif %}
         </button>
       </form>
-      {% if run and run.is_approved and run.status != 'delivered' %}
+      {% if run and run.status in ('delivered', 'reconciled') %}
+      <form action="/collections/{{ job.id }}/packages/{{ kind }}/reconcile" method="post" style="display:inline">
+        <button type="submit"
+          style="padding:9px 18px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);
+                 border-radius:9px;font-weight:600;cursor:pointer;font-size:0.86rem">
+          Check against SAP
+        </button>
+      </form>
+      {% endif %}
+      {% if run and run.is_approved and run.status not in ('delivered', 'reconciled') %}
       <form action="/collections/{{ job.id }}/packages/{{ kind }}/deliver" method="post" style="display:inline">
         <button type="submit"
           style="padding:9px 20px;background:#1b6e4f;color:#fff;border:0;border-radius:9px;
@@ -47,7 +56,30 @@
     </div>
   </div>
 
-  {% if not run %}
+  {% if run and run.is_running %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:26px">
+      <div style="font-weight:650" id="pkg-stage">{{ run.stage or 'Working…' }}</div>
+      <div style="height:6px;background:#eee;border-radius:3px;margin-top:12px;overflow:hidden">
+        <div id="pkg-bar" style="height:100%;width:0%;background:#111;transition:width .4s ease"></div>
+      </div>
+      <div style="font-size:0.82rem;color:var(--gray-500,#777);margin-top:8px" id="pkg-count"></div>
+    </div>
+    <script>
+      (function poll() {
+        fetch("/collections/{{ job.id }}/packages/{{ kind }}/status")
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.state !== "running") { location.reload(); return; }
+            document.getElementById("pkg-bar").style.width = (d.pct || 0) + "%";
+            if (d.stage) document.getElementById("pkg-stage").textContent = d.stage;
+            document.getElementById("pkg-count").textContent =
+              d.total ? d.done + " of " + d.total : "";
+            setTimeout(poll, 2000);
+          })
+          .catch(function () { setTimeout(poll, 4000); });
+      })();
+    </script>
+  {% elif not run %}
     <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:40px;text-align:center;color:var(--gray-500,#777)">
       Not generated yet. Press Generate to build this package from the supplier file.
     </div>
@@ -58,7 +90,27 @@
     </div>
   {% else %}
 
-  {% if run.status == 'delivered' %}
+  {% if run.status == 'reconciled' %}
+  <div style="background:{% if run.missing_in_sap %}#fdfaf3{% else %}#e8f3ec{% endif %};
+              border:1px solid {% if run.missing_in_sap %}#efe0c2{% else %}#cfe5d8{% endif %};
+              border-left:3px solid {% if run.missing_in_sap %}#c9a227{% else %}#1b6e4f{% endif %};
+              border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:20px">
+    <strong style="color:{% if run.missing_in_sap %}#5f4a12{% else %}#1b6e4f{% endif %}">
+      Checked against SAP
+    </strong>
+    <div style="color:#2c5e48;font-size:0.88rem;margin-top:3px">
+      {{ '{:,}'.format(run.found_count or 0) }} of {{ '{:,}'.format(run.expected_count or 0) }} products found in SAP.
+      {% if run.missing_in_sap %}
+        <span style="color:#7a6420">{{ run.missing_in_sap|length }} still missing.</span>
+      {% endif %}
+    </div>
+    {% if run.missing_in_sap %}
+    <div style="font-family:ui-monospace,Menlo,monospace;font-size:0.76rem;color:#7a6420;margin-top:6px">
+      {{ run.missing_in_sap[:8]|join(', ') }}{% if run.missing_in_sap|length > 8 %} …{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% elif run.status == 'delivered' %}
   <div style="background:#e8f3ec;border:1px solid #cfe5d8;border-left:3px solid #1b6e4f;border-radius:0 10px 10px 0;padding:14px 18px;margin-bottom:20px">
     <strong style="color:#1b6e4f">Delivered to SAP</strong>
     <div style="color:#2c5e48;font-size:0.85rem;margin-top:3px;font-family:ui-monospace,Menlo,monospace">

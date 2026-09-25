@@ -14,6 +14,7 @@ identical subjects collapse into one decision that applies everywhere.
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -212,7 +213,16 @@ def generate(db, job, kind: str, decisions=None) -> dict:
                 return {"product_type": picked, "confidence": 1.0}
             return enrich_style(style)
 
-        out = build_attribute_package(styles, resolve)
+        run = _run_for(db, job, kind)
+
+        def note(done, total):
+            # Cheap and frequent: the reviewer wants to see it moving.
+            if run is not None and (done == total or done % 5 == 0):
+                run.progress_done, run.progress_total = done, total
+                run.stage = f"Assigning attributes ({done} of {total} styles)"
+                db.commit()
+
+        out = build_attribute_package(styles, resolve, on_progress=note)
 
     elif kind == IMAGES:
         from app.core.collection_images import build_image_package
@@ -246,6 +256,12 @@ def generate(db, job, kind: str, decisions=None) -> dict:
     return out
 
 
+def _run_for(db, job, kind):
+    from app.models import PackageRun
+    return db.query(PackageRun).filter(PackageRun.job_id == job.id,
+                                       PackageRun.kind == kind).first()
+
+
 def _history_from(reference, rows) -> dict:
     """Per-style values SAP already holds, for the fields an order form lacks."""
     if not reference:
@@ -272,8 +288,12 @@ def _price_history(reference):
 
 # ── Persisting ───────────────────────────────────────────────────────────────
 
-def run_package(db, job, kind: str):
-    """Generate, store the exceptions and write the sheet. Returns PackageRun."""
+def run_package(db, job, kind: str, *, background: bool = True):
+    """Generate, store the exceptions and write the sheet. Returns PackageRun.
+
+    A package that calls a model per style is started in a thread and reports
+    progress instead of holding the request open for minutes.
+    """
     from app.models import PackageRun
 
     run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
@@ -284,10 +304,32 @@ def run_package(db, job, kind: str):
         db.commit()
         db.refresh(run)
 
-    if run.status in ("approved", "delivered"):
+    if run.status in ("approved", "delivered", "reconciled", "running"):
+        return run
+
+    if background and kind in ASYNC_KINDS:
+        run.status = "running"
+        run.stage = "Reading the supplier file"
+        run.progress_done, run.progress_total = 0, 0
+        run.error = None
+        db.commit()
+        db.refresh(run)
+        threading.Thread(target=_run_in_background,
+                         args=(job.id, kind), daemon=True).start()
         return run
 
     out = generate(db, job, kind, run.decisions)
+    if out.get("error"):
+        run.status, run.error = "error", out["error"]
+        db.commit()
+        db.refresh(run)
+        return run
+
+    return _finish(db, job, run, out)
+
+
+def _finish(db, job, run, out):
+    """Store an outcome, whichever path produced it."""
     if out.get("error"):
         run.status, run.error = "error", out["error"]
         db.commit()
@@ -304,10 +346,53 @@ def run_package(db, job, kind: str):
     run.summary = {**out.get("summary", {}),
                    "reference_note": out.get("reference_note", "")}
     run.status = "needs_decisions" if (run.critical_count or run.review_count) else "ready"
-    run.file_path = _write_sheet(job, kind, out)
+    run.stage = None
+    run.file_path = _write_sheet(job, run.kind, out)
     db.commit()
     db.refresh(run)
     return run
+
+
+def _run_in_background(job_id: int, kind: str):
+    """Run a slow package on its own session, so a failure is recorded."""
+    from app.database import SessionLocal
+    from app.models import CollectionJob, PackageRun
+    db = SessionLocal()
+    try:
+        job = db.get(CollectionJob, job_id)
+        run = db.query(PackageRun).filter(PackageRun.job_id == job_id,
+                                          PackageRun.kind == kind).first()
+        if not job or not run:
+            return
+        try:
+            _finish(db, job, run, generate(db, job, kind, run.decisions))
+        except Exception as exc:
+            # The collection can be deleted while this is still working, and
+            # the failed flush leaves the session unusable — roll back before
+            # trying to record anything, and say nothing if the row is gone.
+            db.rollback()
+            still_there = db.query(PackageRun).filter(
+                PackageRun.id == run.id).first()
+            if still_there is None:
+                return
+            still_there.status = "error"
+            still_there.error = f"{type(exc).__name__}: {exc}"[:500]
+            still_there.stage = None
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+    finally:
+        db.close()
+
+
+def progress_of(run) -> dict:
+    """What to show while a package is still being built."""
+    total = run.progress_total or 0
+    done = run.progress_done or 0
+    return {"running": run.status == "running", "done": done, "total": total,
+            "stage": run.stage or "",
+            "pct": round(done / total * 100) if total else 0}
 
 
 def _write_sheet(job, kind: str, out) -> str:
@@ -346,10 +431,16 @@ def approve(db, run, user_id: int):
     return run, ""
 
 
-def delivery_root() -> "Path":
-    """Where approved sheets are put for SAP to collect."""
-    import os
+def delivery_root(config=None) -> "Path":
+    """Where approved sheets are put for SAP to collect.
+
+    A brand's own setting wins, then the environment, then a local outbox —
+    so an install can be pointed at the Dropbox import root from the settings
+    page without waiting for a deploy.
+    """
     from pathlib import Path
+    if config is not None and getattr(config, "delivery_root", ""):
+        return Path(config.delivery_root)
     return Path(os.getenv("DELIVERY_ROOT") or (OUTPUT_DIR / "outbox"))
 
 
@@ -376,7 +467,8 @@ def deliver(db, run):
     if not run.file_path or not os.path.exists(run.file_path):
         return run, "the package file is missing — regenerate it"
 
-    folder = delivery_root() / DELIVERY_FOLDER.get(run.kind, run.kind)
+    folder = (delivery_root(_brand_config(db, run.job))
+              / DELIVERY_FOLDER.get(run.kind, run.kind))
     try:
         folder.mkdir(parents=True, exist_ok=True)
         stamp = _utcnow().strftime("%Y%m%d_%H%M%S")
@@ -394,6 +486,88 @@ def deliver(db, run):
     db.commit()
     db.refresh(run)
     return run, ""
+
+
+def reconcile(db, run):
+    """Re-read SAP and confirm the package actually landed.
+
+    A file reaching the import folder is not the same as SAP having created
+    anything, so the expected item codes are looked for in the brand's own
+    nightly feed. Anything absent is reported rather than assumed late.
+    """
+    job = run.job
+    if run.status not in ("delivered", "reconciled"):
+        return run, "deliver the package first"
+
+    config = _brand_config(db, job)
+    reference, note = _sap_reference(config)
+    if reference is None:
+        return run, note or "no SAP sheet configured for this brand"
+
+    out = generate(db, job, run.kind, run.decisions)
+    if out.get("error"):
+        return run, out["error"]
+
+    # Counted per product, not per row: SAP creates items, and a product that
+    # is absent is absent in every size. Counting rows against products would
+    # report more found than were looked for.
+    products: dict[str, bool] = {}
+    for row in out["rows"]:
+        style = str(row.get("U_SCode") or row.get("Item No.") or "").strip()
+        colour = str(row.get("U_Web_Color") or row.get("Color") or "").strip()
+        barcode = str(row.get("U_CodeBars") or row.get("Barcode") or "").strip()
+        if not style:
+            continue
+        key = f"{style} {colour}".strip()
+        if key in products:
+            continue
+        products[key] = bool(reference.find(style=style, colour=colour,
+                                            barcode=barcode))
+
+    missing = [k for k, found in products.items() if not found]
+    run.expected_count = len(products)
+    run.found_count = len(products) - len(missing)
+    run.missing_in_sap = missing
+    run.reconciled_at = _utcnow()
+    run.status = "reconciled"
+    db.commit()
+    db.refresh(run)
+    return run, ""
+
+
+def find_sap_sheet(brand: str) -> "tuple[str, str]":
+    """Look for a brand's nightly stock sheet in Drive.
+
+    SAP writes one per brand, named like "Gramicci Stock". Finding it saves
+    pasting an id, and says plainly when the sheet has not been shared rather
+    than leaving an empty box.
+    """
+    if not brand:
+        return "", "no brand set for this collection"
+    try:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        creds = Credentials.from_service_account_file(
+            "credentials/google_credentials.json",
+            scopes=["https://www.googleapis.com/auth/drive.readonly"])
+        svc = build("drive", "v3", credentials=creds)
+        safe = brand.replace("'", " ")
+        res = svc.files().list(
+            q=("mimeType='application/vnd.google-apps.spreadsheet' "
+               f"and trashed=false and name contains '{safe}'"),
+            fields="files(id,name,modifiedTime)", pageSize=50,
+            supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    except Exception as exc:
+        return "", f"Drive could not be searched ({type(exc).__name__})"
+
+    files = res.get("files", [])
+    stock = [f for f in files if "stock" in f["name"].lower()]
+    if not stock:
+        return "", (f"no sheet named like '{brand} Stock' is shared with the "
+                    f"Operations OS account")
+    # The most recently written one is the live feed; the rest are old copies.
+    stock.sort(key=lambda f: f.get("modifiedTime", ""), reverse=True)
+    return stock[0]["id"], f"found '{stock[0]['name']}'"
 
 
 def package_state(job) -> dict:

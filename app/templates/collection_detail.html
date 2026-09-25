@@ -119,11 +119,24 @@
              style="flex:1;min-width:280px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
       <input type="text" name="earliest_ship_date" value="{{ brand_config.earliest_ship_date if brand_config else '' }}"
              placeholder="Earliest ship date (optional)"
-             style="width:210px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
+             style="width:200px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
+      <input type="text" name="delivery_root" value="{{ brand_config.delivery_root if brand_config else '' }}"
+             placeholder="SAP import folder (optional)"
+             style="flex:1;min-width:230px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
       <button type="submit"
         style="padding:9px 18px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.85rem">
         Save
       </button>
+    </form>
+    <form action="/collections/{{ job.id }}/find-sap-sheet" method="post" style="margin-top:10px">
+      <button type="submit"
+        style="padding:7px 15px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;
+               font-weight:600;cursor:pointer;font-size:0.83rem">
+        Find it automatically
+      </button>
+      {% if sap_sheet_note %}
+      <span style="font-size:0.83rem;color:var(--gray-500,#777);margin-left:10px">{{ sap_sheet_note }}</span>
+      {% endif %}
     </form>
   </div>
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
+)
 from sqlalchemy.orm import Session as DBSession
 
 from app.auth import get_current_user_id
@@ -154,6 +156,64 @@ async def deliver_package(job_id: int, kind: str, request: Request,
                             status_code=302)
 
 
+@router.post("/collections/{job_id}/packages/{kind}/reconcile")
+async def reconcile_package(job_id: int, kind: str, request: Request,
+                            db: DBSession = Depends(get_db)):
+    """Re-read SAP and confirm the delivered package actually landed."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    if job:
+        run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
+                                          PackageRun.kind == kind).first()
+        if run:
+            pkg.reconcile(db, run)
+    return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
+                            status_code=302)
+
+
+@router.get("/collections/{job_id}/packages/{kind}/status")
+async def package_status(job_id: int, kind: str, request: Request,
+                         db: DBSession = Depends(get_db)):
+    """Progress for a package still being built, polled by the page."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    job = _job(db, job_id, uid)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
+                                      PackageRun.kind == kind).first()
+    if not run:
+        return JSONResponse({"state": "not_started"})
+    return JSONResponse({"state": run.status, **pkg.progress_of(run)})
+
+
+@router.post("/collections/{job_id}/find-sap-sheet")
+async def find_sap_sheet(job_id: int, request: Request,
+                         db: DBSession = Depends(get_db)):
+    """Search Drive for this brand's nightly stock sheet."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    if job:
+        sheet_id, note = pkg.find_sap_sheet(job.brand or "")
+        config = db.query(BrandConfig).filter(
+            BrandConfig.user_id == uid,
+            BrandConfig.brand == (job.brand or "")).first()
+        if not config and job.brand:
+            config = BrandConfig(user_id=uid, brand=job.brand)
+            db.add(config)
+        if config:
+            if sheet_id:
+                config.sap_sheet_id = sheet_id
+            db.commit()
+        request.session["sap_sheet_note"] = note
+    return RedirectResponse(f"/collections/{job_id}", status_code=302)
+
+
 @router.get("/collections/{job_id}/packages/{kind}/download")
 async def download_package(job_id: int, kind: str, request: Request,
                            db: DBSession = Depends(get_db)):
@@ -202,6 +262,7 @@ async def set_identity(job_id: int, request: Request,
 async def save_brand_config(job_id: int, request: Request,
                             sap_sheet_id: str = Form(default=""),
                             earliest_ship_date: str = Form(default=""),
+                            delivery_root: str = Form(default=""),
                             db: DBSession = Depends(get_db)):
     """Point a brand at its nightly SAP sheet — where its history lives."""
     uid = get_current_user_id(request)
@@ -223,5 +284,6 @@ async def save_brand_config(job_id: int, request: Request,
             raw = raw.split("/spreadsheets/d/")[1].split("/")[0]
         config.sap_sheet_id = raw
         config.earliest_ship_date = (earliest_ship_date or "").strip()
+        config.delivery_root = (delivery_root or "").strip()
         db.commit()
     return RedirectResponse(f"/collections/{job_id}", status_code=302)
