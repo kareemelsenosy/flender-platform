@@ -263,6 +263,61 @@ async def set_identity(job_id: int, request: Request,
     return RedirectResponse(f"/collections/{job_id}", status_code=302)
 
 
+@router.post("/collections/{job_id}/b2b")
+async def set_b2b(job_id: int, request: Request,
+                  uploaded: str = Form(default=""), note: str = Form(default=""),
+                  db: DBSession = Depends(get_db)):
+    """Record whether the collection is live in B2B.
+
+    The upload is manual for now, but the system still has to know it
+    happened — a collection is not ready because SAP holds it, it is ready
+    when a customer can see it.
+    """
+    from datetime import datetime, timezone
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    if job:
+        job.b2b_uploaded = uploaded == "yes"
+        job.b2b_uploaded_at = (datetime.now(timezone.utc)
+                               if job.b2b_uploaded else None)
+        job.b2b_note = (note or "").strip()[:500] or None
+        db.commit()
+    return RedirectResponse(f"/collections/{job_id}", status_code=302)
+
+
+@router.post("/collections/{job_id}/compare")
+async def compare_with_previous(job_id: int, request: Request,
+                                previous_id: int = Form(...),
+                                db: DBSession = Depends(get_db)):
+    """Compare this supplier file against an earlier collection.
+
+    Only the difference needs onboarding: reprocessing a whole collection to
+    discover that twelve styles were added wastes the work already approved.
+    """
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    previous = _job(db, previous_id, uid)
+    if job and previous:
+        from app.core.version_diff import compare_versions, describe
+        from app.services.packages import _source_rows
+        from app.core import intake as intake_core
+
+        old_rows, _ = _source_rows(previous, intake_core.ORDER_SHEET)
+        new_rows, _ = _source_rows(job, intake_core.ORDER_SHEET)
+        diff = compare_versions(old_rows, new_rows)
+        diff["lines"] = describe(diff, brand=job.brand or "",
+                                 season=job.season or "")
+        diff["previous_label"] = previous.label
+        job.parent_job_id = previous.id
+        job.change_report = diff
+        db.commit()
+    return RedirectResponse(f"/collections/{job_id}", status_code=302)
+
+
 @router.post("/collections/{job_id}/brand-config")
 async def save_brand_config(job_id: int, request: Request,
                             sap_sheet_id: str = Form(default=""),

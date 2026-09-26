@@ -96,6 +96,13 @@ def _clear_runtime_state(test_app):
 @pytest.fixture(autouse=True)
 def isolated_state(test_app, monkeypatch):
     monkeypatch.setattr(test_app["notifications"], "add_notification", lambda *args, **kwargs: None)
+    # Tests must never reach SMTP or Google Drive. Both are fire-and-forget in
+    # production; here they would make the suite slow and flaky.
+    import app.routers.auth_routes as _auth
+    monkeypatch.setattr(_auth, "_send_email", lambda *a, **k: True, raising=False)
+    import app.routers.intake_routes as _intake
+    monkeypatch.setattr(_intake, "_lookup_sap_sheet", lambda *a, **k: None,
+                        raising=False)
     monkeypatch.setattr(test_app["task_state"], "restore_on_startup", lambda: ({}, {}), raising=False)
     monkeypatch.setattr(test_app["task_state"], "save_batch", lambda *args, **kwargs: None, raising=False)
 

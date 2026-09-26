@@ -345,11 +345,15 @@ def _finish(db, job, run, out):
     run.exceptions = grouped
     run.summary = {**out.get("summary", {}),
                    "reference_note": out.get("reference_note", "")}
+    was = run.status
     run.status = "needs_decisions" if (run.critical_count or run.review_count) else "ready"
     run.stage = None
     run.file_path = _write_sheet(job, run.kind, out)
     db.commit()
     db.refresh(run)
+    # Only on the first build; regenerating after a decision must not mail.
+    if was in ("draft", "running"):
+        _notify(db, run, "approval_needed")
     return run
 
 
@@ -431,6 +435,20 @@ def approve(db, run, user_id: int):
     return run, ""
 
 
+def _notify(db, run, which: str):
+    """Send one status email. Never lets a mail failure affect the package."""
+    from app.models import User
+    from app.services import status_email
+    try:
+        owner = db.get(User, run.job.user_id)
+        if not owner or not owner.email:
+            return
+        label = KINDS.get(run.kind, run.kind)
+        getattr(status_email, which)(owner.email, run.job, run, label)
+    except Exception:
+        pass
+
+
 def delivery_root(config=None) -> "Path":
     """Where approved sheets are put for SAP to collect.
 
@@ -485,6 +503,7 @@ def deliver(db, run):
     run.status = "delivered"
     db.commit()
     db.refresh(run)
+    _notify(db, run, "delivered")
     return run, ""
 
 
@@ -532,6 +551,7 @@ def reconcile(db, run):
     run.status = "reconciled"
     db.commit()
     db.refresh(run)
+    _notify(db, run, "reconciled")
     return run, ""
 
 

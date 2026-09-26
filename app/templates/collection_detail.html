@@ -104,6 +104,95 @@
     {% endfor %}
   </div>
 
+  <!-- Change report, when this is a new version of an earlier collection -->
+  {% if change_report.get('summary') %}
+  {% set cs = change_report['summary'] %}
+  <h2 style="font-size:1.05rem;font-weight:700;margin-bottom:12px">
+    Changes since {{ change_report.get('previous_label', 'the previous version') }}
+  </h2>
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px;margin-bottom:26px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px;margin-bottom:12px">
+      {% for label, value, tone in [('Added', cs.added, 'ok'), ('Removed', cs.removed, 'stop'),
+                                     ('Changed', cs.changed, 'warn'), ('Unchanged', cs.unchanged, 'plain')] %}
+      <div>
+        <div style="font-size:0.7rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">{{ label }}</div>
+        <div style="font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums;
+          {% if value and tone=='stop' %}color:#993325{% elif value and tone=='warn' %}color:#8a6011{% elif value and tone=='ok' %}color:#1b6e4f{% endif %}">
+          {{ '{:,}'.format(value) }}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% for line in change_report.get('lines', []) %}
+    <div style="font-size:0.87rem;color:var(--gray-500,#777)">{{ line }}</div>
+    {% endfor %}
+    {% if change_report.get('changed') %}
+    <div style="margin-top:12px;border-top:1px solid var(--gray-100,#f4f4f4);padding-top:10px">
+      {% for item in change_report['changed'][:8] %}
+      <div style="font-size:0.85rem;padding:3px 0">
+        <strong>{{ item.label }}</strong>
+        {% for c in item.changes %}
+        <span style="color:var(--gray-500,#777)"> · {{ c.field.replace('_',' ') }}
+          {{ c.was or '—' }} &rarr; {{ c.now or '—' }}</span>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% elif other_collections %}
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px;margin-bottom:26px">
+    <div style="font-weight:650;font-size:0.94rem">Is this a new version?</div>
+    <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:5px 0 11px;max-width:680px">
+      Compare it against an earlier collection and only the difference needs working —
+      added, removed and changed, instead of the whole thing again.
+    </p>
+    <form action="/collections/{{ job.id }}/compare" method="post" style="display:flex;gap:10px;flex-wrap:wrap">
+      <select name="previous_id"
+        style="padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem;min-width:260px">
+        {% for other in other_collections %}
+        <option value="{{ other.id }}">{{ other.label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit"
+        style="padding:9px 18px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.85rem">
+        Compare
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
+  <!-- B2B publication -->
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px;margin-bottom:26px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <div style="font-weight:650;font-size:0.94rem">B2B publication</div>
+      {% if job.b2b_uploaded %}
+      <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#e8f3ec;color:#1b6e4f">
+        Live{% if job.b2b_uploaded_at %} since {{ job.b2b_uploaded_at.strftime('%d %b') }}{% endif %}
+      </span>
+      {% else %}
+      <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#f0f0f0;color:#666">Not uploaded</span>
+      {% endif %}
+    </div>
+    <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:5px 0 11px;max-width:680px">
+      The upload is done by hand for now, but the system still needs to know — a collection
+      is not ready because SAP holds it, it is ready when a customer can see it.
+    </p>
+    <form action="/collections/{{ job.id }}/b2b" method="post" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <select name="uploaded"
+        style="padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
+        <option value="no" {% if not job.b2b_uploaded %}selected{% endif %}>Not uploaded</option>
+        <option value="yes" {% if job.b2b_uploaded %}selected{% endif %}>Live in B2B</option>
+      </select>
+      <input type="text" name="note" value="{{ job.b2b_note or '' }}" placeholder="Note (optional)"
+             style="flex:1;min-width:220px;padding:9px 11px;border:1px solid var(--gray-200,#eee);border-radius:9px;font:inherit;font-size:0.86rem">
+      <button type="submit"
+        style="padding:9px 18px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.85rem">
+        Save
+      </button>
+    </form>
+  </div>
+
   <!-- SAP history connection -->
   <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px;margin-bottom:26px">
     <div style="font-weight:650;font-size:0.94rem">SAP history for {{ job.brand or 'this brand' }}</div>

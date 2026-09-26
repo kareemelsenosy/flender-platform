@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import pathlib
 import secrets
+import threading
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -218,7 +219,70 @@ async def _create_job(db: DBSession, owner: User, attachments: list[UploadFile],
     db.commit()
     db.refresh(job)
 
-    return analyse_job(db, job)
+    _connect_sap_history(db, job)
+    job = analyse_job(db, job)
+    _notify_intake(db, job)
+    return job
+
+
+def _notify_intake(db: DBSession, job: CollectionJob) -> None:
+    """Tell the owner what arrived, without letting a mail failure matter."""
+    from app.services.status_email import intake_complete
+    owner = db.get(User, job.user_id)
+    if owner and owner.email:
+        intake_complete(owner.email, job)
+
+
+def _connect_sap_history(db: DBSession, job: CollectionJob) -> None:
+    """Point the collection at its brand's SAP sheet, if one is shared.
+
+    The history is what stops the system asking about things SAP already
+    knows, so waiting for someone to notice a button and paste an id wastes
+    the benefit on the very first run.
+
+    The lookup talks to Drive, so it runs off the request: an intake must not
+    get slower because a Google call is having a bad day. The collection page
+    shows the connection once it lands.
+    """
+    from app.models import BrandConfig
+
+    if not job.brand:
+        return
+    config = db.query(BrandConfig).filter(
+        BrandConfig.user_id == job.user_id, BrandConfig.brand == job.brand).first()
+    if config and config.sap_sheet_id:
+        return
+    threading.Thread(target=_lookup_sap_sheet,
+                     args=(job.user_id, job.brand), daemon=True).start()
+
+
+def _lookup_sap_sheet(user_id: int, brand: str) -> None:
+    """Find and save the brand's SAP sheet, on its own session."""
+    from app.database import SessionLocal
+    from app.models import BrandConfig
+    from app.services.packages import find_sap_sheet
+
+    try:
+        sheet_id, _note = find_sap_sheet(brand)
+    except Exception:
+        return
+    if not sheet_id:
+        return
+    db = SessionLocal()
+    try:
+        config = db.query(BrandConfig).filter(
+            BrandConfig.user_id == user_id, BrandConfig.brand == brand).first()
+        if config and config.sap_sheet_id:
+            return
+        if not config:
+            config = BrandConfig(user_id=user_id, brand=brand)
+            db.add(config)
+        config.sap_sheet_id = sheet_id
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 # ── n8n webhook ──────────────────────────────────────────────────────────────
@@ -314,6 +378,11 @@ async def collection_detail(job_id: int, request: Request,
         "package_kinds": pkg.KINDS, "package_state": pkg.package_state(job),
         "brand_config": brand_config,
         "sap_sheet_note": request.session.pop("sap_sheet_note", ""),
+        "change_report": job.change_report,
+        "other_collections": db.query(CollectionJob).filter(
+            CollectionJob.user_id == uid, CollectionJob.id != job.id,
+            CollectionJob.brand == job.brand).order_by(
+                CollectionJob.created_at.desc()).limit(10).all(),
         "summary": intake_core.format_intake_email(report),
         "labels": intake_core.KIND_LABELS,
         "expected": intake_core.EXPECTED_KINDS,

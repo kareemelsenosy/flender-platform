@@ -497,6 +497,19 @@ class CollectionJob(Base):
 
     report_json = Column(Text, default="{}")      # the intake report (see core/intake.py)
 
+    # B2B publication. The upload itself is done by hand for now, but the
+    # Operations OS still has to know whether it happened — a collection is
+    # not ready because SAP has it, it is ready when customers can see it.
+    b2b_uploaded = Column(Boolean, default=False)
+    b2b_uploaded_at = Column(DateTime)
+    b2b_note = Column(Text)
+
+    # Which supplier version this is, and what changed from the one before.
+    parent_job_id = Column(Integer, ForeignKey("collection_jobs.id",
+                                               ondelete="SET NULL"),
+                           nullable=True, index=True)
+    change_report_json = Column(Text, default="{}")
+
     files = relationship("CollectionFile", back_populates="job",
                          cascade="all, delete-orphan",
                          order_by="CollectionFile.id")
@@ -514,6 +527,17 @@ class CollectionJob(Base):
             return json.loads(self.report_json or "{}")
         except (TypeError, ValueError):
             return {}
+
+    @property
+    def change_report(self) -> dict:
+        try:
+            return json.loads(self.change_report_json or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    @change_report.setter
+    def change_report(self, val: dict):
+        self.change_report_json = json.dumps(val or {})
 
     @report.setter
     def report(self, val: dict):
