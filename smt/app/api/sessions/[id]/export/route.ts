@@ -21,6 +21,25 @@ interface RecordRow {
   created_at: string;
 }
 
+/** A name not yet used in this folder, adding or bumping a trailing _N.
+ *
+ * Filenames are built from brand and post type, so two uploads of the same
+ * brand and type on the same day produce the same name — and JSZip keeps only
+ * the last file written under a given path. Two screenshots went in and one
+ * came out.
+ */
+function uniqueFilename(filename: string, used: Set<string>): string {
+  if (!used.has(filename)) return filename;
+  const dotIdx = filename.lastIndexOf('.');
+  const ext = dotIdx !== -1 ? filename.slice(dotIdx) : '';
+  const base = dotIdx !== -1 ? filename.slice(0, dotIdx) : filename;
+  const match = base.match(/^(.+?)_(\d+)$/);
+  const stem = match ? match[1] : base;
+  let n = 1;
+  while (used.has(`${stem}_${n}${ext}`)) n++;
+  return `${stem}_${n}${ext}`;
+}
+
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const session = await queryOne<SessionRow>(
@@ -63,10 +82,16 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     const xlsxBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
     root.file('records.xlsx', xlsxBuf);
 
-    // Files grouped by customer/date — pulled from object storage
+    // Files grouped by customer/date — pulled from object storage. Names are
+    // tracked per folder, because that is the level at which they collide.
+    const usedNames = new Map<string, Set<string>>();
     for (const r of records) {
       const files = (() => { try { return JSON.parse(r.files) as string[]; } catch { return []; } })();
       if (files.length === 0) continue;
+
+      const folderKey = `${r.customer}/${r.date}`;
+      if (!usedNames.has(folderKey)) usedNames.set(folderKey, new Set());
+      const used = usedNames.get(folderKey)!;
 
       const customerFolder = root.folder(r.customer)!;
       const dateFolder = customerFolder.folder(r.date)!;
@@ -74,7 +99,9 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       for (const filename of files) {
         const data = await getFile(r.id, filename);
         if (data) {
-          dateFolder.file(filename, data);
+          const safeName = uniqueFilename(filename, used);
+          used.add(safeName);
+          dateFolder.file(safeName, data);
         }
       }
     }
