@@ -1,7 +1,7 @@
 """SQLAlchemy database setup — supports SQLite (dev) and PostgreSQL (production)."""
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import DATABASE_URL
@@ -55,9 +55,57 @@ def init_db():
     _run_migrations()
 
 
+def _add_missing_columns(target=None):
+    """Add any model column the live table does not have yet.
+
+    create_all() creates missing *tables* but never alters an existing one, so
+    a field added to a model that already had a table simply never appeared in
+    production — every query then failed with UndefinedColumn while working
+    perfectly on a developer's fresh database. Adding each new field to a
+    hand-written list worked until the day one was forgotten, which is exactly
+    what happened with collection_jobs.b2b_uploaded.
+
+    Columns are added nullable and without constraints: safe on a populated
+    table, and the application supplies the defaults. Anything more involved
+    than an added column is still a deliberate migration.
+    """
+    from sqlalchemy import inspect
+    from sqlalchemy.schema import CreateColumn
+
+    target = target or engine
+    insp = inspect(target)
+    existing_tables = set(insp.get_table_names())
+    added = []
+
+    with target.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue                      # create_all will make it
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in have or column.primary_key:
+                    continue
+                ddl = CreateColumn(column).compile(dialect=target.dialect)
+                # Strip anything that cannot be applied to existing rows.
+                spec = str(ddl).replace(" NOT NULL", "")
+                try:
+                    conn.execute(text(
+                        f'ALTER TABLE {table.name} ADD COLUMN {spec}'))
+                    added.append(f"{table.name}.{column.name}")
+                except Exception:
+                    # A racing deploy may have added it a moment ago.
+                    pass
+
+    if added:
+        import logging
+        logging.getLogger("flender").info(
+            "Added %d missing column(s): %s", len(added), ", ".join(added))
+
+
 def _run_migrations():
     """Add columns that may be missing from existing tables."""
-    from sqlalchemy import text, inspect
+    _add_missing_columns()
+    from sqlalchemy import inspect
     insp = inspect(engine)
     with engine.begin() as conn:
         # Add additional_urls_json to unique_items if missing
