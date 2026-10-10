@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Brand Rules{% endblock %}
+
+{% block content %}
+<div style="max-width:1000px">
+  <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Brand Rules</h1>
+  <p style="color:var(--gray-500,#777);margin:6px 0 22px;max-width:720px;font-size:0.92rem;line-height:1.55">
+    How the system reads each brand's data: base colours, size runs, size codes and which column holds which field.
+    Every rule is written out in plain words and can be changed here. The system never changes a rule by itself —
+    when it meets something new it raises a request, and nothing changes until someone approves it.
+  </p>
+
+  {% if pending_total %}
+  <div style="background:#fdfaf3;border:1px solid #efe0c2;border-left:3px solid #c9a227;border-radius:0 10px 10px 0;padding:13px 18px;margin-bottom:22px;color:#5f4a12">
+    <strong>{{ pending_total }} rule change{{ '' if pending_total == 1 else 's' }} waiting for approval.</strong>
+    Open a brand below to review them.
+  </div>
+  {% endif %}
+
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden;margin-bottom:22px">
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem">
+      <thead>
+        <tr style="text-align:left;color:var(--gray-500,#777);font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase">
+          <th style="padding:12px 16px">Brand</th>
+          <th style="padding:12px 8px">Base colour</th>
+          {% for t in ['colours', 'size_runs', 'size_codes', 'columns'] %}
+          <th style="padding:12px 8px;text-align:right">{{ tables[t].label }}</th>
+          {% endfor %}
+          <th style="padding:12px 16px;text-align:right">Requests</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in brands %}
+        <tr style="border-top:1px solid var(--gray-100,#f4f4f4)">
+          <td style="padding:11px 16px">
+            <a href="/brand-rules/{{ b.key }}" style="font-weight:650;color:#111;text-decoration:none">{{ b.brand }}</a>
+            {% if not b.exists %}<span style="font-size:0.74rem;color:var(--gray-400,#aaa)"> · not opened yet</span>{% endif %}
+          </td>
+          <td style="padding:11px 8px">
+            {% if b.settings.get('uses_base_colour') %}<span style="color:#1b6e4f;font-weight:600">Yes</span>
+            {% else %}<span style="color:var(--gray-400,#aaa)">No</span>{% endif %}
+          </td>
+          {% for t in ['colours', 'size_runs', 'size_codes', 'columns'] %}
+          <td style="padding:11px 8px;text-align:right;font-variant-numeric:tabular-nums;color:{% if b.counts[t] %}#111{% else %}var(--gray-300,#ccc){% endif %}">{{ b.counts[t] }}</td>
+          {% endfor %}
+          <td style="padding:11px 16px;text-align:right">
+            {% if b.pending %}
+            <span style="padding:2px 8px;border-radius:5px;font-size:0.74rem;background:#fdf3e0;color:#8a6011;font-weight:600">{{ b.pending }} to approve</span>
+            {% else %}<span style="color:var(--gray-300,#ccc)">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form action="/brand-rules/new" method="post" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <input type="text" name="brand" required placeholder="Add a brand (e.g. Gramicci)"
+           style="padding:9px 12px;border:1px solid var(--gray-200,#e4e4e4);border-radius:9px;font:inherit;font-size:0.88rem;min-width:260px">
+    <button type="submit"
+      style="padding:9px 18px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.86rem">
+      Open rules
+    </button>
+  </form>
+</div>
+{% endblock %}

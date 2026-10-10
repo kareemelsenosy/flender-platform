@@ -56,20 +56,29 @@
     </div>
   </div>
 
-  {% if run and run.is_running %}
+  {% if run and run.status in ('running', 'cancelling') %}
     <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:26px">
       <div style="font-weight:650" id="pkg-stage">{{ run.stage or 'Working…' }}</div>
       <div style="height:6px;background:#eee;border-radius:3px;margin-top:12px;overflow:hidden">
         <div id="pkg-bar" style="height:100%;width:0%;background:#111;transition:width .4s ease"></div>
       </div>
-      <div style="font-size:0.82rem;color:var(--gray-500,#777);margin-top:8px" id="pkg-count"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:8px">
+        <div style="font-size:0.82rem;color:var(--gray-500,#777)" id="pkg-count"></div>
+        <form action="/collections/{{ job.id }}/packages/{{ kind }}/cancel" method="post">
+          <button type="submit" {% if run.status == 'cancelling' %}disabled{% endif %}
+            style="padding:7px 15px;background:#fff;color:#993325;border:1px solid #e6cdc9;border-radius:8px;
+                   font-weight:600;cursor:pointer;font-size:0.83rem">
+            {% if run.status == 'cancelling' %}Cancelling…{% else %}Cancel{% endif %}
+          </button>
+        </form>
+      </div>
     </div>
     <script>
       (function poll() {
         fetch("/collections/{{ job.id }}/packages/{{ kind }}/status")
           .then(function (r) { return r.json(); })
           .then(function (d) {
-            if (d.state !== "running") { location.reload(); return; }
+            if (d.state !== "running" && d.state !== "cancelling") { location.reload(); return; }
             document.getElementById("pkg-bar").style.width = (d.pct || 0) + "%";
             if (d.stage) document.getElementById("pkg-stage").textContent = d.stage;
             document.getElementById("pkg-count").textContent =
@@ -82,6 +91,10 @@
   {% elif not run %}
     <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:40px;text-align:center;color:var(--gray-500,#777)">
       Not generated yet. Press Generate to build this package from the supplier file.
+    </div>
+  {% elif run.status == 'cancelled' %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:30px;text-align:center;color:var(--gray-500,#777)">
+      Cancelled. Nothing was kept — press Generate to start again.
     </div>
   {% elif run.status == 'error' %}
     <div style="background:#fbe9e6;border:1px solid #e6cdc9;border-left:3px solid #993325;border-radius:0 10px 10px 0;padding:16px 18px">
@@ -181,6 +194,15 @@
             </span>
           </div>
           <div style="color:var(--gray-500,#777);font-size:0.87rem;margin-top:4px">{{ q.reason }}</div>
+          {% if q.field in ('BASE COLOR', 'U_BaseColor') %}
+          <div style="font-size:0.78rem;color:var(--gray-400,#999);margin-top:3px">
+            Your answer is also saved to the {{ job.brand or 'brand' }} colour table in Brand Rules, so it is never asked again.
+          </div>
+          {% elif q.severity == 'critical' and not q.fix_hint %}
+          <div style="font-size:0.78rem;color:var(--gray-400,#999);margin-top:3px">
+            Your answer fills every row where {{ q.field }} is empty.
+          </div>
+          {% endif %}
           {% if q.skus %}
           <div style="font-family:ui-monospace,Menlo,monospace;font-size:0.72rem;color:var(--gray-400,#bbb);margin-top:3px">
             {{ q.skus|join(', ') }}{% if q.rows > q.skus|length %} …{% endif %}
@@ -188,6 +210,12 @@
           {% endif %}
         </div>
 
+        {% if q.fix_hint %}
+        <div style="max-width:340px;font-size:0.82rem;color:#7a2b20;background:#fbf1ef;border-radius:8px;padding:9px 12px">
+          {{ q.fix_hint }}
+          <a href="/collections/{{ job.id }}#mapping" style="color:#993325;font-weight:600">Open column mapping</a>
+        </div>
+        {% else %}
         <form action="/collections/{{ job.id }}/packages/{{ kind }}/decide" method="post"
               style="display:flex;gap:8px;align-items:center">
           <input type="hidden" name="key" value="{{ q.key }}">
@@ -206,6 +234,7 @@
             Apply
           </button>
         </form>
+        {% endif %}
       </div>
     </div>
     {% endfor %}

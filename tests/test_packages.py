@@ -87,6 +87,13 @@ def collection(client, login_as, test_app, monkeypatch):
     import app.routers.intake_routes as ir
     monkeypatch.setattr(ir, "INTAKE_API_KEY", "k")
     login_as()
+    # Base colour is per brand (Carhartt WIP and Edwin by default); these
+    # tests exercise the colour questions, so staff have switched it on.
+    from app.database import SessionLocal
+    from app.services.brand_rules import set_setting
+    db = SessionLocal()
+    set_setting(db, "Hiking Patrol", "uses_base_colour", True)
+    db.close()
     r = client.post("/api/intake/email", headers={"X-Intake-Key": "k"},
                     data={"subject": "Hiking Patrol SS27"},
                     files=[("files", ("SS27_ORDER_SHEET.xlsx", _order_sheet_bytes()))])

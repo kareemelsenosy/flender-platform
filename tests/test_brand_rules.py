@@ -1,0 +1,418 @@
+"""Brand rules, split collections and the fixes from the October review.
+
+Covers the Task Specification Adjustment Sheet: per-item base colour from the
+brand's colour table (statistic codes included), size runs and size codes as
+editable tables, order sheet + product list combining with a missing-items
+check, brand and season read from inside the file, column mapping that a
+person can correct, and critical answers that actually settle.
+"""
+from __future__ import annotations
+
+import io
+
+import pandas as pd
+import pytest
+
+from app.core import brand_rules as core
+from app.core import field_mapping
+from app.core.base_color import propose
+from app.core.combine import combine
+from app.core.intake import (
+    PRODUCT_LIST, classify_attachment, detect_identity_from_rows, detect_season,
+)
+
+
+# ── Rules tables (pure) ──────────────────────────────────────────────────────
+
+def test_seeds_carry_the_rules_flender_wrote_down():
+    carhartt = core.seed_for("CARHARTT  WIP")
+    assert carhartt["settings"]["uses_base_colour"] is True
+    assert {r["code"] for r in carhartt["tables"]["size_runs"]} >= {"00", "03", "06", "14", "15", "32-36"}
+    huf = core.seed_for("HUF")
+    assert huf["settings"]["uses_base_colour"] is False
+    assert core.sizes_for_code("D", huf["tables"]) == ["XS", "S", "M", "L", "XL", "XXL"]
+    # The product-list code reaches the same scale.
+    assert core.sizes_for_code("A", huf["tables"]) == core.sizes_for_code("D", huf["tables"])
+    assert core.seed_for("Edwin")["settings"]["uses_base_colour"] is True
+    assert core.seed_for("Gramicci")["settings"]["uses_base_colour"] is False
+
+
+def test_colour_goes_through_the_statistic_code_to_the_base_colour():
+    tables = {"colours": [{"colour": "Sky Blue", "stat_code": "12"}],
+              "stat_codes": [{"stat_code": "12", "base": "BLUE"}]}
+    hit = propose("sky blue", table=core.colour_table_lookup(tables))
+    assert hit["value"] == "Blue" and hit["source"] == "brand_table"
+    assert "12" in hit["reason"]
+
+
+def test_the_brand_table_beats_the_word_rules():
+    # A rule would say Blue; the brand says this one is Grey.
+    tables = {"colours": [{"colour": "Steel Blue", "base": "Grey"}]}
+    assert propose("Steel Blue", table=core.colour_table_lookup(tables))["value"] == "Grey"
+
+
+def test_a_missing_colour_takes_a_temporary_value_only_when_nothing_better_exists():
+    temp = {"ikola": {"value": "Yellow", "why": "catalogue: Ikola lemon"}}
+    r = propose("Ikola", table={}, temporary=temp)
+    assert r["value"] == "Yellow" and r["source"] == "temporary"
+    # A name the rules can read is not overridden by a suggestion.
+    assert propose("Sky Blue", table={}, temporary={"sky blue": {"value": "Red"}})["value"] == "Blue"
+
+
+def test_size_run_ranges_cover_every_code_inside_them():
+    tables = core.seed_for("Carhartt WIP")["tables"]
+    assert core.size_run_meaning("34", tables)["meaning"].startswith("Pants length")
+    assert core.size_run_meaning("06", tables)["meaning"] == "Onesize"
+    assert core.size_run_meaning("99", tables) is None
+
+
+def test_every_rule_reads_as_a_sentence():
+    assert core.sentence("size_codes", {"order_code": "D", "list_code": "A",
+                                        "meaning": "XS-XXL", "sizes": "XS, S"}) == \
+        "Order-form size code D (product-list code A) means XS-XXL: XS, S."
+    assert "statistic code 12" in core.sentence(
+        "colours", {"colour": "Sky Blue", "stat_code": "12", "base": "Blue"})
+
+
+def test_upsert_replaces_the_row_with_the_same_key():
+    rows, _ = core.upsert_row([], "colours", {"colour": "Ikola", "base": "yellow"})
+    rows, old = core.upsert_row(rows, "colours", {"colour": "IKOLA", "base": "Green"})
+    assert len(rows) == 1 and old["base"] == "Yellow" and rows[0]["base"] == "Green"
+
+
+def test_the_colour_table_imports_from_its_two_sheets(tmp_path):
+    path = tmp_path / "colours.xlsx"
+    with pd.ExcelWriter(path) as xw:
+        pd.DataFrame({"Colour Description": ["Sky Blue", "Ikola"],
+                      "Statistic Code": ["12", "40"]}).to_excel(xw, sheet_name="Colours", index=False)
+        pd.DataFrame({"Statistic Code": ["12", "40"],
+                      "Base Colour": ["Blue", "Yellow"]}).to_excel(xw, sheet_name="Codes", index=False)
+    parsed = core.parse_colour_workbook(str(path))
+    assert [r["colour"] for r in parsed["colours"]] == ["Sky Blue", "Ikola"]
+    lookup = core.colour_table_lookup(parsed)
+    assert lookup["ikola"]["base"] == "Yellow"
+
+
+def test_an_order_form_defines_its_own_size_scales(tmp_path):
+    path = tmp_path / "huf.xlsx"
+    pd.DataFrame([["SIZE SCALES", "A", "S/M", "L/XL"],
+                  ["E", "XS", "S", "M", "L", "XL", "XXL"],
+                  [None] * 7,
+                  ["Division", "Category", "Description", "Style Number", "Color",
+                   "Catalog Page", "Size", "Units", "Price", "MSRP", "Total"],
+                  ["Apparel", "", "JACKET", "JK1-BLK", "BLACK", "1", "E", "0", "50", "100", "0"]]
+                 ).to_excel(path, header=False, index=False)
+    legend = core.read_size_legend(str(path))
+    assert legend["A"] == ["S/M", "L/XL"]
+    assert legend["E"] == ["XS", "S", "M", "L", "XL", "XXL"]
+    rows = core.expand_scale_rows([{"Size": "E"}], {}, legend)
+    assert [r["Size"] for r in rows] == ["XS", "S", "M", "L", "XL", "XXL"]
+
+
+# ── Intake ───────────────────────────────────────────────────────────────────
+
+def test_the_hs_code_file_is_a_product_list():
+    assert classify_attachment("SU27 UPC HS code.xlsx") == PRODUCT_LIST
+    assert classify_attachment("HUF HS list.xlsx") == PRODUCT_LIST
+    assert classify_attachment("FW27 Pre EUR Importsheet.xlsx") == "order_sheet"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("SU27 UPC HS code.xlsx", "SU27"), ("HUF FA26", "FA26")])
+def test_huf_season_letters_are_read(text, expected):
+    assert detect_season(text) == expected
+
+
+def test_brand_and_season_are_read_from_inside_the_file():
+    found = detect_identity_from_rows([{"Brand": "CARHARTT WIP", "Collection": "FW27 D1"}] * 3)
+    assert (found["brand"], found["season"]) == ("Carhartt WIP", "FW27")
+    huf = detect_identity_from_rows([{"Division": "HUF", "Collection": "SU27",
+                                      "Collection Name": "Summer 2027"}])
+    assert (huf["brand"], huf["season"]) == ("HUF", "SU27")
+    # HUF's order form says "Apparel" under Division — that is not a brand.
+    assert detect_identity_from_rows([{"Division": "Apparel"}])["brand"] is None
+
+
+# ── Column mapping ───────────────────────────────────────────────────────────
+
+def test_other_brands_columns_map_onto_the_standard_fields():
+    m = field_mapping.detect(["Division", "Description", "Style Number", "Color",
+                              "Size", "Price", "MSRP", "HS Code", "UPC"])
+    got = {f: v["header"] for f, v in m.items() if v["header"]}
+    assert got["Item No."] == "Style Number"
+    assert got["Item Description"] == "Description"
+    assert got["Wholesale Price EUR"] == "Price"
+    assert got["Retail EUR"] == "MSRP"
+    assert got["Duty Position"] == "HS Code"
+    assert got["Barcode"] == "UPC"
+    assert "Sex" not in got                      # Division is not a gender
+
+
+def test_a_brand_rule_overrides_detection_and_can_say_none():
+    m = field_mapping.detect(["Style", "Article", "Colour"],
+                             {"Item No.": "Article", "Color": field_mapping.NONE})
+    assert m["Item No."] == {"header": "Article", "source": "brand rule"}
+    assert m["Color"]["header"] == ""
+
+
+# ── Combining a split collection ─────────────────────────────────────────────
+
+def _huf_list():
+    return [{"Item No.": "JK00525", "Color": "CAMO", "Size": s, "Barcode": f"88{i}",
+             "Duty Position": "6201409000", "Country of Origin": "China"}
+            for i, s in enumerate(["XS", "S", "M"])] + [
+            {"Item No.": "ZZ1", "Color": "RED", "Size": "M", "Barcode": "9",
+             "Duty Position": "1"}]
+
+
+def test_a_size_scale_line_becomes_one_line_per_size_with_its_upc():
+    order = [{"Item No.": "JK00525-CAMO", "Color": "CAMO", "Size": "D"},
+             {"Item No.": "JK00999-BLACK", "Color": "BLACK", "Size": "D"}]
+    rows, report = combine(order, _huf_list(), scale_codes={"D"})
+    camo = [r for r in rows if r["Item No."] == "JK00525-CAMO"]
+    assert [(r["Size"], r["Barcode"]) for r in camo] == [("XS", "880"), ("S", "881"), ("M", "882")]
+    assert all(r["Duty Position"] == "6201409000" for r in camo)
+    assert report["only_in_order_count"] == 1 and "JK00999-BLACK" in report["only_in_order"][0]
+    assert report["only_in_list"] == ["ZZ1 · RED"]
+
+
+def test_a_style_level_match_never_stamps_one_sizes_barcode_on_every_size():
+    order = [{"Item No.": "JK00525", "Color": "CAMO", "Size": "XL"}]
+    rows, _ = combine(order, _huf_list())
+    assert "Barcode" not in rows[0] or not rows[0]["Barcode"]
+    assert rows[0]["Duty Position"] == "6201409000"
+
+
+def test_the_same_line_is_joined_by_barcode():
+    order = [{"Item No.": "X", "Barcode": "881", "Size": "S"}]
+    rows, report = combine(order, _huf_list())
+    assert rows[0]["Country of Origin"] == "China"
+    assert report["matched_items"] == 1
+
+
+# ── Service: requests are approved by people ─────────────────────────────────
+
+def test_a_request_is_filed_once_and_a_rejection_is_remembered(db_session):
+    from app.services import brand_rules as svc
+    first = svc.request_change(db_session, "Carhartt WIP", "colours",
+                               {"colour": "Ikola", "base": "Yellow"}, reason="new")
+    assert first is not None
+    assert svc.request_change(db_session, "Carhartt WIP", "colours",
+                              {"colour": "IKOLA", "base": "Yellow"}, reason="again") is None
+    svc.decide_change(db_session, first.id, False)
+    assert svc.request_change(db_session, "Carhartt WIP", "colours",
+                              {"colour": "Ikola", "base": "Green"}, reason="x") is None
+
+
+def test_approving_can_correct_the_suggestion(db_session):
+    from app.services import brand_rules as svc
+    req = svc.request_change(db_session, "Carhartt WIP", "colours",
+                             {"colour": "Ikola", "base": "Green"}, reason="ai")
+    svc.decide_change(db_session, req.id, True, override={"base": "Yellow"})
+    rules = svc.rules_for(db_session, "Carhartt WIP")
+    assert core.colour_table_lookup(rules["tables"])["ikola"]["base"] == "Yellow"
+
+
+def test_importing_the_table_settles_waiting_requests(db_session, tmp_path):
+    from app.services import brand_rules as svc
+    svc.request_change(db_session, "Carhartt WIP", "colours",
+                       {"colour": "Sky Blue", "base": "Blue"}, reason="rule")
+    path = tmp_path / "c.xlsx"
+    pd.DataFrame({"Colour": ["Sky Blue"], "Base Colour": ["Blue"]}).to_excel(path, index=False)
+    svc.import_colour_table(db_session, "Carhartt WIP", str(path))
+    assert svc.pending(db_session, "Carhartt WIP") == []
+
+
+# ── Through the app ──────────────────────────────────────────────────────────
+
+def _xlsx(rows) -> bytes:
+    buf = io.BytesIO()
+    pd.DataFrame(rows).to_excel(buf, index=False)
+    return buf.getvalue()
+
+
+def _carhartt_rows():
+    return [{"Collection": "FW27 D1", "Brand": "CARHARTT WIP", "Barcode": f"40{i}",
+             "SKU": f"I1.89.{s}", "Item Group": "Jackets", "Item No.": "I1",
+             "Colour Code": "8902", "Size Run": "03", "Size": s,
+             "Item Description": "Detroit Jacket", "Color": colour,
+             "Wholesale Price EUR": "80"}
+            for i, (s, colour) in enumerate([("S", "Sky Blue"), ("M", "Sky Blue"),
+                                             ("L", "Ikola")])]
+
+
+def _upload(client, name, rows, **extra):
+    r = client.post("/collections/upload", files=[("files", (name, _xlsx(rows)))],
+                    data=extra, follow_redirects=False)
+    return int(r.headers["location"].rsplit("/", 1)[1])
+
+
+def test_brand_is_read_from_the_file_when_the_name_has_none(client, login_as, db_session):
+    login_as()
+    jid = _upload(client, "FW27 Pre EUR Importsheet.xlsx", _carhartt_rows())
+    from app.models import CollectionJob
+    job = db_session.get(CollectionJob, jid)
+    assert job.brand == "Carhartt WIP" and job.season == "FW27"
+    assert not any("Brand could not" in w for w in job.report["warnings"])
+
+
+def test_setting_the_brand_by_hand_clears_the_warning(client, login_as, db_session):
+    login_as()
+    rows = [{"Item No.": "A1", "Color": "Black", "Size": "M"}]
+    jid = _upload(client, "Importsheet.xlsx", rows)
+    from app.models import CollectionJob
+    assert any("Brand could not" in w for w in db_session.get(CollectionJob, jid).report["warnings"])
+    client.post(f"/collections/{jid}/identity", data={"brand": "Carhartt WIP", "season": "FW27"})
+    db_session.expire_all()
+    job = db_session.get(CollectionJob, jid)
+    assert not any("Brand could not" in w for w in job.report["warnings"])
+
+
+def test_carhartt_base_colours_come_from_its_table(client, login_as, db_session, monkeypatch):
+    from app.models import PackageRun
+    from app.services import brand_rules as svc
+    import app.services.colour_suggest as cs
+    login_as()
+    svc.edit_row(db_session, "Carhartt WIP", "colours", {"colour": "Sky Blue", "stat_code": "12"})
+    svc.edit_row(db_session, "Carhartt WIP", "stat_codes", {"stat_code": "12", "base": "Blue"})
+    monkeypatch.setattr(cs, "suggest", lambda brand, names, *a, **k:
+                        {n: {"value": "Yellow", "why": "suggested from the catalogue"}
+                         for n in names if n == "Ikola"})
+    jid = _upload(client, "FW27 Importsheet.xlsx", _carhartt_rows())
+    client.post(f"/collections/{jid}/packages/product_creation/generate")
+    db_session.expire_all()
+    run = db_session.query(PackageRun).filter_by(job_id=jid, kind="product_creation").first()
+    sheet = pd.read_excel(run.file_path, dtype=str)
+    assert list(sheet["BASE COLOR"]) == ["Blue", "Blue", "Yellow"]
+    # Ikola is filled temporarily and flagged, and a rule request waits.
+    q = next(q for q in run.exceptions if q["field"] == "BASE COLOR")
+    assert q["subject"] == "Ikola" and "temporary Yellow" in q["reason"]
+    assert any(p.row["colour"] == "Ikola" for p in svc.pending(db_session, "Carhartt WIP"))
+    assert not any(q["field"] == "BASE COLOR" and q["subject"] == "Sky Blue"
+                   for q in run.exceptions)
+
+
+def test_brands_without_base_colour_are_never_asked(client, login_as, db_session):
+    from app.models import PackageRun
+    login_as()
+    rows = [{**r, "Brand": "GRAMICCI", "Collection": "SS27"} for r in _carhartt_rows()]
+    jid = _upload(client, "Gramicci SS27 order.xlsx", rows)
+    client.post(f"/collections/{jid}/packages/product_creation/generate")
+    db_session.expire_all()
+    run = db_session.query(PackageRun).filter_by(job_id=jid, kind="product_creation").first()
+    assert not any(q["field"] == "BASE COLOR" for q in run.exceptions)
+
+
+def test_a_colour_decision_is_written_into_the_brand_table(client, login_as, db_session):
+    from app.models import PackageRun
+    from app.services import brand_rules as svc
+    login_as()
+    jid = _upload(client, "FW27 Importsheet.xlsx", _carhartt_rows())
+    client.post(f"/collections/{jid}/packages/product_creation/generate")
+    client.post(f"/collections/{jid}/packages/product_creation/decide",
+                data={"key": "BASE COLOR::Ikola", "value": "Yellow"})
+    db_session.expire_all()
+    rules = svc.rules_for(db_session, "Carhartt WIP")
+    assert core.colour_table_lookup(rules["tables"])["ikola"]["base"] == "Yellow"
+
+
+def test_answering_a_critical_missing_column_actually_settles_it(client, login_as, db_session):
+    from app.models import PackageRun
+    login_as()
+    rows = [{k: v for k, v in r.items() if k != "Wholesale Price EUR"} for r in _carhartt_rows()]
+    jid = _upload(client, "FW27 Importsheet.xlsx", rows)
+    client.post(f"/collections/{jid}/packages/product_creation/generate")
+    db_session.expire_all()
+    run = db_session.query(PackageRun).filter_by(job_id=jid, kind="product_creation").first()
+    assert run.critical_count == 1
+    client.post(f"/collections/{jid}/packages/product_creation/decide",
+                data={"key": "Wholesale Price EUR::Wholesale Price EUR", "value": "80"})
+    db_session.expire_all()
+    run = db_session.query(PackageRun).filter_by(job_id=jid, kind="product_creation").first()
+    assert run.critical_count == 0
+    assert set(pd.read_excel(run.file_path, dtype=str)["Wholesale Price EUR"]) == {"80"}
+
+
+def test_a_product_list_added_later_is_joined_and_checked(client, login_as, db_session):
+    from app.models import CollectionJob
+    login_as()
+    order = [{"Division": "Apparel", "Description": "JACKET", "Style Number": "JK00525-CAMO",
+              "Color": "CAMO", "Size": "D", "Price": "50"}]
+    jid = _upload(client, "HUF SU27 order form.xlsx", order)
+    hs = [{"Division": "HUF", "Collection": "SU27", "Style": "JK00525", "Color": "CAMO",
+           "Size": s, "UPC": f"88{i}", "HS Code": "6201409000"}
+          for i, s in enumerate(["XS", "S"])]
+    client.post(f"/collections/{jid}/files",
+                files=[("files", ("SU27 UPC HS code.xlsx", _xlsx(hs)))])
+    db_session.expire_all()
+    job = db_session.get(CollectionJob, jid)
+    assert {f.kind for f in job.files} == {"order_sheet", "product_list"}
+    combined = job.report["combine"]
+    assert combined["matched_items"] == 1 and combined["only_in_order_count"] == 0
+    page = client.get(f"/collections/{jid}").text
+    assert "Order sheet against product list" in page and "Step by step" in page
+
+
+def test_saving_a_column_mapping_becomes_a_brand_rule(client, login_as, db_session):
+    from app.models import CollectionJob
+    from app.services import brand_rules as svc
+    login_as()
+    rows = [{"Brand": "GRAMICCI", "Collection": "SS27", "Article": "G1",
+             "Shade": "Navy", "Size": "M"}]
+    jid = _upload(client, "Gramicci SS27 order.xlsx", rows)
+    job = db_session.get(CollectionJob, jid)
+    fid = next(iter(job.report["mappings"]))
+    client.post(f"/collections/{jid}/mapping",
+                data={"file_id": fid, "col::Item No.": "Article", "col::Color": "Shade"})
+    rules = svc.rules_for(db_session, "Gramicci")
+    # "Article" was already found automatically, so only the colour is a new rule.
+    assert core.column_overrides(rules["tables"]) == {"Color": "Shade"}
+    db_session.expire_all()
+    fields = db_session.get(CollectionJob, jid).report["mappings"][fid]["fields"]
+    assert fields["Color"] == {"header": "Shade", "source": "brand rule"}
+
+
+def test_the_brand_rules_pages_render_and_edit(client, login_as):
+    login_as()
+    assert "Brand Rules" in client.get("/brand-rules").text
+    page = client.get("/brand-rules/carhartt wip").text
+    assert "Carhartt WIP rules" in page
+    assert "Pants length (inches)" in page and "Size run 06 means Onesize" in page
+    client.post("/brand-rules/carhartt wip/rows",
+                data={"table": "size_runs", "code": "30", "meaning": "Pants length (inches)"})
+    assert "Size run 30 means Pants length (inches)." in client.get("/brand-rules/carhartt wip").text
+    export = client.get("/brand-rules/carhartt wip/export")
+    assert export.status_code == 200 and export.content[:2] == b"PK"
+
+
+def test_a_running_package_can_be_cancelled(client, login_as, db_session):
+    from app.models import PackageRun
+    from app.services import packages as pkg
+    login_as()
+    jid = _upload(client, "FW27 Importsheet.xlsx", _carhartt_rows())
+    run = PackageRun(job_id=jid, kind="attributes", status="running")
+    db_session.add(run)
+    db_session.commit()
+    client.post(f"/collections/{jid}/packages/attributes/cancel")
+    db_session.expire_all()
+    assert db_session.get(PackageRun, run.id).status == "cancelling"
+
+
+def test_the_attribute_run_stops_when_cancelled():
+    from app.core.collection_attributes import build_attribute_package
+
+    class Stop(Exception):
+        pass
+
+    seen = []
+
+    def progress(done, total):
+        seen.append(done)
+        if done >= 2:
+            raise Stop()
+
+    styles = [{"style_code": f"S{i}", "name": "Tee"} for i in range(20)]
+    with pytest.raises(Stop):
+        build_attribute_package(styles, lambda s: {"product_type": "TSHIRT", "confidence": 1},
+                                on_progress=progress, workers=4)
+    assert max(seen) < 20

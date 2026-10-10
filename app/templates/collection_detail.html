@@ -27,6 +27,42 @@
     </form>
   </div>
 
+  {% if job.identity_note %}
+  <p style="margin:-16px 0 18px;font-size:0.8rem;color:var(--gray-400,#999)">{{ job.identity_note }}.</p>
+  {% endif %}
+
+  <!-- Step by step -->
+  <details open style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 18px;margin-bottom:24px">
+    <summary style="cursor:pointer;font-weight:700;font-size:1.02rem">Step by step
+      <span style="font-weight:500;font-size:0.84rem;color:var(--gray-500,#777)">
+        — {{ steps|selectattr('state', 'equalto', 'done')|list|length }} of {{ steps|length }} done
+      </span>
+    </summary>
+    <ol style="list-style:none;margin:12px 0 0;padding:0">
+      {% for st in steps %}
+      {% set tone = {'done': ('#1b6e4f', '#e8f3ec', '✓'), 'next': ('#fff', '#111', st.n),
+                     'attention': ('#8a6011', '#fdf3e0', '!'), 'blocked': ('#aaa', '#f3f3f3', st.n),
+                     'todo': ('#33536e', '#eef4f9', st.n), 'optional': ('#48607a', '#eef1f5', '·')}[st.state] %}
+      <li style="display:flex;gap:12px;align-items:flex-start;padding:8px 0;{% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+        <span style="flex:none;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+                     font-size:0.75rem;font-weight:700;color:{{ tone[0] }};background:{{ tone[1] }}">{{ tone[2] }}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:650;font-size:0.9rem;{% if st.state == 'blocked' %}color:var(--gray-400,#999){% endif %}">
+            {{ st.title }}
+            {% if st.state == 'next' %}<span style="font-size:0.7rem;font-weight:700;color:#111;background:#f0f0f0;border-radius:4px;padding:1px 6px;margin-left:4px">NEXT</span>{% endif %}
+            {% if st.needs %}<span style="font-size:0.74rem;font-weight:500;color:var(--gray-400,#999)"> · after {{ st.needs }}</span>{% endif %}
+          </div>
+          <div style="font-size:0.83rem;color:var(--gray-500,#777);margin-top:2px">
+            {{ st.detail }}
+            {% if st.link %} <a href="{{ st.link }}" style="color:#33536e;font-weight:600">Open</a>{% endif %}
+            {% if st.anchor %} <a href="#{{ st.anchor }}" style="color:#33536e;font-weight:600">Go</a>{% endif %}
+          </div>
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+
   <!-- Volume -->
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:26px">
     {% set t = report.get('totals', {}) %}
@@ -77,6 +113,10 @@
           <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#fdf3e0;color:#8a6011">{{ st.exceptions }} to decide</span>
         {% elif st.state == 'ready' %}
           <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#eef4f9;color:#33536e">Ready</span>
+        {% elif st.state in ('running', 'cancelling') %}
+          <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#eef4f9;color:#33536e">Working…</span>
+        {% elif st.state == 'cancelled' %}
+          <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#f0f0f0;color:#666">Cancelled</span>
         {% elif st.state == 'error' %}
           <span style="padding:2px 8px;border-radius:5px;font-size:0.7rem;background:#fbe9e6;color:#993325">Error</span>
         {% else %}
@@ -247,6 +287,120 @@
     </div>
     {% endfor %}
   </div>
+
+  <!-- More files, and picture links -->
+  <div id="add-files" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:13px;margin:4px 0 14px">
+    <form action="/collections/{{ job.id }}/files" method="post" enctype="multipart/form-data"
+          style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 16px">
+      <div style="font-weight:650;font-size:0.92rem">Add files</div>
+      <div style="font-size:0.8rem;color:var(--gray-500,#777);margin:3px 0 10px">
+        The product list with HS codes, a price list once processing is done, a catalogue that came later.
+      </div>
+      <input type="file" name="files" multiple required style="font-size:0.82rem;max-width:100%">
+      <div style="display:flex;gap:8px;margin-top:9px;align-items:center;flex-wrap:wrap">
+        <select name="kind" style="padding:6px 9px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.82rem">
+          <option value="">Detect from the name</option>
+          {% for value, text in labels.items() %}{% if value != 'other' %}<option value="{{ value }}">{{ text }}</option>{% endif %}{% endfor %}
+        </select>
+        <button type="submit" style="padding:7px 14px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">Add</button>
+      </div>
+    </form>
+    <form action="/collections/{{ job.id }}/picture-links" method="post"
+          style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 16px">
+      <div style="font-weight:650;font-size:0.92rem">Picture links</div>
+      <div style="font-size:0.8rem;color:var(--gray-500,#777);margin:3px 0 8px">
+        When the brand sends a link (Dropbox, WeTransfer, B2B portal) instead of an image package. One per line.
+      </div>
+      <textarea name="links" rows="3" placeholder="https://…"
+        style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.82rem">{{ job.picture_links|join('\n') }}</textarea>
+      {% for link in job.picture_links %}
+      <div style="font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="{{ link }}" target="_blank" rel="noopener" style="color:#33536e">{{ link }}</a></div>
+      {% endfor %}
+      <button type="submit" style="margin-top:8px;padding:7px 14px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">Save links</button>
+    </form>
+  </div>
+
+  <!-- Order sheet against product list -->
+  {% set cb = report.get('combine') %}
+  {% if cb %}
+  <h2 id="combine" style="font-size:1.05rem;font-weight:700;margin:24px 0 12px">Order sheet against product list</h2>
+  <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:15px 18px;margin-bottom:14px">
+    {% if cb.get('error') %}
+    <div style="color:#993325;font-size:0.86rem">Could not compare the two files: {{ cb.error }}</div>
+    {% else %}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:10px">
+      {% for label, value, bad in [('Matched items', cb.matched_items, False),
+                                   ('Only in order sheet', cb.only_in_order_count, True),
+                                   ('Only in product list', cb.only_in_list_count, True)] %}
+      <div>
+        <div style="font-size:0.7rem;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-500,#777)">{{ label }}</div>
+        <div style="font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums;{% if bad and value %}color:#8a6011{% endif %}">{{ '{:,}'.format(value or 0) }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <div style="font-size:0.83rem;color:var(--gray-500,#777)">
+      {% if cb.fields_added %}Brought in from the product list: {{ cb.fields_added[:12]|join(', ') }}.{% endif %}
+      {% if cb.lines_expanded %} {{ cb.lines_expanded }} extra lines created where one order line covered a whole size scale.{% endif %}
+    </div>
+    {% for title, items, count in [('In the order sheet but not the product list (no HS code)', cb.only_in_order, cb.only_in_order_count),
+                                    ('In the product list but not the order sheet', cb.only_in_list, cb.only_in_list_count)] %}
+    {% if items %}
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:0.85rem;font-weight:600">{{ title }} ({{ count }})</summary>
+      <div style="font-family:ui-monospace,Menlo,monospace;font-size:0.76rem;color:var(--gray-500,#777);margin-top:6px;line-height:1.7">
+        {{ items|join(' · ') }}{% if count > items|length %} … and {{ count - items|length }} more{% endif %}
+      </div>
+    </details>
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Column mapping -->
+  {% set maps = report.get('mappings') or {} %}
+  {% if maps %}
+  <h2 id="mapping" style="font-size:1.05rem;font-weight:700;margin:24px 0 6px">Column mapping</h2>
+  <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:0 0 12px;max-width:720px">
+    Which column in each file the system reads for each field. Change one and it is saved to the
+    {{ job.brand or 'brand' }} rules, so every {{ job.brand or 'brand' }} file is read the same way from now on.
+  </p>
+  {% if mapping_note %}
+  <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:0.85rem;color:#33536e">{{ mapping_note }}</div>
+  {% endif %}
+  {% for fid, m in maps.items() %}
+  <form action="/collections/{{ job.id }}/mapping" method="post"
+        style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden;margin-bottom:12px">
+    <input type="hidden" name="file_id" value="{{ fid }}">
+    <div style="padding:11px 16px;border-bottom:1px solid var(--gray-100,#f4f4f4);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <span><strong style="font-size:0.9rem">{{ m.file }}</strong>
+        <span style="font-size:0.78rem;color:var(--gray-500,#777)"> · {{ labels.get(m.kind, m.kind) }}</span></span>
+      <button type="submit" style="padding:5px 13px;background:#111;color:#fff;border:0;border-radius:7px;font-weight:600;cursor:pointer;font-size:0.8rem">Save mapping</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+      {% for f in field_names %}
+      {% set cur = m.fields.get(f, {}) %}
+      <tr style="border-top:1px solid var(--gray-100,#f6f6f6)">
+        <td style="padding:6px 16px;width:36%">
+          {{ plain_names[f] }}
+          {% if f in essential_fields and not cur.get('header') %}<span style="color:#993325;font-size:0.74rem;font-weight:600"> · missing</span>{% endif %}
+        </td>
+        <td style="padding:6px 8px">
+          <select name="col::{{ f }}" style="padding:5px 8px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.82rem;max-width:280px">
+            <option value="">— not in this file —</option>
+            {% if cur.get('source') == 'brand rule' %}<option value="__auto">— detect automatically —</option>{% endif %}
+            {% for h in m.headers %}<option value="{{ h }}" {% if cur.get('header') == h %}selected{% endif %}>{{ h|replace('\n', ' ') }}</option>{% endfor %}
+          </select>
+        </td>
+        <td style="padding:6px 16px;font-size:0.74rem;color:var(--gray-400,#999)">
+          {{ cur.get('note') or cur.get('source', '') }}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </form>
+  {% endfor %}
+  {% endif %}
 
   <!-- Files, with the detected kind correctable -->
   <h2 style="font-size:1.05rem;font-weight:700;margin:24px 0 12px">Files received</h2>

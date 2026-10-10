@@ -60,6 +60,8 @@ def _clear_database(test_app):
     db = test_app["database"].SessionLocal()
     try:
         for model in (
+            models.RuleChange,
+            models.BrandRuleSet,
             models.PackageRun,
             models.BrandConfig,
             models.CollectionFile,
@@ -103,6 +105,9 @@ def isolated_state(test_app, monkeypatch):
     import app.routers.intake_routes as _intake
     monkeypatch.setattr(_intake, "_lookup_sap_sheet", lambda *a, **k: None,
                         raising=False)
+    # Nor a model: a colour suggestion is stubbed per test where it matters.
+    import app.services.colour_suggest as _colours
+    monkeypatch.setattr(_colours, "suggest", lambda *a, **k: {}, raising=False)
     monkeypatch.setattr(test_app["task_state"], "restore_on_startup", lambda: ({}, {}), raising=False)
     monkeypatch.setattr(test_app["task_state"], "save_batch", lambda *args, **kwargs: None, raising=False)
 

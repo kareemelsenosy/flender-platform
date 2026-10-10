@@ -14,12 +14,14 @@ identical subjects collapse into one decision that applies everywhere.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from datetime import datetime, timezone
 
 import pandas as pd
 
 from app.config import OUTPUT_DIR
+from app.core import field_mapping
 from app.core import intake as intake_core
 from app.core.base_color import DEFAULT_VOCAB, learn_lookup
 from app.core.pricing import learn_strategy, review_prices
@@ -104,8 +106,45 @@ def _subject_from(e) -> str:
 
 # ── Loading the collection's source rows ─────────────────────────────────────
 
-def _source_rows(job, kind: str) -> "tuple[list[dict], str]":
-    """Rows from the supplier file this package is built from."""
+def _read_mapped(path: str, overrides: dict) -> "tuple[list[dict], dict]":
+    """One supplier file as rows, with the standard field names added."""
+    table, _info = load_supplier_table(path)
+    if table.empty:
+        return [], {}
+    # Unlabelled columns (HUF's per-size quantity block) carry no field.
+    table = table.loc[:, [str(c).strip() != "" for c in table.columns]]
+    table = table.loc[:, ~table.columns.duplicated()]
+    headers = [str(c) for c in table.columns
+               if str(c).strip() and not str(c).startswith("__")]
+    mapping = field_mapping.detect(headers, overrides)
+    return field_mapping.apply(table.to_dict("records"), mapping), mapping
+
+
+def _rules(job, rules=None) -> dict:
+    if rules is not None:
+        return rules
+    from sqlalchemy.orm import object_session
+    from app.services.brand_rules import rules_for
+    db = object_session(job)
+    if db is None:
+        from app.core.brand_rules import seed_for
+        return seed_for(job.brand or "")
+    return rules_for(db, job.brand or "")
+
+
+def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]":
+    """Rows a package is built from: mapped, combined and size-expanded.
+
+    For the order sheet, any product list in the collection (HS codes, UPCs)
+    is joined on, and the report says which items did not join on either
+    side. Returns ``(rows, problem, combine_report)``.
+    """
+    from app.core.brand_rules import (
+        column_overrides, expand_scale_rows, read_size_legend, scale_codes)
+    from app.core.combine import combine
+
+    rules = _rules(job, rules)
+    overrides = column_overrides(rules["tables"])
     want = SOURCE_KIND.get(kind, intake_core.ORDER_SHEET)
     files = [f for f in job.files if f.kind == want and f.parse_path]
     if not files and want == intake_core.PRICE_LIST:
@@ -113,18 +152,74 @@ def _source_rows(job, kind: str) -> "tuple[list[dict], str]":
         files = [f for f in job.files
                  if f.kind == intake_core.ORDER_SHEET and f.parse_path]
     if not files:
-        return [], f"no {intake_core.KIND_LABELS.get(want, want)} in this collection"
+        return [], f"no {intake_core.KIND_LABELS.get(want, want)} in this collection", {}
 
     rows: list[dict] = []
+    legend: dict[str, list[str]] = {}
     for f in files:
         if not os.path.exists(f.parse_path):
             continue
-        table, _info = load_supplier_table(f.parse_path)
-        if not table.empty:
-            rows.extend(table.to_dict("records"))
+        rows.extend(_read_mapped(f.parse_path, overrides)[0])
+        for code, sizes in read_size_legend(f.parse_path).items():
+            legend.setdefault(code, sizes)
     if not rows:
-        return [], "the supplier file could not be read"
-    return rows, ""
+        return [], "the supplier file could not be read", {}
+
+    report: dict = {}
+    if legend:
+        report["size_legend"] = legend
+    if want == intake_core.ORDER_SHEET:
+        list_rows: list[dict] = []
+        for f in job.files:
+            if f.kind == intake_core.PRODUCT_LIST and f.parse_path \
+                    and os.path.exists(f.parse_path):
+                list_rows.extend(_read_mapped(f.parse_path, overrides)[0])
+        if list_rows:
+            rows, joined = combine(rows, list_rows,
+                                   scale_codes=scale_codes(rules["tables"]) | set(legend))
+            report.update(joined)
+    rows = expand_scale_rows(rows, rules["tables"], legend)
+    rows = fill_from_collection(rows, job)
+    return rows, "", report
+
+
+_SPLIT_STYLE = re.compile(r"^([A-Z0-9]{4,})-([A-Z0-9]{2,8})$", re.I)
+
+
+def fill_from_collection(rows: list[dict], job) -> list[dict]:
+    """Fields the supplier never writes but the collection already knows.
+
+    * **Brand** — HUF's order form has no brand column; the collection does.
+    * **Colour code** — HUF writes the colour into the style number
+      ('JK00525-CAMO'); split it so the style is the style.
+    * **SKU** — style.colour.size, Carhartt's own shape, when none is given.
+
+    Never overwrites a value the supplier did send.
+    """
+    brand = (job.brand or "").upper()
+    for row in rows:
+        if brand and _blank(row.get("Brand")):
+            row["Brand"] = brand
+        item = str(row.get("Item No.") or "").strip()
+        m = _SPLIT_STYLE.match(item)
+        if m and _blank(row.get("Colour Code")):
+            row["Item No."], row["Colour Code"] = m.group(1), m.group(2).upper()
+        if _blank(row.get("SKU")):
+            parts = [str(row.get(k) or "").strip()
+                     for k in ("Item No.", "Colour Code", "Size")]
+            if all(p and p.lower() != "nan" for p in parts):
+                row["SKU"] = ".".join(p.replace(" ", "") for p in parts)
+    return rows
+
+
+def _blank(value) -> bool:
+    return value is None or str(value).strip().lower() in ("", "nan", "none", "null")
+
+
+def _source_rows(job, kind: str, rules=None) -> "tuple[list[dict], str]":
+    """Rows from the supplier file this package is built from."""
+    rows, problem, _report = collection_rows(job, kind, rules)
+    return rows, problem
 
 
 def _brand_config(db, job):
@@ -159,11 +254,18 @@ def _sap_reference(config):
 
 def generate(db, job, kind: str, decisions=None) -> dict:
     """Build one package. Returns the result; does not persist it."""
+    from app.core.brand_rules import colour_table_lookup
+    from app.services.brand_rules import rules_for
+
     decisions = decisions or {}
-    rows, problem = _source_rows(job, kind)
+    rules = rules_for(db, job.brand or "")
+    rows, problem = _source_rows(job, kind, rules)
     if problem:
         return {"error": problem, "columns": [], "rows": [], "exceptions": [],
                 "summary": {}}
+
+    uses_base = bool(rules["settings"].get("uses_base_colour"))
+    colour_table = colour_table_lookup(rules["tables"])
 
     config = _brand_config(db, job)
     reference, ref_note = _sap_reference(config)
@@ -185,17 +287,28 @@ def generate(db, job, kind: str, decisions=None) -> dict:
     # Answers ADD to the vocabulary; they never replace it. Narrowing it to
     # the values chosen so far made previously-resolved colours unresolvable,
     # so answering one question raised another.
-    vocab = sorted(set(DEFAULT_VOCAB) | {v for v in colour_lookup.values() if v})
+    vocab = sorted(set(DEFAULT_VOCAB) | {v for v in colour_lookup.values() if v}
+                   | {v["base"] for v in colour_table.values() if v["base"]})
+
+    temporary: dict = {}
+    if uses_base and kind in (PRODUCT_CREATION, TEMP):
+        temporary = _temporary_colours(db, job, rows, vocab, colour_lookup,
+                                       colour_table)
 
     if kind == PRODUCT_CREATION:
         out = build_creation_sheet(rows, season=job.season or "",
-                                   vocab=vocab, lookup=colour_lookup)
+                                   vocab=vocab, lookup=colour_lookup,
+                                   table=colour_table, temporary=temporary,
+                                   base_colour=uses_base)
+        _check_size_runs(db, job, out, rules)
     elif kind == TEMP:
         out = build_temp_sheet(
             rows, brand=job.brand or "", season=job.season or "",
             group_map=group_map, vocab=vocab, colour_lookup=colour_lookup,
             history=_history_from(reference, rows),
-            earliest_ship_date=(config.earliest_ship_date if config else "") or "")
+            earliest_ship_date=(config.earliest_ship_date if config else "") or "",
+            colour_table=colour_table, temporary=temporary,
+            base_colour=uses_base)
     elif kind == ATTRIBUTES:
         from app.core.attribute_engine import enrich_style
         from app.core.collection_attributes import (
@@ -222,7 +335,33 @@ def generate(db, job, kind: str, decisions=None) -> dict:
                 run.stage = f"Assigning attributes ({done} of {total} styles)"
                 db.commit()
 
-        out = build_attribute_package(styles, resolve, on_progress=note)
+        failures = {"n": 0}
+
+        def counted(style):
+            result = resolve(style)
+            if not result.get("product_type"):
+                failures["n"] += 1
+            return result
+
+        def note_and_check(done, total):
+            if run is not None:
+                from app.models import PackageRun
+                state = db.query(PackageRun.status).filter(
+                    PackageRun.id == run.id).scalar()
+                if state == "cancelling":
+                    raise PackageCancelled()
+            # A model that refuses every call (no credit, bad key) would
+            # otherwise crawl through the whole collection producing nothing.
+            if done >= 6 and failures["n"] >= done:
+                from app.services.ai_service import ai_last_error_summary
+                why = ai_last_error_summary()
+                if any(w in why.lower() for w in _AI_DEAD):
+                    raise RuntimeError(
+                        "the AI provider is refusing requests — " + why[:200])
+            note(done, total)
+
+        out = build_attribute_package(styles, counted, on_progress=note_and_check,
+                                      workers=ATTRIBUTE_WORKERS)
 
     elif kind == IMAGES:
         from app.core.collection_images import build_image_package
@@ -250,10 +389,160 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         return {"error": f"unknown package {kind!r}", "columns": [], "rows": [],
                 "exceptions": [], "summary": {}}
 
+    out = _apply_fill_decisions(out, decisions)
     out["reference_note"] = ref_note
     if reference:
         out["summary"]["sap_compared"] = len(reference)
     return out
+
+
+class PackageCancelled(Exception):
+    """Someone pressed Cancel while the package was being built."""
+
+
+# Styles assigned side by side. Bounded so one collection cannot exhaust a
+# provider's rate limit on its own.
+ATTRIBUTE_WORKERS = int(os.getenv("ATTRIBUTE_WORKERS", "6"))
+
+_AI_DEAD = ("credit", "api key", "api_key", "authentication", "permission",
+            "quota", "billing", "unauthorized", "invalid x-api-key")
+
+# Decisions that hold one value for a whole column. Identifiers are excluded:
+# one barcode typed in for nine thousand lines is never right — those come
+# from mapping the column or adding the product list.
+_NOT_FILLABLE = {"Barcode", "SKU", "Item No.", "Item.Colour", "U_CodeBars",
+                 "U_SCode", "BASE COLOR", "U_BaseColor", "product_type",
+                 "image_status", "U_ItmsGrpCod"}
+
+
+def is_fillable(field: str) -> bool:
+    return field not in _NOT_FILLABLE
+
+
+def _apply_fill_decisions(out: dict, decisions: dict) -> dict:
+    """Put a person's answer to a missing-column question into the sheet.
+
+    Answering "Wholesale Price EUR is empty" used to be stored and then
+    ignored on regeneration, so the question came straight back and the
+    package could never be approved. The answer now fills the empty cells of
+    that column, and the question is settled.
+    """
+    columns = set(out.get("columns") or [])
+    fills = {}
+    for key, value in (decisions or {}).items():
+        field, _, subject = key.partition("::")
+        if value and field in columns and is_fillable(field):
+            fills[key] = (field, value)
+    if not fills:
+        return out
+    for row in out.get("rows", []):
+        for field, value in fills.values():
+            if str(row.get(field) or "").strip() in ("", "nan", "None"):
+                row[field] = value
+    out["exceptions"] = [
+        e for e in out.get("exceptions", [])
+        if decision_key(e.get("field", ""),
+                        e.get("subject") or _subject_from(e)) not in fills]
+    return out
+
+
+def _colour_names(rows) -> list[str]:
+    names = []
+    for r in rows:
+        v = str(r.get("Color") or r.get("Colour") or "").strip()
+        if v and v.lower() != "nan":
+            names.append(v)
+    return list(dict.fromkeys(names))
+
+
+def _temporary_colours(db, job, rows, vocab, lookup, table) -> dict:
+    """Temporary base colours for names the brand colour table lacks.
+
+    Also where the system asks to change the rules: every colour it had to
+    work out for itself becomes a pending request in Brand Rules, so the
+    table grows only with a person's approval. A suggestion already waiting
+    as a request is reused instead of asking the model again.
+    """
+    from app.core.base_color import propose
+    from app.core.brand_rules import resolve_from_table
+    from app.services import brand_rules as rules_svc
+    from app.services.colour_suggest import (
+        catalogue_text, snippets_for, suggest)
+
+    brand = job.brand or ""
+    if not brand:
+        return {}
+    temporary: dict = {}
+    for change in rules_svc.pending(db, brand):
+        if change.table_name == "colours" and change.row.get("base"):
+            temporary[change.row["colour"].lower()] = {
+                "value": change.row["base"],
+                "why": (change.reason or "suggested")[:160]}
+
+    unresolved: list[str] = []
+    for name in _colour_names(rows):
+        if resolve_from_table(name, table) or lookup.get(name.lower()):
+            continue
+        guess = propose(name, vocab, lookup)
+        if guess["value"] and name.strip().lower() == guess["value"].lower():
+            continue                     # "Black" is Black; nothing to ask
+        if guess["value"]:
+            rules_svc.request_change(
+                db, brand, "colours", {"colour": name, "base": guess["value"]},
+                reason=f"Not in the colour table. Proposed {guess['value']} "
+                       f"because {guess['reason']}.",
+                source="system", job_id=job.id)
+        elif name.lower() not in temporary:
+            unresolved.append(name)
+
+    if not unresolved:
+        return temporary
+
+    catalogues = [f.file_path for f in job.files
+                  if f.kind == intake_core.CATALOG and f.file_path]
+    snippets = snippets_for(unresolved, catalogue_text(catalogues))
+    palette = [f"{n}={v['base']}" for n, v in list(table.items())[:60] if v["base"]]
+    suggestions = suggest(brand, unresolved, vocab, snippets, palette)
+
+    for name in unresolved:
+        hit = suggestions.get(name)
+        if hit:
+            temporary[name.lower()] = hit
+        rules_svc.request_change(
+            db, brand, "colours",
+            {"colour": name, "base": hit["value"] if hit else ""},
+            reason=("Not in the colour table. Temporary colour "
+                    + (f"{hit['value']} {hit['why']}." if hit else
+                       "could not be suggested — choose the base colour.")),
+            source="ai" if hit else "system", job_id=job.id)
+    return temporary
+
+
+def _check_size_runs(db, job, out, rules) -> None:
+    """Flag size-run codes the brand's size-run table does not explain."""
+    from app.core.brand_rules import size_run_meaning
+    from app.services import brand_rules as rules_svc
+
+    if not rules["tables"].get("size_runs"):
+        return
+    seen: set[str] = set()
+    for row in out.get("rows", []):
+        code = str(row.get("Size Run") or "").strip()
+        if not code or code.lower() == "nan" or code in seen:
+            continue
+        seen.add(code)
+        if size_run_meaning(code, rules["tables"]):
+            continue
+        out["exceptions"].append({
+            "field": "Size Run", "subject": code, "severity": "warning",
+            "sku": row.get("SKU", ""),
+            "reason": f"size run '{code}' is not in the brand's size-run table "
+                      f"— a request to add it is waiting in Brand Rules",
+            "suggestion": "Describe this size run in Brand Rules"})
+        rules_svc.request_change(
+            db, job.brand or "", "size_runs", {"code": code, "meaning": ""},
+            reason=f"Size run {code} appears in {job.label} but is not in the table.",
+            job_id=job.id)
 
 
 def _run_for(db, job, kind):
@@ -304,7 +593,8 @@ def run_package(db, job, kind: str, *, background: bool = True):
         db.commit()
         db.refresh(run)
 
-    if run.status in ("approved", "delivered", "reconciled", "running"):
+    if run.status in ("approved", "delivered", "reconciled", "running",
+                      "cancelling"):
         return run
 
     if background and kind in ASYNC_KINDS:
@@ -370,6 +660,15 @@ def _run_in_background(job_id: int, kind: str):
             return
         try:
             _finish(db, job, run, generate(db, job, kind, run.decisions))
+        except PackageCancelled:
+            db.rollback()
+            still_there = db.query(PackageRun).filter(
+                PackageRun.id == run.id).first()
+            if still_there is not None:
+                still_there.status = "cancelled"
+                still_there.stage = None
+                still_there.error = None
+                db.commit()
         except Exception as exc:
             # The collection can be deleted while this is still working, and
             # the failed flush leaves the session unusable — roll back before
@@ -394,7 +693,8 @@ def progress_of(run) -> dict:
     """What to show while a package is still being built."""
     total = run.progress_total or 0
     done = run.progress_done or 0
-    return {"running": run.status == "running", "done": done, "total": total,
+    return {"running": run.status in ("running", "cancelling"),
+            "done": done, "total": total,
             "stage": run.stage or "",
             "pct": round(done / total * 100) if total else 0}
 
@@ -410,8 +710,14 @@ def _write_sheet(job, kind: str, out) -> str:
     return str(path)
 
 
-def apply_decision(db, run, key: str, value: str):
-    """Record one answer and rebuild the package around it."""
+def apply_decision(db, run, key: str, value: str, user_id=None):
+    """Record one answer and rebuild the package around it.
+
+    A base colour chosen here is a person's decision about the brand, not
+    just this collection, so it is written into the brand colour table (and
+    settles any request waiting for that colour) — the next season never
+    asks again.
+    """
     decisions = run.decisions
     if value:
         decisions[key] = value
@@ -420,7 +726,40 @@ def apply_decision(db, run, key: str, value: str):
     run.decisions = decisions
     db.commit()
     job = run.job
+    field, _, subject = key.partition("::")
+    if value and subject and job.brand and field in ("BASE COLOR", "U_BaseColor"):
+        _record_colour_decision(db, job, subject, value, user_id)
     return run_package(db, job, run.kind)
+
+
+def _record_colour_decision(db, job, colour: str, base: str, user_id=None):
+    from app.services import brand_rules as rules_svc
+    try:
+        for change in rules_svc.pending(db, job.brand):
+            if change.table_name == "colours" and \
+                    str(change.row.get("colour", "")).lower() == colour.lower():
+                rules_svc.decide_change(db, change.id, True, user_id=user_id,
+                                        override={"base": base})
+                return
+        rules_svc.edit_row(db, job.brand, "colours", {"colour": colour, "base": base},
+                           user_id=user_id, source="decision", job_id=job.id,
+                           reason=f"Decided while reviewing {job.label}")
+    except Exception:
+        db.rollback()
+
+
+def cancel(db, run) -> bool:
+    """Ask a package that is still being built to stop.
+
+    The worker checks between styles, so it stops within a few seconds; what
+    it had already done is discarded and Generate starts again cleanly.
+    """
+    if run.status != "running":
+        return False
+    run.status = "cancelling"
+    run.stage = "Cancelling…"
+    db.commit()
+    return True
 
 
 def approve(db, run, user_id: int):

@@ -22,6 +22,11 @@ ORDER_SHEET = "order_sheet"
 PRICE_LIST = "price_list"
 CATALOG = "catalog"
 IMAGES = "images"
+# The split half of a collection some brands send: the order sheet carries
+# what was bought, a separate product list carries the HS codes, origin and
+# UPCs (HUF's "UPC HS code" excel, Carhartt's product data). Optional — most
+# brands put everything in the order sheet — so it is never reported missing.
+PRODUCT_LIST = "product_list"
 OTHER = "other"
 
 # The four inputs a complete collection intake is expected to carry. Anything
@@ -33,6 +38,7 @@ KIND_LABELS = {
     PRICE_LIST: "Price list",
     CATALOG: "Catalog",
     IMAGES: "Image package",
+    PRODUCT_LIST: "Product list (HS codes)",
     OTHER: "Other",
 }
 
@@ -45,10 +51,15 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 _PRICE_WORDS = ("pricelist", "price list", "price", "prices", "rrp", "msrp",
                 "wholesale", "whsl", "cost")
 _ORDER_WORDS = ("ordersheet", "order sheet", "order form", "orderform",
+                "importsheet", "import sheet",
                 "order", "buy sheet", "buysheet", "booking", "preorder",
                 "pre order", "reorder", "re order")
 _CATALOG_WORDS = ("lookbook", "look book", "catalogue", "catalog",
                   "linesheet", "line sheet", "linelist", "line list")
+_PRODUCT_LIST_WORDS = ("hs code", "hs codes", "hscode", "hts", "upc", "tariff",
+                       "customs", "product list", "productlist", "product data",
+                       "master list", "masterlist", "item list", "itemlist",
+                       "material list", "commodity")
 _IMAGE_WORDS = ("image", "images", "photo", "photos", "picture", "pictures",
                 "packshot", "packshots", "visual", "visuals", "assets")
 
@@ -93,6 +104,12 @@ def classify_attachment(filename: str) -> str:
         return CATALOG
 
     if ext in SPREADSHEET_EXTS:
+        # "SU27 UPC HS code.xlsx" — the half of the data that carries HS codes.
+        # A bare "HS" only counts as a whole word: it is inside too many others.
+        product_list = max(_hits(name, _PRODUCT_LIST_WORDS),
+                           2 if re.search(r"\bhs\b", name) else 0)
+        if product_list and product_list >= order and product_list >= price:
+            return PRODUCT_LIST
         if images and images > price and images > order:
             # e.g. "SS27 image list.xlsx" — an index of photos, not products.
             return OTHER
@@ -199,6 +216,9 @@ def detect_brand(*texts: str) -> str | None:
 
 _SEASON_CODES = {
     "ss": "SS", "sp": "SS", "spring": "SS", "summer": "SS",
+    # HUF splits the year four ways (SP/SU/FA/HO) and SU27 is a different drop
+    # from SP27, so its own letters are kept rather than folded into SS/FW.
+    "su": "SU", "fa": "FA",
     "fw": "FW", "aw": "FW", "fall": "FW", "autumn": "FW", "winter": "FW",
     "ho": "HO", "holiday": "HO", "resort": "RE", "pf": "PF", "prefall": "PF",
 }
@@ -214,7 +234,7 @@ def detect_season(*texts: str) -> str | None:
     blob = re.sub(r"[_\-/]+", " ", blob).lower()
 
     # Compact form first: SS27, FW 26, SP2027.
-    m = re.search(r"\b(ss|sp|fw|aw|ho|pf)\s?((?:20)?\d{2})\b", blob)
+    m = re.search(r"\b(ss|sp|su|fa|fw|aw|ho|pf)\s?((?:20)?\d{2})\b", blob)
     if m:
         return f"{_SEASON_CODES[m.group(1)]}{m.group(2)[-2:]}"
 
@@ -226,6 +246,75 @@ def detect_season(*texts: str) -> str | None:
         word = m.group(1).replace(" ", "")
         return f"{_SEASON_CODES.get(word, 'SS')}{m.group(2)[-2:]}"
     return None
+
+
+# Columns a supplier names its brand or season in. "Division" is HUF's — in
+# the UPC HS list it holds the brand, in the order form it holds "Apparel" —
+# so a division value only counts when it is a brand we recognise.
+_BRAND_COLUMNS = ("brand", "brand name", "brand description", "label")
+_WEAK_BRAND_COLUMNS = ("division", "vendor", "vendor name", "manufacturer",
+                       "supplier", "supplier name")
+_SEASON_COLUMNS = ("season", "season code", "season name", "collection",
+                   "collection name", "collection code", "delivery")
+
+
+def _header_key(header) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(header or "").lower()).strip()
+
+
+def _top_values(rows: list[dict], header: str, limit: int = 5) -> list[str]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        v = str(row.get(header) or "").strip()
+        if v and v.lower() not in ("nan", "none", "null"):
+            counts[v] = counts.get(v, 0) + 1
+    return [v for v, _ in sorted(counts.items(), key=lambda kv: -kv[1])][:limit]
+
+
+def detect_identity_from_rows(rows: list[dict]) -> dict:
+    """Brand and season read from inside the supplier file.
+
+    Filenames are not reliable — "FW27 Pre EUR Importsheet.xlsx" names no
+    brand — but the rows usually do: Carhartt writes CARHARTT WIP in a Brand
+    column and "SS27 D1" under Collection, HUF writes the brand under Division
+    and the season under Collection and Collection Name.
+
+    Returns ``{"brand", "brand_source", "season", "season_source"}``; a value
+    is None when the file does not say.
+    """
+    out = {"brand": None, "brand_source": "", "season": None, "season_source": ""}
+    if not rows:
+        return out
+    headers = list(rows[0].keys())
+
+    for strong in (True, False):
+        if out["brand"]:
+            break
+        wanted = _BRAND_COLUMNS if strong else _WEAK_BRAND_COLUMNS
+        for h in headers:
+            if _header_key(h) not in wanted:
+                continue
+            values = _top_values(rows, h)
+            known = detect_brands(*values)
+            if known:
+                out["brand"], out["brand_source"] = known[0], f"the {h} column"
+                break
+            if strong and values and not re.fullmatch(r"[\d\s.,-]+", values[0]):
+                # An explicit Brand column is trusted even for a label the
+                # registry has not met yet.
+                v = values[0]
+                out["brand"] = brand_display_name(v.lower()) if v.isupper() else v
+                out["brand_source"] = f"the {h} column"
+                break
+
+    for h in headers:
+        if _header_key(h) not in _SEASON_COLUMNS:
+            continue
+        season = detect_season(*_top_values(rows, h, limit=3))
+        if season:
+            out["season"], out["season_source"] = season, f"the {h} column"
+            break
+    return out
 
 
 # ── Intake analysis ──────────────────────────────────────────────────────────

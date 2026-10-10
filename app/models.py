@@ -510,6 +510,12 @@ class CollectionJob(Base):
                            nullable=True, index=True)
     change_report_json = Column(Text, default="{}")
 
+    # Where the product pictures are, when the brand sends a link (Dropbox,
+    # WeTransfer, a B2B portal) instead of attaching an image package.
+    picture_links_json = Column(Text, default="[]")
+    # Where the brand / season were read from when not from the filename.
+    identity_note = Column(Text)
+
     files = relationship("CollectionFile", back_populates="job",
                          cascade="all, delete-orphan",
                          order_by="CollectionFile.id")
@@ -538,6 +544,17 @@ class CollectionJob(Base):
     @change_report.setter
     def change_report(self, val: dict):
         self.change_report_json = json.dumps(val or {})
+
+    @property
+    def picture_links(self) -> list:
+        try:
+            return list(json.loads(self.picture_links_json or "[]"))
+        except (TypeError, ValueError):
+            return []
+
+    @picture_links.setter
+    def picture_links(self, val: list):
+        self.picture_links_json = json.dumps(list(val or []))
 
     @report.setter
     def report(self, val: dict):
@@ -733,3 +750,87 @@ class PackageRun(Base):
     @property
     def is_running(self) -> bool:
         return self.status == "running"
+
+
+class BrandRuleSet(Base):
+    """The mapping tables for one brand — shared by everyone, readable by staff.
+
+    See ``app/core/brand_rules.py`` for the tables themselves. Shared rather
+    than per-user: a colour or size rule is a fact about the brand, and two
+    staff members must not quietly work to two different tables.
+    """
+    __tablename__ = "brand_rule_sets"
+
+    id = Column(Integer, primary_key=True)
+    brand_key = Column(String(255), nullable=False, unique=True, index=True)
+    brand = Column(String(255), nullable=False)          # display spelling
+    settings_json = Column(Text, default="{}")
+    tables_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                           nullable=True)
+
+    def _json(self, field, default):
+        try:
+            return json.loads(getattr(self, field) or default)
+        except (TypeError, ValueError):
+            return json.loads(default)
+
+    @property
+    def settings(self) -> dict:
+        return self._json("settings_json", "{}")
+
+    @settings.setter
+    def settings(self, val: dict):
+        self.settings_json = json.dumps(val or {})
+
+    @property
+    def tables(self) -> dict:
+        return self._json("tables_json", "{}")
+
+    @tables.setter
+    def tables(self, val: dict):
+        self.tables_json = json.dumps(val or {})
+
+
+class RuleChange(Base):
+    """A proposed or applied change to a brand's rules.
+
+    The system never edits a rule on its own: when it meets a colour or size
+    run the tables do not cover, it files a ``pending`` request here and a
+    person approves or rejects it. Edits staff make directly are recorded too
+    (``applied``), so every table has a history of who changed what and why.
+    """
+    __tablename__ = "rule_changes"
+
+    id = Column(Integer, primary_key=True)
+    brand_key = Column(String(255), nullable=False, index=True)
+    table_name = Column(String(40), nullable=False)
+    action = Column(String(20), default="upsert")       # upsert, delete, setting
+    row_json = Column(Text, default="{}")                # the proposed row
+    previous_json = Column(Text)                         # what it replaced
+    reason = Column(Text)
+    source = Column(String(30), default="system")        # system, ai, staff, decision
+    status = Column(String(20), default="pending", index=True)
+    # pending -> approved | rejected ; applied for direct staff edits
+    job_id = Column(Integer, ForeignKey("collection_jobs.id", ondelete="SET NULL"),
+                    nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    decided_at = Column(DateTime)
+    decided_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                           nullable=True)
+
+    @property
+    def row(self) -> dict:
+        try:
+            return json.loads(self.row_json or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    @property
+    def previous(self) -> dict:
+        try:
+            return json.loads(self.previous_json or "{}")
+        except (TypeError, ValueError):
+            return {}

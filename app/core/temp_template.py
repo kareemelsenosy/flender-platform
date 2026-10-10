@@ -19,7 +19,9 @@ from __future__ import annotations
 import re
 
 from app.core.base_color import propose as propose_base_color
-from app.core.sap_creation import normalise_header, season_code
+from app.core.sap_creation import (
+    base_colour_exception, normalise_header, season_code,
+)
 
 # The TEMP layout, in order, from the accepted Hiking Patrol sheet.
 TEMP_COLUMNS = [
@@ -145,7 +147,9 @@ def expand_sizes(row: dict, max_cols: int = 12) -> list[dict]:
 
 def build_temp_sheet(rows, *, brand: str, season: str,
                      group_map=None, vocab=None, colour_lookup=None,
-                     history=None, earliest_ship_date: str = "") -> dict:
+                     history=None, earliest_ship_date: str = "",
+                     colour_table=None, temporary=None,
+                     base_colour: bool = True) -> dict:
     """Build the TEMP sheet from supplier order rows.
 
     ``group_map`` maps a supplier subcategory to a SAP item group. It is
@@ -226,12 +230,14 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "reason": f"no SAP item group known for '{subcat}'",
                 "suggestion": f"Map '{subcat}' to a SAP item group"})
 
-        base = propose_base_color(colour, vocab, colour_lookup)
-        if not base["value"]:
-            exceptions.append({"sku": style, "field": "U_BaseColor",
-                               "subject": colour, "severity": "manual_review",
-                               "reason": f"'{colour}' has never been classified",
-                               "suggestion": f"Choose a base colour for '{colour}'"})
+        if base_colour:
+            base = propose_base_color(colour, vocab, colour_lookup,
+                                      table=colour_table, temporary=temporary)
+            question = base_colour_exception(colour, base, "U_BaseColor")
+            if question and question["severity"] != "warning":
+                exceptions.append({**question, "sku": style})
+        else:
+            base = {"value": ""}
 
         hist = history.get(style, {})
         for field in FROM_HISTORY:

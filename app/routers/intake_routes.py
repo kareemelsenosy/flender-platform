@@ -137,6 +137,10 @@ def analyse_job(db: DBSession, job: CollectionJob) -> CollectionJob:
         except Exception as exc:
             cf.parse_error = str(exc)[:500]
 
+    # The rows themselves name the brand and season more reliably than the
+    # filename does ("FW27 Pre EUR Importsheet.xlsx" names no brand at all).
+    _identity_from_contents(job)
+
     # Volume comes from the order sheet, never from the sum of every file. A
     # price list describes the same products, so adding the two together
     # double-counts: Hiking Patrol read as 332 styles when it has 60, because
@@ -153,6 +157,8 @@ def analyse_job(db: DBSession, job: CollectionJob) -> CollectionJob:
         analysis, all_brands=all_brands,
     )
 
+    _read_inside_files(db, job, report)
+
     job.total_styles = analysis["styles"]
     job.total_skus = analysis["skus"]
     job.report = report
@@ -165,6 +171,110 @@ def analyse_job(db: DBSession, job: CollectionJob) -> CollectionJob:
     db.commit()
     db.refresh(job)
     return job
+
+
+_TABLE_KINDS = (intake_core.ORDER_SHEET, intake_core.PRICE_LIST,
+                intake_core.PRODUCT_LIST)
+
+
+def _sample(cf, limit: int = 400) -> "tuple[list[str], list[dict]]":
+    """Headers and the first rows of one supplier table, as the packages read it."""
+    from app.core.sheet_layout import load_supplier_table
+    if not cf.parse_path or not os.path.exists(cf.parse_path):
+        return [], []
+    try:
+        table, _info = load_supplier_table(cf.parse_path)
+    except Exception:
+        return [], []
+    if table.empty:
+        return [], []
+    table = table.loc[:, [str(c).strip() != "" for c in table.columns]]
+    table = table.loc[:, ~table.columns.duplicated()]
+    headers = [str(c) for c in table.columns
+               if str(c).strip() and not str(c).startswith("__")]
+    return headers, table.head(limit).to_dict("records")
+
+
+def _identity_from_contents(job: CollectionJob) -> None:
+    """Fill a missing brand or season from inside the supplier files."""
+    if job.brand and job.season:
+        return
+    for cf in job.files:
+        if cf.kind not in (intake_core.ORDER_SHEET, intake_core.PRODUCT_LIST,
+                           intake_core.PRICE_LIST):
+            continue
+        _headers, rows = _sample(cf, limit=300)
+        found = intake_core.detect_identity_from_rows(rows)
+        if not job.brand and found["brand"]:
+            job.brand = found["brand"][:255]
+            job.identity_note = f"Brand read from {found['brand_source']} of {cf.filename}"
+        if not job.season and found["season"]:
+            job.season = found["season"][:50]
+        if job.brand and job.season:
+            break
+
+
+def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
+    """Column mapping per file, and the order sheet / product list check.
+
+    Stored in the intake report so the collection page can show — and staff
+    can correct — which column was read for each field, and which items are
+    missing from either half of a split collection.
+    """
+    from app.core import field_mapping
+    from app.core.brand_rules import column_overrides
+    from app.services.brand_rules import rules_for
+    from app.services import packages as pkg
+
+    rules = rules_for(db, job.brand or "")
+    overrides = column_overrides(rules["tables"])
+    mappings = {}
+    for cf in job.files:
+        if cf.kind not in _TABLE_KINDS:
+            continue
+        headers, _rows = _sample(cf, limit=5)
+        if not headers:
+            continue
+        fields = field_mapping.detect(headers, overrides)
+        mappings[str(cf.id)] = {"file": cf.filename, "kind": cf.kind,
+                                "headers": headers, "fields": fields}
+        if cf.kind == intake_core.ORDER_SHEET:
+            for essential in ("Item No.", "Color"):
+                if not fields[essential]["header"]:
+                    report["warnings"].append(
+                        f"{cf.filename}: no column found for "
+                        f"{field_mapping.PLAIN_NAMES[essential].lower()} — "
+                        f"set it under Column mapping")
+    report["mappings"] = mappings
+
+    kinds = {f.kind for f in job.files}
+    if intake_core.PRODUCT_LIST in kinds and intake_core.ORDER_SHEET in kinds:
+        try:
+            joined, _problem, combined = pkg.collection_rows(
+                job, pkg.PRODUCT_CREATION, rules)
+            # The order sheet alone has no barcodes when the product list
+            # carries them; count what is still missing after the join.
+            report["warnings"] = [w for w in report["warnings"]
+                                  if not w.endswith("lines without a barcode")]
+            still = sum(1 for r in joined if pkg._blank(r.get("Barcode")))
+            if still:
+                report["warnings"].append(
+                    f"{still:,} lines still without a barcode after joining the product list")
+        except Exception as exc:                     # never sink the intake
+            combined = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+        report["combine"] = combined
+        if combined.get("only_in_order_count"):
+            report["warnings"].append(
+                f"{combined['only_in_order_count']:,} items in the order sheet are "
+                "not in the product list — they will have no HS code")
+        if combined.get("only_in_list_count"):
+            report["warnings"].append(
+                f"{combined['only_in_list_count']:,} items in the product list are "
+                "not in the order sheet")
+
+    if job.picture_links and intake_core.IMAGES in report.get("missing", []):
+        report["missing"] = [k for k in report["missing"] if k != intake_core.IMAGES]
+        report["received"] = sorted(set(report["received"]) | {intake_core.IMAGES})
 
 
 async def _create_job(db: DBSession, owner: User, attachments: list[UploadFile],
@@ -184,9 +294,31 @@ async def _create_job(db: DBSession, owner: User, attachments: list[UploadFile],
     db.commit()
     db.refresh(job)
 
-    job_dir = UPLOAD_DIR / f"user_{owner.id}" / f"collection_{job.id}"
-    names: list[str] = []
+    names = await _store_files(db, job, attachments)
 
+    # Brand and season come from the caller when known, otherwise from the
+    # subject line and the filenames — which is how suppliers actually label.
+    job.brand = (brand or "").strip() or intake_core.detect_brand(subject, *names)
+    job.season = (season or "").strip() or intake_core.detect_season(subject, *names)
+    db.commit()
+    db.refresh(job)
+
+    job = analyse_job(db, job)
+    _connect_sap_history(db, job)
+    _notify_intake(db, job)
+    return job
+
+
+async def _store_files(db: DBSession, job: CollectionJob,
+                       attachments: list[UploadFile],
+                       kind_override: str = "") -> list[str]:
+    """Save attachments to the collection, classified. Returns their names.
+
+    ``kind_override`` lets a person adding a file say what it is (a price
+    list submitted after processing, say) instead of trusting the filename.
+    """
+    job_dir = UPLOAD_DIR / f"user_{job.user_id}" / f"collection_{job.id}"
+    names: list[str] = []
     for upload in attachments:
         if not upload or not upload.filename:
             continue
@@ -200,29 +332,22 @@ async def _create_job(db: DBSession, owner: User, attachments: list[UploadFile],
             ))
             continue
 
-        kind = intake_core.classify_attachment(display)
+        kind = (kind_override if kind_override in intake_core.KIND_LABELS
+                else intake_core.classify_attachment(display))
         parse_path, parse_error = (None, None)
-        if kind in (intake_core.ORDER_SHEET, intake_core.PRICE_LIST):
+        if kind in _TABLE_KINDS:
             parse_path, parse_error = _parse_path_for(path)
 
         db.add(CollectionFile(
             job_id=job.id, filename=display, file_path=str(path),
             parse_path=str(parse_path) if parse_path else None,
             kind=kind, file_size=size, parse_error=parse_error,
+            kind_corrected=bool(kind_override),
         ))
         names.append(display)
-
-    # Brand and season come from the caller when known, otherwise from the
-    # subject line and the filenames — which is how suppliers actually label.
-    job.brand = (brand or "").strip() or intake_core.detect_brand(subject, *names)
-    job.season = (season or "").strip() or intake_core.detect_season(subject, *names)
     db.commit()
     db.refresh(job)
-
-    _connect_sap_history(db, job)
-    job = analyse_job(db, job)
-    _notify_intake(db, job)
-    return job
+    return names
 
 
 def _notify_intake(db: DBSession, job: CollectionJob) -> None:
@@ -368,14 +493,29 @@ async def collection_detail(job_id: int, request: Request,
         CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
     if not job:
         return RedirectResponse("/collections", status_code=302)
+    from app.core import field_mapping, workflow
+    from app.core.brand_rules import brand_key
     from app.models import BrandConfig
+    from app.services import brand_rules as rules_svc
     from app.services import packages as pkg
     report = job.report
     brand_config = db.query(BrandConfig).filter(
         BrandConfig.user_id == uid, BrandConfig.brand == (job.brand or "")).first()
+    state = pkg.package_state(job)
+    rules = rules_svc.rules_for(db, job.brand or "")
+    pending_rules = rules_svc.pending(db, job.brand) if job.brand else []
+    steps = workflow.steps(
+        job, report, state, rules=rules, pending_rules=len(pending_rules),
+        sap_connected=bool(brand_config and brand_config.sap_sheet_id))
     return templates.TemplateResponse(request, "collection_detail.html", {
         "user": db.get(User, uid), "job": job, "report": report,
-        "package_kinds": pkg.KINDS, "package_state": pkg.package_state(job),
+        "steps": steps, "rules": rules, "pending_rules": pending_rules,
+        "brand_rules_key": brand_key(job.brand or ""),
+        "field_names": field_mapping.FIELD_NAMES,
+        "plain_names": field_mapping.PLAIN_NAMES,
+        "essential_fields": field_mapping.ESSENTIAL,
+        "mapping_note": request.session.pop("mapping_note", ""),
+        "package_kinds": pkg.KINDS, "package_state": state,
         "brand_config": brand_config,
         "sap_sheet_note": request.session.pop("sap_sheet_note", ""),
         "change_report": job.change_report,
@@ -435,7 +575,7 @@ async def correct_kind(job_id: int, file_id: int, request: Request,
         cf.kind = kind
         cf.kind_corrected = True
         cf.parse_error = None
-        if kind in (intake_core.ORDER_SHEET, intake_core.PRICE_LIST) and cf.file_path:
+        if kind in _TABLE_KINDS and cf.file_path:
             parse_path, err = _parse_path_for(pathlib.Path(cf.file_path))
             cf.parse_path = str(parse_path) if parse_path else None
             cf.parse_error = err
@@ -465,3 +605,99 @@ async def delete_collection(job_id: int, request: Request,
         db.delete(job)
         db.commit()
     return RedirectResponse("/collections", status_code=302)
+
+
+@router.post("/collections/{job_id}/files")
+async def add_files(job_id: int, request: Request,
+                    files: list[UploadFile] = File(default=[]),
+                    kind: str = Form(default=""),
+                    db: DBSession = Depends(get_db)):
+    """Add files to a collection that already exists.
+
+    The second half of a split collection (the product list with HS codes),
+    a price list submitted once processing is done, or a catalogue that
+    arrived later — all join the same collection and it is re-analysed.
+    """
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = db.query(CollectionJob).filter(
+        CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
+    if not job:
+        return RedirectResponse("/collections", status_code=302)
+    real = [f for f in (files or []) if f and f.filename]
+    if real:
+        await _store_files(db, job, real, kind_override=kind)
+        analyse_job(db, job)
+    return RedirectResponse(f"/collections/{job_id}", status_code=302)
+
+
+@router.post("/collections/{job_id}/picture-links")
+async def save_picture_links(job_id: int, request: Request,
+                             links: str = Form(default=""),
+                             db: DBSession = Depends(get_db)):
+    """Record where the brand's product pictures are (one link per line)."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = db.query(CollectionJob).filter(
+        CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
+    if job:
+        found = [l.strip() for l in (links or "").splitlines()
+                 if l.strip().lower().startswith(("http://", "https://"))]
+        job.picture_links = list(dict.fromkeys(found))[:50]
+        db.commit()
+        analyse_job(db, job)
+    return RedirectResponse(f"/collections/{job_id}", status_code=302)
+
+
+@router.post("/collections/{job_id}/mapping")
+async def save_mapping(job_id: int, request: Request,
+                       db: DBSession = Depends(get_db)):
+    """Save which column holds each field — as a rule for the whole brand.
+
+    A column mapping is a fact about how the brand writes its files, so it
+    is stored in the brand's rules (with a history entry) and applies to
+    every collection of that brand from now on.
+    """
+    from app.core import field_mapping
+    from app.services import brand_rules as rules_svc
+
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = db.query(CollectionJob).filter(
+        CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
+    if not job:
+        return RedirectResponse("/collections", status_code=302)
+    if not job.brand:
+        request.session["mapping_note"] = "Set the brand first — mappings are saved per brand."
+        return RedirectResponse(f"/collections/{job_id}#mapping", status_code=302)
+
+    form = await request.form()
+    file_id = str(form.get("file_id") or "")
+    current = (job.report.get("mappings") or {}).get(file_id, {}).get("fields", {})
+    changed = 0
+    for field in field_mapping.FIELD_NAMES:
+        name = f"col::{field}"
+        if name not in form:
+            continue
+        chosen = str(form.get(name) or "").strip()
+        info = current.get(field) or {}
+        was = info.get("header", "")
+        if chosen == was and not (chosen == "" and info.get("source") == "missing"):
+            continue
+        if chosen == "" and not was and info.get("source") in ("missing", "brand rule"):
+            continue                    # already empty; nothing new to record
+        if chosen == "__auto":
+            rules_svc.remove_row(db, job.brand, "columns", field, user_id=uid)
+        else:
+            rules_svc.edit_row(db, job.brand, "columns",
+                               {"field": field, "header": chosen or field_mapping.NONE},
+                               user_id=uid, reason=f"Set on {job.label}", job_id=job.id)
+        changed += 1
+    analyse_job(db, job)
+    request.session["mapping_note"] = (
+        f"Saved {changed} column{'s' if changed != 1 else ''} to the {job.brand} rules — "
+        "regenerate packages to use them." if changed else "Nothing changed.")
+    return RedirectResponse(f"/collections/{job_id}#mapping", status_code=302)

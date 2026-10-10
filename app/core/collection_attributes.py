@@ -66,25 +66,60 @@ def styles_from_rows(rows, *, brand: str = "", season: str = "") -> list[dict]:
     return list(styles.values())
 
 
+def _enrich_all(styles, enrich, workers: int, on_progress):
+    """Yield (style, result | exception) as each style finishes.
+
+    Styles are independent, so they run side by side: a model call takes
+    seconds and a collection has hundreds of styles, which one at a time took
+    long enough that people gave up waiting. Progress is reported from this
+    thread, so the callback may touch the database and may raise to stop
+    the run (a cancel); styles not yet started are then abandoned.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    total = len(styles)
+    if workers <= 1:
+        for index, style in enumerate(styles, start=1):
+            if on_progress is not None:
+                on_progress(index - 1, total)
+            try:
+                yield style, enrich(style)
+            except Exception as exc:
+                yield style, exc
+        if on_progress is not None and total:
+            on_progress(total, total)
+        return
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {pool.submit(enrich, s): s for s in styles}
+        for done, fut in enumerate(as_completed(futures), start=1):
+            style = futures[fut]
+            try:
+                yield style, fut.result()
+            except Exception as exc:
+                yield style, exc
+            if on_progress is not None:
+                on_progress(done, total)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def build_attribute_package(styles, enrich, *, vocab_note: str = "",
-                            on_progress=None) -> dict:
+                            on_progress=None, workers: int = 1) -> dict:
     """Run the attribute assignment and separate the confident from the rest.
 
     ``enrich`` is injected so the package can be built and tested without
     calling a model.
     """
     rows, exceptions = [], []
-    total = len(styles)
-    for index, style in enumerate(styles, start=1):
-        if on_progress is not None:
-            on_progress(index, total)
-        try:
-            result = enrich(style)
-        except Exception as exc:                     # one bad style, not a dead run
+    order = {s["style_code"]: i for i, s in enumerate(styles)}
+    for style, result in _enrich_all(styles, enrich, workers, on_progress):
+        if isinstance(result, Exception):            # one bad style, not a dead run
             exceptions.append({
                 "sku": style["style_code"], "field": "product_type",
                 "subject": style["style_code"], "severity": "critical",
-                "reason": f"attributes could not be assigned ({type(exc).__name__})",
+                "reason": f"attributes could not be assigned ({type(result).__name__})",
                 "suggestion": "Assign the product type by hand"})
             continue
 
@@ -109,6 +144,7 @@ def build_attribute_package(styles, enrich, *, vocab_note: str = "",
                           f"with {confidence:.0%} confidence",
                 "suggestion": "Confirm the product type"})
 
+    rows.sort(key=lambda r: order.get(r.get("style_code"), 0))
     columns = ["style_code", "name", "item_group", "master_group", "gender",
                "material", "product_type", "confidence",
                "FABRIC", "FIT", "STYLE", "WEIGHT"]

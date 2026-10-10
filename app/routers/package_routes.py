@@ -90,6 +90,15 @@ async def package_detail(job_id: int, kind: str, request: Request,
         if decisions.get(q["key"]):
             continue
         q["options"] = q.get("options") or _options_for(q["field"], job, db)
+        # An identifier cannot be typed in once for every row; say where it
+        # comes from instead of offering a box that would never settle it.
+        if not pkg.is_fillable(q["field"]) and q["field"] not in (
+                "BASE COLOR", "U_BaseColor", "product_type", "image_status",
+                "U_ItmsGrpCod"):
+            q["fix_hint"] = (
+                f"{q['field']} must come from the supplier data: map the column on "
+                "the collection page (Column mapping), or add the product list "
+                "that carries it, then regenerate.")
         (open_q if q["severity"] in ("critical", "manual_review")
          else warnings).append(q)
 
@@ -123,7 +132,24 @@ async def decide(job_id: int, kind: str, request: Request,
         run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
                                           PackageRun.kind == kind).first()
         if run and not run.is_approved:
-            pkg.apply_decision(db, run, key, value.strip())
+            pkg.apply_decision(db, run, key, value.strip(), user_id=uid)
+    return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
+                            status_code=302)
+
+
+@router.post("/collections/{job_id}/packages/{kind}/cancel")
+async def cancel_package(job_id: int, kind: str, request: Request,
+                         db: DBSession = Depends(get_db)):
+    """Stop a package that is still being built (attributes take minutes)."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    if job:
+        run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
+                                          PackageRun.kind == kind).first()
+        if run:
+            pkg.cancel(db, run)
     return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
                             status_code=302)
 
@@ -257,9 +283,15 @@ async def set_identity(job_id: int, request: Request,
     if job:
         if brand.strip():
             job.brand = brand.strip()[:255]
+            job.identity_note = "Brand set by hand"
         if season.strip():
             job.season = season.strip()[:50]
         db.commit()
+        # Re-run the analysis: the report — and its "brand could not be
+        # detected" warning — was written before the brand was known.
+        from app.routers.intake_routes import _connect_sap_history, analyse_job
+        analyse_job(db, job)
+        _connect_sap_history(db, job)
     return RedirectResponse(f"/collections/{job_id}", status_code=302)
 
 

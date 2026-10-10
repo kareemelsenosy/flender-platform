@@ -44,7 +44,10 @@ REQUIRED = ["Season", "Brand", "Barcode", "SKU", "Item No.", "Colour Code",
 
 # Season letters to Flender's SAP season code. Confirmed against the process
 # tracker ("2027-01 SPRING") and the FW26 sheet ("2026-03").
-_SEASON_SLOT = {"SS": "01", "SP": "01", "FW": "03", "AW": "03"}
+_SEASON_SLOT = {"SS": "01", "SP": "01", "FW": "03", "AW": "03",
+                # HUF's summer and fall drops. Assumed to share the spring and
+                # fall slots until Flender confirms otherwise.
+                "SU": "01", "FA": "03"}
 
 
 def season_code(season: str) -> "tuple[str | None, str]":
@@ -76,8 +79,33 @@ def split_colour_code(code: str) -> "tuple[str, str]":
     return code[:-2], code[-2:]
 
 
+def base_colour_exception(colour_name: str, base: dict, field: str) -> dict | None:
+    """The question a base-colour result raises, worded by where it came from."""
+    if base["value"] and base["confidence"] >= 1.0:
+        return None
+    if not base["value"]:
+        return {
+            "field": field, "subject": colour_name, "severity": "manual_review",
+            "reason": f"'{colour_name}' is not in the brand colour table and has "
+                      f"never been classified — {base['reason']}",
+            "suggestion": f"Choose a base colour for '{colour_name}'"}
+    if base.get("source") == "temporary":
+        return {
+            "field": field, "subject": colour_name, "severity": "manual_review",
+            "reason": f"'{colour_name}' is missing from the brand colour table — "
+                      f"temporary {base['value']} filled in ({base['reason']}); "
+                      f"confirm or change it",
+            "suggestion": f"Confirm {base['value']} for '{colour_name}'"}
+    return {
+        "field": field, "subject": colour_name, "severity": "warning",
+        "reason": f"proposed {base['value']} for '{colour_name}' ({base['reason']}) "
+                  f"— not yet in the brand colour table",
+        "suggestion": "Approve or correct the proposed base colour"}
+
+
 def build_row(src: dict, *, season: str, collection: str,
-              vocab=None, lookup=None) -> "tuple[dict, list[dict]]":
+              vocab=None, lookup=None, table=None, temporary=None,
+              base_colour: bool = True) -> "tuple[dict, list[dict]]":
     """Build one SAP creation row. Returns (row, exceptions)."""
     # Normalise here too: build_row is called directly as well as through
     # build_creation_sheet, and supplier headers carry stray double spaces.
@@ -113,18 +141,15 @@ def build_row(src: dict, *, season: str, collection: str,
     # "Main Waregroup" column, which is one level too coarse.
     out["Main Waregroup"] = get("Item Group")
 
-    base = propose_base_color(colour_name, vocab, lookup)
-    out["BASE COLOR"] = base["value"] or ""
-    if not base["value"]:
-        exceptions.append({
-            "field": "BASE COLOR", "subject": colour_name, "severity": "manual_review",
-            "reason": f"'{colour_name}' has never been classified — {base['reason']}",
-            "suggestion": f"Choose a base colour for '{colour_name}'"})
-    elif base["confidence"] < 1.0:
-        exceptions.append({
-            "field": "BASE COLOR", "subject": colour_name, "severity": "warning",
-            "reason": f"proposed {base['value']} for '{colour_name}' ({base['reason']})",
-            "suggestion": "Approve or correct the proposed base colour"})
+    # Base colour is per item, and only for the brands whose SAP records carry
+    # it; for the rest it stays empty and is never asked about.
+    if base_colour:
+        base = propose_base_color(colour_name, vocab, lookup,
+                                  table=table, temporary=temporary)
+        out["BASE COLOR"] = base["value"] or ""
+        question = base_colour_exception(colour_name, base, "BASE COLOR")
+        if question:
+            exceptions.append(question)
 
     # Everything else passes through untouched.
     for col in SAP_COLUMNS:
@@ -167,7 +192,8 @@ def _expand_horizontal_sizes(rows):
 
 
 def build_creation_sheet(rows, *, season: str, collection: str = "Main",
-                         vocab=None, lookup=None) -> dict:
+                         vocab=None, lookup=None, table=None, temporary=None,
+                         base_colour: bool = True) -> dict:
     """Build the whole package.
 
     Returns the rows, one exception record per problem (carrying the SKU so the
@@ -180,7 +206,8 @@ def build_creation_sheet(rows, *, season: str, collection: str = "Main",
 
     for src in src_rows:
         row, excs = build_row(src, season=season, collection=collection,
-                              vocab=vocab, lookup=lookup)
+                              vocab=vocab, lookup=lookup, table=table,
+                              temporary=temporary, base_colour=base_colour)
         out_rows.append(row)
         sku = row.get("SKU") or row.get("Item.Colour") or ""
         for e in excs:

@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}{{ rs.brand }} — Brand Rules{% endblock %}
+
+{% macro field_input(table, col, value, label) -%}
+  {% if col == 'base' %}
+  <select name="base" style="padding:7px 9px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.84rem">
+    <option value="">{{ '— from statistic code —' if table == 'colours' else '— choose —' }}</option>
+    {% for v in vocab %}<option value="{{ v }}" {% if value and value|lower == v|lower %}selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  {% elif col == 'field' %}
+  <select name="field" style="padding:7px 9px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.84rem">
+    {% for f in field_names %}<option value="{{ f }}" {% if value == f %}selected{% endif %}>{{ plain_names[f] }} ({{ f }})</option>{% endfor %}
+  </select>
+  {% else %}
+  <input type="text" name="{{ col }}" value="{{ value or '' }}" placeholder="{{ label }}"
+         style="padding:7px 9px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.84rem;min-width:{{ '220px' if col in ('sizes', 'meaning', 'header') else '120px' }}">
+  {% endif %}
+{%- endmacro %}
+
+{% block content %}
+<div style="max-width:1080px">
+  <a href="/brand-rules" style="font-size:0.85rem;color:var(--gray-500,#777);text-decoration:none">&larr; All brands</a>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:10px 0 18px;flex-wrap:wrap">
+    <div>
+      <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">{{ rs.brand }} rules</h1>
+      <p style="color:var(--gray-500,#777);margin-top:5px;font-size:0.9rem;max-width:680px">
+        What the system does with {{ rs.brand }} data. Change anything here; it applies to every {{ rs.brand }}
+        collection the next time a package is generated.
+      </p>
+    </div>
+    <a href="/brand-rules/{{ rs.brand_key }}/export"
+       style="padding:9px 18px;border:1px solid var(--gray-200,#e4e4e4);border-radius:9px;text-decoration:none;color:#111;font-weight:600;font-size:0.86rem">
+      Download all rules (Excel)
+    </a>
+  </div>
+
+  {% if note %}
+  <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:11px 15px;margin-bottom:18px;font-size:0.87rem;color:#33536e">{{ note }}</div>
+  {% endif %}
+
+  <!-- Requests -->
+  <section id="requests" style="margin-bottom:28px">
+    <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:4px">Waiting for approval
+      <span style="font-weight:500;color:var(--gray-500,#777);font-size:0.9rem">({{ pending|length }})</span></h2>
+    <p style="font-size:0.84rem;color:var(--gray-500,#777);margin-bottom:10px">
+      Things the system met that the rules do not cover. Correct the value if needed, then approve — or reject and it will not be suggested again.
+    </p>
+    {% if pending %}
+    <form action="/brand-rules/{{ rs.brand_key }}/approve-suggested" method="post" style="margin-bottom:10px"
+          onsubmit="return confirm('Approve every suggestion below that already has a value?')">
+      <button type="submit" style="padding:7px 15px;background:#fff;color:#1b6e4f;border:1px solid #cfe5d8;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">
+        Approve all suggestions that have a value
+      </button>
+    </form>
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+      {% for p in pending %}
+      <div style="padding:13px 18px;{% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="padding:2px 7px;border-radius:5px;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#fdf3e0;color:#8a6011">{{ defs[p.table_name].label }}</span>
+          <strong>{{ sentence(p.table_name, p.row) }}</strong>
+          <span style="font-size:0.76rem;color:var(--gray-400,#999)">
+            · {{ {'ai': 'suggested by AI', 'system': 'raised by the system', 'staff': 'staff'}.get(p.source, p.source) }}
+            {% if p.job_id and jobs.get(p.job_id) %} on <a href="/collections/{{ p.job_id }}" style="color:inherit">{{ jobs[p.job_id] }}</a>{% endif %}
+          </span>
+        </div>
+        {% if p.reason %}<div style="font-size:0.84rem;color:var(--gray-500,#777);margin-top:3px">{{ p.reason }}</div>{% endif %}
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:9px">
+          <form action="/brand-rules/requests/{{ p.id }}/approve" method="post" style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+            {% for col, label in defs[p.table_name].columns %}
+              {% if col == defs[p.table_name].key %}
+              <input type="hidden" name="{{ col }}" value="{{ p.row.get(col, '') }}">
+              {% else %}
+              {{ field_input(p.table_name, col, p.row.get(col, ''), label) }}
+              {% endif %}
+            {% endfor %}
+            <button type="submit" style="padding:7px 14px;background:#1b6e4f;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">Approve</button>
+          </form>
+          <form action="/brand-rules/requests/{{ p.id }}/reject" method="post">
+            <button type="submit" style="padding:7px 14px;background:#fff;color:#993325;border:1px solid #e6cdc9;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">Reject</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:16px 18px;color:var(--gray-500,#777);font-size:0.88rem">Nothing waiting.</div>
+    {% endif %}
+  </section>
+
+  <!-- Settings -->
+  <section id="settings" style="margin-bottom:28px">
+    <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:10px">Settings</h2>
+    <form action="/brand-rules/{{ rs.brand_key }}/settings" method="post"
+          style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:15px 18px">
+      {% for name, d in setting_defs.items() %}
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+        <input type="checkbox" name="{{ name }}" {% if settings.get(name) %}checked{% endif %} style="margin-top:4px">
+        <span><strong style="font-size:0.92rem">{{ d.label }}</strong>
+          <span style="display:block;font-size:0.83rem;color:var(--gray-500,#777);margin-top:2px">{{ d.help }}</span></span>
+      </label>
+      {% endfor %}
+      <button type="submit" style="margin-top:12px;padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.84rem">Save settings</button>
+    </form>
+  </section>
+
+  <!-- Tables -->
+  {% for t in order %}
+  {% set d = defs[t] %}
+  {% set rows = tables[t] %}
+  <section id="{{ t }}" style="margin-bottom:30px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+      <h2 style="font-size:1.1rem;font-weight:700">{{ d.label }}
+        <span style="font-weight:500;color:var(--gray-500,#777);font-size:0.9rem">({{ rows|length }})</span></h2>
+      {% if rows|length > 12 %}
+      <input type="search" placeholder="Filter…" oninput="filterRows('{{ t }}', this.value)"
+             style="padding:6px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.84rem">
+      {% endif %}
+    </div>
+    <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:3px 0 10px;max-width:760px">{{ d.help }}</p>
+
+    {% if t == 'colours' %}
+    <form action="/brand-rules/{{ rs.brand_key }}/import-colours" method="post" enctype="multipart/form-data"
+          style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:0.84rem">
+      <span style="color:var(--gray-500,#777)">Import the brand's Seasonal Colour Table (Excel, both sheets):</span>
+      <input type="file" name="file" accept=".xlsx,.xls" required style="font-size:0.82rem">
+      <button type="submit" style="padding:6px 13px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font-weight:600;cursor:pointer;font-size:0.82rem">Import</button>
+    </form>
+    {% endif %}
+
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+      {% if rows %}
+      <table style="width:100%;border-collapse:collapse;font-size:0.86rem" data-table="{{ t }}">
+        <thead>
+          <tr style="text-align:left;color:var(--gray-500,#777);font-size:0.7rem;letter-spacing:.05em;text-transform:uppercase">
+            {% for col, label in d.columns %}<th style="padding:10px 14px">{{ label }}</th>{% endfor %}
+            <th style="padding:10px 14px">In words</th>
+            <th style="padding:10px 14px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr style="border-top:1px solid var(--gray-100,#f4f4f4);vertical-align:top" data-row>
+            {% for col, label in d.columns %}
+            <td style="padding:9px 14px;{% if loop.first %}font-weight:600{% endif %}">
+              {% if col == 'field' %}{{ plain_names.get(r.get(col), r.get(col)) }}{% else %}{{ r.get(col, '') }}{% endif %}
+            </td>
+            {% endfor %}
+            <td style="padding:9px 14px;color:var(--gray-500,#777)">{{ sentence(t, r) }}</td>
+            <td style="padding:9px 14px;white-space:nowrap;text-align:right">
+              <details style="display:inline-block;text-align:left">
+                <summary style="cursor:pointer;color:#33536e;font-size:0.82rem;font-weight:600">Edit</summary>
+                <form action="/brand-rules/{{ rs.brand_key }}/rows" method="post"
+                      style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;background:#fafafa;padding:9px;border-radius:8px;min-width:280px">
+                  <input type="hidden" name="table" value="{{ t }}">
+                  <input type="hidden" name="original_key" value="{{ r.get(d.key, '') }}">
+                  {% for col, label in d.columns %}{{ field_input(t, col, r.get(col, ''), label) }}{% endfor %}
+                  <button type="submit" style="padding:6px 12px;background:#111;color:#fff;border:0;border-radius:7px;font-weight:600;cursor:pointer;font-size:0.8rem">Save</button>
+                </form>
+              </details>
+              <form action="/brand-rules/{{ rs.brand_key }}/rows/delete" method="post" style="display:inline"
+                    onsubmit="return confirm('Remove this rule?')">
+                <input type="hidden" name="table" value="{{ t }}">
+                <input type="hidden" name="key_value" value="{{ r.get(d.key, '') }}">
+                <button type="submit" style="margin-left:8px;background:none;border:0;color:#993325;cursor:pointer;font-size:0.82rem">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="padding:14px 18px;color:var(--gray-400,#999);font-size:0.86rem">
+        No rules yet.{% if t == 'colours' %} Import the colour table above, or answer base-colour questions on a package — each answer is added here.{% endif %}
+      </div>
+      {% endif %}
+      <form action="/brand-rules/{{ rs.brand_key }}/rows" method="post"
+            style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;padding:11px 14px;border-top:1px solid var(--gray-100,#f4f4f4);background:#fcfcfc">
+        <input type="hidden" name="table" value="{{ t }}">
+        <span style="font-size:0.8rem;font-weight:600;color:var(--gray-500,#777)">Add:</span>
+        {% for col, label in d.columns %}{{ field_input(t, col, '', label) }}{% endfor %}
+        <button type="submit" style="padding:7px 14px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.82rem">Add rule</button>
+      </form>
+    </div>
+  </section>
+  {% endfor %}
+
+  <!-- History -->
+  <section id="history" style="margin-bottom:30px">
+    <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:10px">History</h2>
+    <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
+      {% for h in history %}
+      <div style="padding:9px 16px;font-size:0.84rem;display:flex;gap:10px;flex-wrap:wrap;{% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
+        <span style="color:var(--gray-400,#999);white-space:nowrap">{{ h.created_at.strftime('%d %b %Y %H:%M') if h.created_at else '' }}</span>
+        <span style="font-weight:600;color:{% if h.status == 'rejected' %}#993325{% elif h.status == 'approved' %}#1b6e4f{% else %}#333{% endif %}">
+          {{ {'applied': 'Changed', 'approved': 'Approved', 'rejected': 'Rejected'}.get(h.status, h.status) }}
+        </span>
+        <span>
+          {% if h.action == 'delete' %}removed: {{ sentence(h.table_name, h.row) }}
+          {% elif h.action == 'import' %}imported {{ h.row.get('colours', 0) }} colours and {{ h.row.get('stat_codes', 0) }} statistic codes from {{ h.row.get('file', 'a file') }}
+          {% elif h.action == 'setting' %}{% for k, v in h.row.items() %}{{ setting_defs.get(k, {}).get('label', k) }}: {{ 'yes' if v else 'no' }}{% endfor %}
+          {% else %}{{ sentence(h.table_name, h.row) }}{% if h.previous %} <span style="color:var(--gray-400,#999)">(was: {{ sentence(h.table_name, h.previous) }})</span>{% endif %}
+          {% endif %}
+        </span>
+        <span style="color:var(--gray-400,#999);margin-left:auto">
+          {{ users.get(h.decided_by_id, '') }}{% if h.source == 'decision' %} · package decision{% endif %}
+        </span>
+      </div>
+      {% else %}
+      <div style="padding:14px 18px;color:var(--gray-400,#999);font-size:0.86rem">No changes yet.</div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+<script>
+function filterRows(table, q) {
+  q = (q || "").toLowerCase();
+  document.querySelectorAll('table[data-table="' + table + '"] tr[data-row]').forEach(function (tr) {
+    tr.style.display = tr.textContent.toLowerCase().indexOf(q) === -1 ? "none" : "";
+  });
+}
+</script>
+{% endblock %}

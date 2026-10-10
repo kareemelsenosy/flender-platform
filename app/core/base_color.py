@@ -5,13 +5,18 @@ SAP stores a controlled ``BASE COLOR`` alongside the supplier's own colour name:
 hundreds of names that have never been classified, and every one of them blocks
 the SAP creation sheet until somebody decides.
 
-Three tiers, most reliable first:
+Tiers, most reliable first:
 
-  1. **History** — the same colour name was classified in a previous season.
-     Certain, and needs no review.
-  2. **Rules** — the name decomposes ("Steel Blue", "Alton Check, Cypress",
+  1. **Brand colour table** — the brand's Seasonal Colour Table, kept in
+     Brand Rules: colour name -> statistic code -> base colour. Certain.
+  2. **History** — the same colour name was classified in a previous season
+     or decided by a person. Certain, and needs no review.
+  3. **Rules** — the name decomposes ("Steel Blue", "Alton Check, Cypress",
      "Obsidian / Shady Grey"). Proposed with a reason, for one-click approval.
-  3. **Unknown** — an opaque name ("Pumice", "Styx", "Moor"). Goes to a human.
+  4. **Temporary** — an opaque name ("Ikola", "Pumice") suggested from the
+     brand's catalogue and palette. Filled in so the work can continue, but
+     flagged for a person to confirm.
+  5. **Unknown** — nothing to go on. Goes to a human.
 
 The rules were fitted against Carhartt FW26, where the correct answer is known
 for all 200 colours, so their accuracy is measured rather than assumed.
@@ -23,7 +28,8 @@ import re
 # Base colours Flender actually uses. Learned lookups override this; it exists
 # so a brand with no history still has a target vocabulary.
 DEFAULT_VOCAB = ["Beige", "Black", "Blue", "Brown", "Green", "Grey",
-                 "Multicolour", "Pink", "Purple", "Red", "White"]
+                 "Multicolour", "Orange", "Pink", "Purple", "Red", "White",
+                 "Yellow"]
 
 # A patterned colour is Multicolour regardless of the colour named after it:
 # "Alton Check, Cypress" is Multicolour, not Green.
@@ -48,6 +54,9 @@ SYNONYMS = {
     "hamilton": "Brown", "walnut": "Brown", "hazel": "Brown",
     "lilac": "Purple", "violet": "Purple", "lavender": "Purple",
     "rose": "Pink", "blush": "Pink", "fuchsia": "Pink",
+    "mustard": "Yellow", "lemon": "Yellow", "gold": "Yellow", "ochre": "Yellow",
+    "saffron": "Yellow", "canary": "Yellow",
+    "amber": "Orange", "tangerine": "Orange", "apricot": "Orange",
 }
 
 _MAX_DEPTH = 3
@@ -133,18 +142,37 @@ def _match_word(text: str, vocab: list[str]) -> "tuple[str | None, str]":
 
 
 def propose(name: str, vocab: list[str] | None = None,
-            lookup: dict[str, str] | None = None, _depth: int = 0) -> dict:
+            lookup: dict[str, str] | None = None, _depth: int = 0, *,
+            table: dict | None = None, temporary: dict | None = None) -> dict:
     """Resolve one supplier colour name to a base colour.
 
     Returns ``{"value", "confidence", "source", "reason"}``. ``value`` is None
     when nothing can be proposed, which is a decision for a human rather than a
     guess to be quietly written into SAP.
+
+    ``table`` is the brand colour table (``brand_rules.colour_table_lookup``);
+    ``temporary`` maps a lower-cased name to ``{"value", "why"}`` suggested
+    from the catalogue, used only when nothing more reliable answers.
     """
     vocab = vocab or DEFAULT_VOCAB
     clean = normalise(name)
     if not clean:
         return {"value": None, "confidence": 0.0, "source": "none",
                 "reason": "no colour given"}
+
+    if table and _depth == 0:
+        from app.core.brand_rules import resolve_from_table
+        hit = resolve_from_table(clean, table)
+        if hit:
+            return hit
+
+    if temporary is not None and _depth == 0:
+        found = propose(clean, vocab, lookup, 0, table=None, temporary=None)
+        if found["value"] or not temporary.get(clean.lower()):
+            return found
+        temp = temporary[clean.lower()]
+        return {"value": temp["value"], "confidence": 0.5, "source": "temporary",
+                "reason": temp.get("why") or "suggested from the catalogue"}
 
     if lookup:
         hit = lookup.get(clean.lower())
