@@ -133,3 +133,20 @@ def load_supplier_table(path: str) -> "tuple[pd.DataFrame, dict]":
         "header_row": header_row,
         "rows": len(table),
     }
+
+
+def workbook_labels(path: str) -> list[str]:
+    """Where a workbook names itself: its data sheets' names and the title
+    block above the table ("EDWIN Collection FW26 in AED", "2026 FALL/WINTER").
+    Used to find the season when the filename does not carry it."""
+    try:
+        sheets = read_workbook(path)
+    except Exception:
+        return []
+    labels: list[str] = []
+    for name in pick_data_sheets(sheets):
+        labels.append(name)
+        raw = sheets[name]
+        for i in range(min(find_header_row(raw), 12)):
+            labels.extend(_cells(raw.iloc[i]))
+    return labels

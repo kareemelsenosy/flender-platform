@@ -158,7 +158,24 @@ def build_row(src: dict, *, season: str, collection: str,
             if direct:
                 out[col] = direct
 
+    supplier_price = get("Supplier Wholesale Price")
     for col in REQUIRED:
+        if col == "Wholesale Price EUR" and not out[col] and supplier_price:
+            cur = get("Supplier Wholesale Currency") or "another currency"
+            exceptions.append({
+                "field": col, "subject": f"priced in {cur}", "severity": "warning",
+                "reason": f"the supplier prices this collection in {cur} "
+                          f"(e.g. {supplier_price}); the EUR price comes from the "
+                          f"pricing step, so this column is left empty",
+                "suggestion": "Add the EUR price list or fill it in the pricing step"})
+            continue
+        if col == "Colour Code" and not out[col] and not src.get("__brand_has_colour_codes", True):
+            exceptions.append({
+                "field": col, "subject": "brand sends none", "severity": "warning",
+                "reason": "this brand's files carry no colour codes, so Colour Code, "
+                          "Item.Colour and House Colour stay empty",
+                "suggestion": "Confirm SAP accepts these items without a colour code"})
+            continue
         if not out[col] and col != "BASE COLOR":
             exceptions.append({
                 "field": col, "subject": col, "severity": "critical",
@@ -201,6 +218,10 @@ def build_creation_sheet(rows, *, season: str, collection: str = "Main",
     """
     src_rows = [{normalise_header(k): v for k, v in r.items()}
                 for r in _expand_horizontal_sizes(rows)]
+    has_codes = any(str(r.get("Colour Code") or "").strip() not in ("", "nan", "None")
+                    for r in src_rows)
+    for r in src_rows:
+        r["__brand_has_colour_codes"] = has_codes
     out_rows: list[dict] = []
     exceptions: list[dict] = []
 

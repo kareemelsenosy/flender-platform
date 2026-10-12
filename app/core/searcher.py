@@ -69,6 +69,7 @@ BRAND_DOMAINS: dict[str, str] = {
     "acl": "anothercottonlab.com",
     "market": "marketstudios.com",
     "twojeys": "twojeys.com",
+    "komono": "komono.com",
     "edwin": "edwin-europe.com",
     "hiking patrol": "hikingpatrol.com",
     "rip n dip": "ripndipclothing.com",

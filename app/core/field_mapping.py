@@ -21,41 +21,57 @@ import re
 FIELDS: list[tuple[str, str, tuple[str, ...]]] = [
     ("Item No.", "Style number",
      ("item no", "style number", "style no", "style code", "style nr",
-      "article number", "article no", "article", "item number", "item code",
-      "product code", "model number", "model", "style")),
+      "single sku", "kom code", "article number", "article no", "article",
+      "item number", "item code", "product code", "model number", "model",
+      "style", "no")),
     ("Color", "Colour name",
-     ("color", "colour", "color name", "colour name", "color description",
-      "colour description", "colorway name", "colourway name")),
+     ("color", "colour", "colors", "colours", "color name", "colour name",
+      "color description", "colour description", "colorway name",
+      "colourway name", "finishing")),
     ("Colour Code", "Colour code",
-     ("colour code", "color code", "color id", "colour id", "color number",
-      "colour number", "colorway", "colourway")),
-    ("Size", "Size", ("size", "size name", "size description", "size label")),
+     ("colour code", "color code", "colour no", "color no", "color id",
+      "colour id", "color number", "colour number", "colorway", "colourway")),
+    ("Size", "Size",
+     ("size", "size name", "size description", "size label", "sizes",
+      "size range", "size group", "lot size")),
     ("Size Run", "Size run / scale code",
-     ("size run", "size scale", "size code", "size group", "scale")),
+     ("size run", "size scale", "size code", "scale", "sr")),
     ("Barcode", "Barcode (EAN / UPC)",
-     ("barcode", "ean", "upc", "gtin", "ean code", "upc code", "ean13", "upc a")),
+     ("barcode", "ean", "ean code", "eancode", "upc", "gtin", "upc code",
+      "ean13", "upc a")),
     ("Item Description", "Product name",
      ("item description", "description", "style name", "product name", "name",
-      "style description", "product description", "model name")),
+      "article name", "style description", "product description",
+      "model name", "item")),
     ("Item Group", "Product group",
-     ("item group", "subcategory", "sub category", "category", "product group",
-      "product type", "product category")),
+     ("item group", "subcategory", "sub category", "category 2", "category",
+      "category 1", "main category", "product group", "product type",
+      "product category", "family")),
     ("Sex", "Gender", ("sex", "gender", "gender description")),
     ("Material", "Material / composition",
-     ("material", "composition", "fabric", "fabrication", "materials",
-      "fabric composition")),
+     ("material", "material composition", "material description",
+      "composition", "fabric comp", "fabric composition", "fabric",
+      "fabrication", "materials")),
     ("Wholesale Price EUR", "Wholesale price",
-     ("wholesale price eur", "wholesale price", "wholesale", "whs price", "whs",
-      "whsl", "cost price", "purchase price", "net price", "price")),
+     ("wholesale price eur", "wholesale price", "wholesale", "whs price",
+      "whs", "whsl", "ws", "w s", "dt price", "cost price", "purchase price",
+      "net price", "price")),
     ("Retail EUR", "Retail price",
      ("retail eur", "retail price", "rrp", "msrp", "srp", "retail")),
     ("Duty Position", "HS code",
      ("duty position", "hs code", "hs", "hts", "hts code", "hs tariff",
       "tariff code", "tariff", "commodity code", "customs code", "hs number")),
     ("Country of Origin", "Country of origin",
-     ("country of origin", "coo", "origin", "made in", "country")),
+     ("country of origin", "coo", "c o o", "origin", "made in", "country")),
     ("Brand", "Brand", ("brand", "brand name")),
 ]
+
+# Price columns carry their currency in the header ("WHS AED", "Wholesale
+# (USD)", "EUR RETAIL"). The currency is stripped for matching and remembered,
+# because a price in AED must never land in a column SAP reads as EUR.
+CURRENCIES = ("eur", "eu", "usd", "aed", "gbp", "chf", "dkk", "sek", "nok",
+              "jpy", "krw", "sar", "kwd")
+PRICE_FIELDS = ("Wholesale Price EUR", "Retail EUR")
 
 FIELD_NAMES = [f for f, _n, _a in FIELDS]
 PLAIN_NAMES = {f: n for f, n, _a in FIELDS}
@@ -70,7 +86,24 @@ ESSENTIAL = ("Item No.", "Color", "Size", "Barcode", "Item Description")
 
 
 def norm(header) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(header or "").lower()).strip()
+    text = re.sub(r"[^a-z0-9]+", " ", str(header or "").lower()).strip()
+    # "M.S.R.P." -> "msrp", "W/S" stays "w s" (two letters are an alias).
+    text = re.sub(r"\b(?:[a-z] ){3,}[a-z]\b",
+                  lambda m: m.group(0).replace(" ", ""), text)
+    return text
+
+
+def currency_of(header) -> str:
+    """The currency a price header names, upper-case, or ''."""
+    words = norm(header).split()
+    for w in words:
+        if w in CURRENCIES:
+            return "EUR" if w == "eu" else w.upper()
+    return ""
+
+
+def _strip_currency(text: str) -> str:
+    return " ".join(w for w in text.split() if w not in CURRENCIES)
 
 
 def detect(headers: list[str], overrides: dict[str, str] | None = None) -> dict[str, dict]:
@@ -83,8 +116,13 @@ def detect(headers: list[str], overrides: dict[str, str] | None = None) -> dict[
     overrides = overrides or {}
     by_norm: dict[str, str] = {}
     for h in headers:
-        if str(h).strip():
+        if str(h).strip() and not str(h).startswith("(unnamed"):
             by_norm.setdefault(norm(h), str(h))
+    # Price headers also answer to their name without the currency.
+    for h in headers:
+        stripped = _strip_currency(norm(h))
+        if stripped and stripped != norm(h) and currency_of(h):
+            by_norm.setdefault(stripped, str(h))
 
     taken: set[str] = set()
     out: dict[str, dict] = {}
@@ -121,7 +159,37 @@ def detect(headers: list[str], overrides: dict[str, str] | None = None) -> dict[
                 break
         else:
             out[field] = {"header": "", "source": "missing"}
+
+    # A style code column the aliases did not name ("KOM-Code") — a header
+    # that is just "<something> code" and not a colour, HS, EAN or size code.
+    if not out["Item No."]["header"]:
+        for h in headers:
+            n = norm(h)
+            if (n.endswith(" code") and h not in taken
+                    and not re.search(r"colou?r|hs|hts|ean|upc|size|zip|post|country|tariff|group", n)):
+                out["Item No."] = {"header": str(h), "source": "detected"}
+                taken.add(str(h))
+                break
+
+    # Only a price that says it is in EUR may fill a EUR field. Flender's
+    # suppliers mostly price in AED or USD, and a header that names no
+    # currency at all ("Price", "WS") cannot be assumed to be EUR.
+    for field in PRICE_FIELDS:
+        header = out[field]["header"]
+        if not header:
+            continue
+        cur = currency_of(header) or ("EUR" if norm(header) == norm(field) else "")
+        out[field]["currency"] = cur or "unstated currency"
+        if cur != "EUR":
+            out[field]["note"] = (f"prices in {cur}, not EUR" if cur else
+                                  "the column does not say which currency — not used as EUR")
     return out
+
+
+def foreign_price(mapping: dict[str, dict], field: str = "Wholesale Price EUR") -> str:
+    """The currency of a price mapped onto a EUR field, when it is not EUR."""
+    cur = (mapping.get(field) or {}).get("currency", "")
+    return cur if cur and cur != "EUR" else ""
 
 
 def apply(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
@@ -131,8 +199,11 @@ def apply(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
     keeps working; a standard field that already holds a value is never
     overwritten.
     """
+    # A price in another currency is kept under its own name, never copied
+    # into the EUR column SAP reads.
     pairs = [(f, m["header"]) for f, m in mapping.items()
-             if m.get("header") and m["header"] != f]
+             if m.get("header") and m["header"] != f
+             and not (f in PRICE_FIELDS and foreign_price(mapping, f))]
     if not pairs:
         return rows
     out = []

@@ -416,3 +416,69 @@ def test_the_attribute_run_stops_when_cancelled():
         build_attribute_package(styles, lambda s: {"product_type": "TSHIRT", "confidence": 1},
                                 on_progress=progress, workers=4)
     assert max(seen) < 20
+
+
+# ── Real supplier layouts (Real Test Files, October 2026) ────────────────────
+
+def test_a_style_code_with_a_dash_is_only_split_when_the_suffix_is_the_colour():
+    from app.services.packages import fill_from_collection
+
+    class Job:
+        brand = "Market"
+    rows = fill_from_collection([
+        {"Item No.": "MKT26Q1-SS0589", "Color": "BLACK", "Size": "S"},
+        {"Item No.": "JK00520-DKBRN", "Color": "DARK BROWN", "Size": "S"}], Job())
+    assert rows[0]["Item No."] == "MKT26Q1-SS0589"
+    assert (rows[1]["Item No."], rows[1]["Colour Code"]) == ("JK00520", "DKBRN")
+
+
+@pytest.mark.parametrize("value,columns,expected", [
+    ("XS, S, M, L, XL", [], ["XS", "S", "M", "L", "XL"]),
+    ("28 - 38", ["25", "26", "28", "29", "30", "34", "36", "38"], ["28", "29", "30", "34", "36", "38"]),
+    ("XXS-4XL", ["XS / 28", "S / 30", "4XL / 42", "One Size"], ["XS", "S", "4XL"]),
+    ("26-44", ["XS / 28", "S / 30", "4XL / 42"], ["28", "30", "42"]),
+])
+def test_sizes_written_as_lists_and_ranges_become_one_row_each(value, columns, expected):
+    from app.core.size_expand import expand_rows
+    rows, _ = expand_rows([{"Item No.": "A", "Size": value}], columns, has_size_field=True)
+    assert [r["Size"] for r in rows] == expected
+
+
+def test_one_size_goods_without_any_size_column_get_onesize():
+    from app.core.size_expand import expand_rows
+    rows, note = expand_rows([{"Item No.": "KOM-1"}], ["KOM-Code", "Name"], has_size_field=False)
+    assert rows[0]["Size"] == "onesize" and note["one_size_default"] == 1
+
+
+def test_a_price_without_eur_never_fills_the_eur_column():
+    m = field_mapping.detect(["Style No", "WHS AED", "SRP AED", "Price"])
+    rows = field_mapping.apply([{"Style No": "A", "WHS AED": "774"}], m)
+    assert rows[0].get("Wholesale Price EUR") in (None, "")
+    assert m["Wholesale Price EUR"]["currency"] == "AED"
+    eur = field_mapping.detect(["WHSL EU"])
+    assert eur["Wholesale Price EUR"]["currency"] == "EUR"
+
+
+def test_lot_keys_and_header_legends_are_read():
+    import pandas as pd
+    from app.core.size_expand import legend_from_lot_sheet, legend_in_header
+    lots = pd.DataFrame([["SOCKS Men", None, None, None], [None, "35-38", "39-42", "Sum"],
+                         ["SX", "6", None, "6"], ["SY", None, "6", "6"]])
+    assert legend_from_lot_sheet(lots) == {"SX": ["35-38"], "SY": ["39-42"]}
+    tnt = pd.DataFrame([["No.", "STYLE CODE", "A", None, "XS", "S", "M", "TOTAL"],
+                        [None, None, "B", None, None, "M/L", None, None],
+                        [None, None, "C", "OS", None, None, None, None],
+                        ["1", "TN1", "A", None, "3", "1", None, "4"]])
+    assert legend_in_header(tnt, 0) == {"A": ["XS", "S", "M"], "B": ["M/L"], "C": ["OS"]}
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Q226 Order Sheet (May)", "SS26"), ("NEXT Q1 2026", "SS26"),
+    ("Q3 - 2026", "FW26"), ("2026 FALL/WINTER", "FW26")])
+def test_seasons_written_as_quarters_or_year_first(text, expected):
+    assert detect_season(text) == expected
+
+
+def test_a_short_brand_name_does_not_match_inside_another():
+    from app.core.intake import detect_brand
+    assert detect_brand("KOMONO.xlsx") == "Komono"

@@ -44,7 +44,9 @@ FROM_HISTORY = ["U_HS_Code", "U_COO", "U_Gender", "U_VCName"]
 
 # Supplier size labels to the SAP spelling.
 SIZE_ALIASES = {"OS": "onesize", "O/S": "onesize", "ONE SIZE": "onesize",
-                "ONESIZE": "onesize", "UNI": "onesize", "U": "onesize"}
+                "ONESIZE": "onesize", "UNI": "onesize", "U": "onesize",
+                "OSFA": "onesize", "ONE SIZE FITS ALL": "onesize",
+                "ONE SIZE FITS MOST": "onesize", "NS": "onesize", "TU": "onesize"}
 
 # A size run maps to one SAP size-list code.
 SIZE_LIST_CODES = {
@@ -108,10 +110,48 @@ def sort_index(position: int, size: str) -> int:
     return SORT_BASE + SORT_STEP * position
 
 
+# SAP stores the country of origin as a two-letter code ("CN", "PK"); most
+# order sheets write the name. Only countries Flender's brands produce in.
+COUNTRY_CODES = {
+    "china": "CN", "vietnam": "VN", "viet nam": "VN", "bangladesh": "BD",
+    "india": "IN", "pakistan": "PK", "turkey": "TR", "türkiye": "TR",
+    "portugal": "PT", "italy": "IT", "spain": "ES", "tunisia": "TN",
+    "korea": "KR", "south korea": "KR", "republic of korea": "KR",
+    "japan": "JP", "indonesia": "ID", "cambodia": "KH", "sri lanka": "LK",
+    "myanmar": "MM", "thailand": "TH", "taiwan": "TW", "morocco": "MA",
+    "egypt": "EG", "romania": "RO", "bulgaria": "BG", "poland": "PL",
+    "lithuania": "LT", "germany": "DE", "france": "FR", "belgium": "BE",
+    "mexico": "MX", "usa": "US", "united states": "US", "peru": "PE",
+    "mauritius": "MU", "madagascar": "MG", "hong kong": "HK", "macedonia": "MK",
+    "north macedonia": "MK", "laos": "LA", "philippines": "PH", "malaysia": "MY",
+}
+
+
+def country_code(value: str) -> str:
+    """'China' -> 'CN'. A two-letter code passes through; unknown names stay."""
+    v = str(value or "").strip()
+    if is_blank(v):
+        return ""
+    if re.fullmatch(r"[A-Za-z]{2}", v):
+        return v.upper()
+    return COUNTRY_CODES.get(v.lower(), v)
+
+
 def barcode(style: str, colour: str, size: str) -> str:
     """U_CodeBars — style, colour and size run together, letters and digits."""
     raw = f"{style or ''}{colour or ''}{normalise_size(size)}"
     return re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+
+
+def barcode_of(src: dict) -> str:
+    """The supplier's barcode on a row, digits only, or ''."""
+    for key in ("Barcode", "EAN", "UPC"):
+        v = src.get(key)
+        if not is_blank(v):
+            digits = re.sub(r"\.0$", "", str(v).strip())
+            if re.fullmatch(r"\d{8,14}", digits):
+                return digits
+    return ""
 
 
 def expand_sizes(row: dict, max_cols: int = 12) -> list[dict]:
@@ -184,15 +224,32 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         exceptions.append({"sku": "", "field": "U_Season", "severity": "critical",
                            "reason": why, "suggestion": "Confirm the SAP season code"})
 
+    # A supplier writing one row per size spreads a style's run over many
+    # rows; asking about each row's single size raised "size run XS" as a
+    # question two hundred times. The run is the style-colour's sizes, in
+    # the order the sheet gives them.
+    runs: dict[tuple, list[str]] = {}
+    for raw in rows:
+        src = {normalise_header(k): v for k, v in raw.items()}
+        g = lambda *k: next((str(src[x]).strip() for x in k                  # noqa: E731
+                             if x in src and not is_blank(src[x])), "")
+        key = (g("Item No.", "Style Number", "Style Code"), g("Color", "Colour"))
+        for sz in expand_sizes(src):
+            label = normalise_size(sz["size"])
+            if label not in runs.setdefault(key, []):
+                runs[key].append(label)
+
     for order_index, raw in enumerate(rows, start=1):
         src = {normalise_header(k): v for k, v in raw.items()}
         get = lambda *k: next(                                   # noqa: E731
             (str(src[x]).strip() for x in k
              if x in src and not is_blank(src[x])), "")
 
-        style = get("Style Number", "Style Code", "Item No.")
+        # The standard fields first: they are the supplier's columns already
+        # cleaned (HUF's 'JK00525-CAMO' split into style and colour code).
+        style = get("Item No.", "Style Number", "Style Code")
         colour = get("Color", "Colour")
-        name = get("Name", "Item Description", "Description")
+        name = get("Item Description", "Name", "Description")
         subcat = get("Subcategory", "Item Group", "Category")
         sizes = expand_sizes(src)
         if not sizes:
@@ -202,12 +259,15 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                                "suggestion": "Check the size columns"})
             continue
 
-        list_code, list_why = size_list_code([s["size"] for s in sizes])
+        run = runs.get((style, colour)) or [normalise_size(x["size"]) for x in sizes]
+        if len(sizes) > 1:
+            run = [normalise_size(x["size"]) for x in sizes]
+        list_code, list_why = size_list_code(run)
         if not list_code:
             # The subject is the size run, not the style: two styles sharing
             # an unknown run are one decision, not two.
             exceptions.append({"sku": style, "field": "U_def_size_list_code",
-                               "subject": "/".join(normalise_size(x["size"]) for x in sizes),
+                               "subject": "/".join(run),
                                "severity": "manual_review", "reason": list_why,
                                "suggestion": "Add this size run to the SAP size lists"})
 
@@ -239,7 +299,14 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         else:
             base = {"value": ""}
 
-        hist = history.get(style, {})
+        # What the supplier sheet itself says wins over history: it is this
+        # season's data. History fills only what the sheet leaves empty.
+        hs = re.sub(r"[^0-9]", "", get("Duty Position", "HS Code", "HTS Code"))
+        from_sheet = {"U_HS_Code": hs,
+                      "U_COO": country_code(get("Country of Origin", "COO"))}
+        hist = {**history.get(style, {}),
+                **{k: v for k, v in from_sheet.items() if v}}
+        colour_code = get("Colour Code", "Color Code")
         for field in FROM_HISTORY:
             if not hist.get(field):
                 exceptions.append({
@@ -256,8 +323,13 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "U_Season": code or "",
                 "U_OSRow": str(order_index),
                 "U_NRStatus": "N",
-                "U_CodeBars": barcode(style, colour, size),
-                "U_SuppCatNum": f"{style}-{colour}" if style and colour else "",
+                # The supplier's own EAN when the sheet has one per size —
+                # that is what SAP holds; otherwise the built code.
+                "U_CodeBars": (barcode_of(src) if len(sizes) == 1 and barcode_of(src)
+                               else barcode(style, colour, size)),
+                "U_SuppCatNum": (f"{style}.{colour_code}" if style and colour_code
+                                 else f"{style}-{colour}" if style and colour else ""),
+                "U_Material": get("Material"),
                 "U_VCat": smart_title(subcat),
                 "U_ItmsGrpCod": group,
                 "U_SCode": style,
@@ -270,7 +342,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "U_Webbeschreibung": (brand or "").upper(),
                 "U_def_size_list_code": list_code,
                 "U_Web_Color": smart_title(colour),
-                "U_SortIndex": str(sort_index(s["position"], size)),
+                "U_SortIndex": str(sort_index(
+                    run.index(size) if size in run else s["position"], size)),
                 "U_ESDate": "" if is_blank(earliest_ship_date) else str(earliest_ship_date),
             })
             for field in FROM_HISTORY:

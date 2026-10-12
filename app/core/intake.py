@@ -193,7 +193,9 @@ def detect_brands(*texts: str) -> list[str]:
         # Compare on the same flattened form the haystack uses, so a registry
         # key like "c.p. company" still matches "C.P. Company" in a subject.
         needle = re.sub(r"[\s_\-.]+", " ", brand.lower()).strip()
-        if needle and needle in haystack:
+        # Whole words only: "on" (On Running) is inside "komono".
+        if needle and re.search(r"(?<![a-z0-9])" + re.escape(needle) + r"(?![a-z0-9])",
+                                haystack):
             hits.append(needle)
 
     distinct = [b for b in hits
@@ -245,6 +247,17 @@ def detect_season(*texts: str) -> str | None:
     if m:
         word = m.group(1).replace(" ", "")
         return f"{_SEASON_CODES.get(word, 'SS')}{m.group(2)[-2:]}"
+
+    # Quarters: "Q226", "Q1 2026", "Q3 - 2026". Q1/Q2 ship spring/summer,
+    # Q3/Q4 fall/winter.
+    m = re.search(r"\bq([1-4])\s*[- ]?\s*((?:20)?\d{2})\b", blob)
+    if m:
+        return f"{'SS' if m.group(1) in '12' else 'FW'}{m.group(2)[-2:]}"
+
+    # Year first: "2026 FALL/WINTER", "2027 Spring Summer".
+    m = re.search(r"\b(20\d{2})\s+(spring|summer|fall|autumn|winter|holiday)\b", blob)
+    if m:
+        return f"{_SEASON_CODES[m.group(2)]}{m.group(1)[-2:]}"
     return None
 
 

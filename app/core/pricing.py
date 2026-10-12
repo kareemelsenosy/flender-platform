@@ -154,3 +154,74 @@ def review_prices(rows, strategy, previous_by_sku=None) -> dict:
         "summary": {"rows": len(rows), "by_severity": by_sev,
                     "passed": len(rows) - len(flagged)},
     }
+
+
+# ── A first price list from the supplier's own prices ────────────────────────
+
+PRICE_LIST_COLUMNS = [
+    "Item No.", "Colour", "Item Description", "Supplier Currency",
+    "Supplier WHS", "Supplier RRP", "Supplier WHS EUR", "Supplier WHS USD",
+    "Supplier WHS AED", "Flender Cost Prices (EUR-USD)", "Flender WHS USD",
+    "Flender RRP USD", "Flender WHS AED", "Flender RRP AED",
+]
+
+_TO_USD = {"USD": 1.0, "EUR": USD_PER_EUR, "AED": 1 / AED_PER_USD}
+
+
+def draft_price_list(rows) -> dict:
+    """One line per style and colour, priced from the supplier's sheet.
+
+    The step after processing: the supplier's cost is converted with the
+    constants measured above, and the Flender columns are left for a person
+    to set (or a pricing file to fill) — a margin is the brand's own decision
+    and is never invented here. A currency the sheet does not state is not
+    converted.
+    """
+    out, seen = [], set()
+    currencies = set()
+    for r in rows:
+        style = str(r.get("Item No.") or "").strip()
+        colour = str(r.get("Color") or "").strip()
+        key = (style.upper(), colour.upper())
+        if not style or key in seen:
+            continue
+        seen.add(key)
+        if r.get("Wholesale Price EUR") not in (None, "") and str(r.get("Wholesale Price EUR")) != "nan":
+            cur, whs = "EUR", _num(r.get("Wholesale Price EUR"))
+            rrp = _num(r.get("Retail EUR"))
+        else:
+            cur = str(r.get("Supplier Wholesale Currency") or "").strip()
+            whs = _num(r.get("Supplier Wholesale Price"))
+            rrp = _num(r.get("Supplier Retail Price"))
+        currencies.add(cur or "unstated")
+        usd = whs * _TO_USD[cur] if whs is not None and cur in _TO_USD else None
+        out.append({
+            "Item No.": style, "Colour": colour,
+            "Item Description": str(r.get("Item Description") or "").strip(),
+            "Supplier Currency": cur or "not stated",
+            "Supplier WHS": whs, "Supplier RRP": rrp,
+            "Supplier WHS EUR": round(usd / USD_PER_EUR, 2) if usd is not None else None,
+            "Supplier WHS USD": round(usd, 2) if usd is not None else None,
+            "Supplier WHS AED": round(usd * AED_PER_USD, 2) if usd is not None else None,
+            "Flender Cost Prices (EUR-USD)": round(usd, 2) if usd is not None else None,
+            "Flender WHS USD": None, "Flender RRP USD": None,
+            "Flender WHS AED": None, "Flender RRP AED": None,
+        })
+    exceptions = [{
+        "sku": "", "field": "Flender prices", "subject": "this collection",
+        "severity": "manual_review",
+        "reason": "no Flender price sheet and no pricing history for this brand — "
+                  "the list below carries the supplier's prices; set the Flender "
+                  "WHS and RRP (or attach the pricing file and regenerate)",
+        "suggestion": "Fill in the Flender columns in the downloaded sheet"}]
+    unstated = [c for c in currencies if c == "unstated"]
+    if unstated:
+        exceptions.append({
+            "sku": "", "field": "Supplier Currency", "subject": "not stated",
+            "severity": "warning",
+            "reason": "the supplier's price columns do not say which currency they are in, "
+                      "so they were not converted",
+            "suggestion": "Confirm the currency with the brand"})
+    return {"columns": PRICE_LIST_COLUMNS, "rows": out, "exceptions": exceptions,
+            "summary": {"rows": len(out), "draft": True,
+                        "currencies": sorted(currencies)}}

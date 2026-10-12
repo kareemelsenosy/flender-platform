@@ -157,10 +157,9 @@ def analyse_job(db: DBSession, job: CollectionJob) -> CollectionJob:
         analysis, all_brands=all_brands,
     )
 
-    _read_inside_files(db, job, report)
-
     job.total_styles = analysis["styles"]
     job.total_skus = analysis["skus"]
+    _read_inside_files(db, job, report)       # may recount from the package rows
     job.report = report
     if report["missing"] or report["warnings"]:
         job.status = "needs_input" if report["missing"] else "analysed"
@@ -210,8 +209,64 @@ def _identity_from_contents(job: CollectionJob) -> None:
             job.identity_note = f"Brand read from {found['brand_source']} of {cf.filename}"
         if not job.season and found["season"]:
             job.season = found["season"][:50]
+        if not job.season and cf.parse_path:
+            # Sheet names and the title block: "KK SP26", "2026 FALL/WINTER".
+            from app.core.sheet_layout import workbook_labels
+            season = intake_core.detect_season(*workbook_labels(cf.parse_path))
+            if season:
+                job.season = season
         if job.brand and job.season:
             break
+
+
+def _recount(job: CollectionJob, report: dict, rules: dict) -> None:
+    """Count the collection from the rows the packages are built from.
+
+    The first-pass reader only understands one row per size with obvious
+    headers; on sheets with size grids, ranges or scale letters it reported
+    every line as missing a size. The package reader handles all of those,
+    so its rows are the ones counted.
+    """
+    from app.services import packages as pkg
+    try:
+        rows, problem, _rep = pkg.collection_rows(job, pkg.PRODUCT_CREATION, rules)
+    except Exception:
+        return
+    if problem or not rows:
+        return
+    def v(r, *keys):
+        for k in keys:
+            if not pkg._blank(r.get(k)):
+                return str(r.get(k)).strip()
+        return ""
+
+    as_identity = [{"item_code": v(r, "Item No."),
+                    # Edwin: one colour name, several finish codes — each its own product.
+                    "color_name": " ".join(x for x in (v(r, "Colour Code"), v(r, "Color")) if x),
+                    "color_code": v(r, "Colour Code"),
+                    "size": "/".join(x for x in (v(r, "Size"), v(r, "Size Run")) if x),
+                    "barcode": v(r, "Barcode"), "brand": v(r, "Brand"),
+                    "style_name": v(r, "Item Description"),
+                    "wholesale_price": v(r, "Wholesale Price EUR", "Supplier Wholesale Price") or None,
+                    "retail_price": v(r, "Retail EUR", "Supplier Retail Price") or None}
+                   for r in rows]
+    totals = intake_core.analyse_rows(as_identity)
+    gap_words = ("lines without a barcode", "lines without a purchase price",
+                 "lines without an RRP", "lines without a size")
+    report["warnings"] = [w for w in report["warnings"] if not w.endswith(gap_words)]
+    for key, words in (("missing_barcode", "without a barcode"),
+                       ("missing_wholesale_price", "without a purchase price"),
+                       ("missing_retail_price", "without an RRP"),
+                       ("missing_size", "without a size")):
+        if totals.get(key):
+            report["warnings"].append(f"{totals[key]:,} lines {words}")
+    cur = next((r.get("Supplier Wholesale Currency") for r in rows
+                if r.get("Supplier Wholesale Currency")), "")
+    if cur:
+        report["warnings"].append(
+            f"Prices are in {cur}, not EUR — the EUR price comes from the pricing step")
+    report["totals"] = totals
+    job.total_styles, job.total_skus = totals["styles"], totals["skus"]
 
 
 def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
@@ -246,6 +301,7 @@ def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
                         f"{field_mapping.PLAIN_NAMES[essential].lower()} — "
                         f"set it under Column mapping")
     report["mappings"] = mappings
+    _recount(job, report, rules)
 
     kinds = {f.kind for f in job.files}
     if intake_core.PRODUCT_LIST in kinds and intake_core.ORDER_SHEET in kinds:

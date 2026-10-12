@@ -292,31 +292,41 @@ def scale_codes(tables: dict) -> set[str]:
 
 
 def read_size_legend(path: str) -> dict[str, list[str]]:
-    """The size-scale legend an order form prints above its table.
+    """Size-scale letters a workbook defines for itself.
 
-    HUF's order form opens with "SIZE SCALES  A  S/M  L/XL", then one row per
-    letter. When a file defines its own scales, that definition is the one
-    that holds for the file — HUF's letters have changed between seasons.
+    Three places they are printed: a "SIZE SCALES" block above the table
+    (HUF, ACL), rows inside the header (Thisisneverthat), or a sheet of lot
+    keys (Karl Kani). When a file defines its own scales, that definition is
+    the one that holds for the file — HUF's letters change between seasons.
     """
-    from app.core.sheet_layout import find_header_row, read_workbook
+    from app.core.sheet_layout import find_header_row, pick_data_sheets, read_workbook
+    from app.core.size_expand import legend_from_lot_sheet, legend_in_header
 
     legend: dict[str, list[str]] = {}
     try:
         sheets = read_workbook(path)
     except Exception:
         return legend
-    for raw in sheets.values():
-        top = raw.iloc[:find_header_row(raw)]
-        for _, r in top.iterrows():
+    data = pick_data_sheets(sheets)
+    for name in data:
+        raw = sheets[name]
+        h = find_header_row(raw)
+        for _, r in raw.iloc[:h].iterrows():
             vals = [_clean(v) for v in r.tolist() if _clean(v)]
             if vals and vals[0].upper().replace(" ", "") in ("SIZESCALES", "SIZESCALE"):
                 vals = vals[1:]
             if len(vals) >= 2 and re.fullmatch(r"[A-Z]", vals[0].upper()):
-                sizes = [v for v in vals[1:] if len(v) <= 8]
-                if sizes and vals[0].upper() not in legend:
-                    legend[vals[0].upper()] = sizes
+                sizes = [v for v in vals[1:] if len(v) <= 9]
+                if sizes:
+                    legend.setdefault(vals[0].upper(), sizes)
+        for code, sizes in legend_in_header(raw, h).items():
+            legend.setdefault(code, sizes)
         if legend:
             break
+    for name, raw in sheets.items():
+        if name not in data and re.search(r"lot", name, re.I):
+            for code, sizes in legend_from_lot_sheet(raw).items():
+                legend.setdefault(code, sizes)
     return legend
 
 
@@ -344,6 +354,10 @@ def expand_scale_rows(rows: list[dict], tables: dict,
             line = dict(row)
             line["Size"] = s
             line["Size Scale"] = size
+            if len(sizes) > 1:
+                # The row's barcode belonged to the whole pack, not one size.
+                line["Barcode"] = ""
+                line.pop("SKU", None)
             out.append(line)
     return out
 

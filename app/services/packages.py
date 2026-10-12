@@ -106,18 +106,92 @@ def _subject_from(e) -> str:
 
 # ── Loading the collection's source rows ─────────────────────────────────────
 
-def _read_mapped(path: str, overrides: dict) -> "tuple[list[dict], dict]":
-    """One supplier file as rows, with the standard field names added."""
+def _read_mapped(path: str, overrides: dict, legend: dict | None = None
+                 ) -> "tuple[list[dict], dict]":
+    """One supplier file as rows in standard field names, one row per size.
+
+    Everything a brand-specific layout needs is settled here, so the package
+    builders only ever see one shape: the column mapping, a colour code split
+    over unlabelled columns, section-heading rows dropped, sizes expanded,
+    and a price that is not in EUR kept out of the EUR column.
+    """
+    from app.core.size_expand import expand_rows
+
     table, _info = load_supplier_table(path)
     if table.empty:
         return [], {}
-    # Unlabelled columns (HUF's per-size quantity block) carry no field.
-    table = table.loc[:, [str(c).strip() != "" for c in table.columns]]
+    # Unlabelled columns keep their position so a layout that relies on them
+    # (Edwin's colour code) can still be read; they are never mapped by name.
+    table.columns = [c if str(c).strip() else f"(unnamed {i})"
+                     for i, c in enumerate(table.columns)]
     table = table.loc[:, ~table.columns.duplicated()]
-    headers = [str(c) for c in table.columns
-               if str(c).strip() and not str(c).startswith("__")]
+    headers = [str(c) for c in table.columns if not str(c).startswith("__")]
     mapping = field_mapping.detect(headers, overrides)
-    return field_mapping.apply(table.to_dict("records"), mapping), mapping
+
+    # A column titled with a scale letter holds each row's scale
+    # (Thisisneverthat's "A" column, with B and C defined beneath it).
+    if not mapping["Size"]["header"] and legend:
+        for h in headers:
+            if str(h).strip() in legend:
+                mapping["Size"] = {"header": str(h), "source": "detected",
+                                   "note": "size-scale column"}
+                break
+
+    rows = field_mapping.apply(table.to_dict("records"), mapping)
+    _colour_code_from_unnamed(rows, headers, mapping)
+
+    # Section headings ("MIJ Men Pants"), legend rows and totals carry no
+    # style, or a "style" with nothing else on the row.
+    rows = [r for r in rows if not _blank(r.get("Item No."))
+            and any(not _blank(r.get(f)) for f in
+                    ("Color", "Item Description", "Size", "Barcode", "Colour Code"))]
+
+    for field in field_mapping.PRICE_FIELDS:
+        cur = field_mapping.foreign_price(mapping, field)
+        if cur:
+            plain = "Wholesale" if field.startswith("Wholesale") else "Retail"
+            for r in rows:
+                r[f"Supplier {plain} Price"] = r.get(mapping[field]["header"])
+                r[f"Supplier {plain} Currency"] = cur
+
+    rows, size_note = expand_rows(rows, headers,
+                                  has_size_field=bool(mapping["Size"]["header"]))
+    mapping["_size_note"] = size_note
+    return rows, mapping
+
+
+def _colour_code_from_unnamed(rows, headers, mapping) -> None:
+    """Edwin writes the colour code as two unlabelled columns after the style
+    number — house colour then finish (89 + 99), the same scheme Carhartt
+    spells out as one Colour Code. Joined only when the cells are short codes.
+    """
+    if mapping["Colour Code"]["header"] or not mapping["Item No."]["header"]:
+        return
+    try:
+        at = headers.index(mapping["Item No."]["header"])
+    except ValueError:
+        return
+    parts = []
+    for h in headers[at + 1:at + 3]:
+        if not h.startswith("(unnamed"):
+            break
+        parts.append(h)
+    if not parts:
+        return
+    sample = [str(r.get(parts[0]) or "") for r in rows if not _blank(r.get("Item No."))][:50]
+    if not sample or not all(len(v.strip()) <= 3 for v in sample if v and v != "nan"):
+        return
+    def part(v):
+        v = str(v).strip()
+        # Excel stores "01" as the number 1; the codes are two characters.
+        return v.zfill(2) if v.isdigit() and len(v) == 1 else v
+
+    for r in rows:
+        code = "".join(part(r.get(h)) for h in parts if not _blank(r.get(h)))
+        if code:
+            r["Colour Code"] = code
+    mapping["Colour Code"] = {"header": " + ".join(parts), "source": "detected",
+                              "note": "joined from the unlabelled columns after the style number"}
 
 
 def _rules(job, rules=None) -> dict:
@@ -159,8 +233,9 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
     for f in files:
         if not os.path.exists(f.parse_path):
             continue
-        rows.extend(_read_mapped(f.parse_path, overrides)[0])
-        for code, sizes in read_size_legend(f.parse_path).items():
+        own = read_size_legend(f.parse_path)
+        rows.extend(_read_mapped(f.parse_path, overrides, own)[0])
+        for code, sizes in own.items():
             legend.setdefault(code, sizes)
     if not rows:
         return [], "the supplier file could not be read", {}
@@ -173,14 +248,57 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
         for f in job.files:
             if f.kind == intake_core.PRODUCT_LIST and f.parse_path \
                     and os.path.exists(f.parse_path):
-                list_rows.extend(_read_mapped(f.parse_path, overrides)[0])
+                list_rows.extend(_read_mapped(
+                    f.parse_path, overrides, read_size_legend(f.parse_path))[0])
         if list_rows:
             rows, joined = combine(rows, list_rows,
                                    scale_codes=scale_codes(rules["tables"]) | set(legend))
             report.update(joined)
     rows = expand_scale_rows(rows, rules["tables"], legend)
     rows = fill_from_collection(rows, job)
+    rows, dropped = _dedupe_lines(rows)
+    if dropped:
+        report["duplicate_lines_removed"] = dropped
     return rows, "", report
+
+
+def _abbreviates(suffix: str, colour) -> bool:
+    """Whether a style-number suffix is the colour written short.
+
+    HUF: 'JK00520-DKBRN' for DARK BROWN, 'JK00521-MGENT' for MAGENTA. Market's
+    'MKT26Q1-SS0589' is a style code that happens to contain a dash, and must
+    not be split. The suffix's letters have to appear, in order, in the colour.
+    """
+    suf = re.sub(r"[^A-Z]", "", str(suffix or "").upper())
+    col = re.sub(r"[^A-Z]", "", str(colour or "").upper())
+    if not suf or not col or not str(suffix).isalpha():
+        return False
+    it = iter(col)
+    return suf[0] == col[0] and all(ch in it for ch in suf)
+
+
+def _dedupe_lines(rows: list[dict]) -> "tuple[list[dict], int]":
+    """Each sellable product once.
+
+    Order sheets list the same line more than once — Market repeats it per
+    delivery, HUF per delivery tab, Karl Kani's prepacks overlap in size.
+    SAP creates a product once, so the first occurrence is kept. The key is
+    the barcode when there is one, otherwise style + colour + size + size run
+    (Edwin's leg length makes 32/30 and 32/34 different products).
+    """
+    out, seen, dropped = [], set(), 0
+    for r in rows:
+        norm = lambda k: re.sub(r"\s+", " ", str(r.get(k) or "")).strip().upper()   # noqa: E731
+        bc = "" if _blank(r.get("Barcode")) else norm("Barcode")
+        key = ("bc", bc, norm("Item No.")) if bc else ("line", norm("Item No."),
+                                     norm("Colour Code") or norm("Color"),
+                                     norm("Size"), norm("Size Run"))
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        out.append(r)
+    return out, dropped
 
 
 _SPLIT_STYLE = re.compile(r"^([A-Z0-9]{4,})-([A-Z0-9]{2,8})$", re.I)
@@ -202,13 +320,16 @@ def fill_from_collection(rows: list[dict], job) -> list[dict]:
             row["Brand"] = brand
         item = str(row.get("Item No.") or "").strip()
         m = _SPLIT_STYLE.match(item)
-        if m and _blank(row.get("Colour Code")):
+        if m and _blank(row.get("Colour Code")) and _abbreviates(m.group(2), row.get("Color")):
             row["Item No."], row["Colour Code"] = m.group(1), m.group(2).upper()
         if _blank(row.get("SKU")):
-            parts = [str(row.get(k) or "").strip()
-                     for k in ("Item No.", "Colour Code", "Size")]
-            if all(p and p.lower() != "nan" for p in parts):
-                row["SKU"] = ".".join(p.replace(" ", "") for p in parts)
+            colour = (row.get("Colour Code") if not _blank(row.get("Colour Code"))
+                      else row.get("Color"))
+            parts = [str(v or "").strip() for v in
+                     (row.get("Item No."), colour, row.get("Size Run"), row.get("Size"))]
+            if all(parts[i] and parts[i].lower() != "nan" for i in (0, 1, 3)):
+                row["SKU"] = ".".join(p.replace(" ", "").upper() for p in parts
+                                      if p and p.lower() != "nan")
     return rows
 
 
@@ -374,11 +495,12 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         priced = {"Flender WHS USD", "Flender Cost Prices (EUR-USD)",
                   "Flender RRP USD", "Flender WHS AED", "Flender RRP AED"}
         if rows and not (priced & set(rows[0])):
-            # Flagging all ten thousand rows for the same missing column tells
-            # nobody anything. The file is simply not a Flender price sheet.
-            return {"error": "this file carries no Flender price columns — "
-                             "attach the pricing sheet for this collection",
-                    "columns": [], "rows": [], "exceptions": [], "summary": {}}
+            # Not a Flender price sheet: start the price list from the
+            # supplier's own prices, for a person to finish.
+            from app.core.pricing import draft_price_list
+            out = draft_price_list(rows)
+            out["reference_note"] = ref_note
+            return out
         history = _price_history(reference)
         strategy = learn_strategy(history) if history else {"known": False}
         review = review_prices(rows, strategy)
