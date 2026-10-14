@@ -566,3 +566,39 @@ def test_the_training_switch_is_on_the_brand_rules_page(client, login_as):
     assert "Training mode is off" in client.get("/brand-rules").text
     client.post("/brand-rules/training", data={"mode": "on"})
     assert "Training mode is ON" in client.get("/brand-rules").text
+
+
+@pytest.mark.parametrize("group,name,expected", [
+    ("", "Another Zip Cardigan", "SWEATS"), ("Pants Bib Non-Denim", "Bib Overall", "PANTS"),
+    ("JACKETS", "Nine Military", "JACKETS"), ("OUTER", "PERTEX Down Jacket", "JACKETS"),
+    ("HEAD", "Beanie", "ACCS"), ("Ripples", "Brook Twilight", "")])
+def test_a_style_gets_its_group_from_supplier_wording(group, name, expected):
+    from app.core.collection_attributes import guess_master
+    assert guess_master(group, name) == expected
+
+
+def test_an_unknown_group_lets_the_model_choose_from_every_product_type(monkeypatch):
+    """ACL has no group column: everything defaulted to accessories, so a
+    cardigan was only offered bags and caps and came back unassigned."""
+    import app.core.attribute_engine as eng
+    seen = {}
+    sweat = eng.PRODUCT_TYPES_BY_GROUP["SWEATS"][0][0]
+
+    def fake(prompt, max_tokens=300):
+        seen["prompt"] = prompt
+        return ('{"product_type":"%s","confidence":0.9,"FABRIC":null,"FIT":null,'
+                '"STYLE":[],"WEIGHT":null}' % sweat)
+    monkeypatch.setattr(eng, "_call_ai", fake)
+    out = eng.enrich_style({"style_code": "A", "name": "Zip Cardigan", "master_group": ""})
+    assert out["product_type"] == sweat and out["master_group"] == "SWEATS"
+    assert "BAG" in seen["prompt"] and sweat in seen["prompt"]
+
+
+def test_the_house_colour_wins_over_a_look_alike_full_code():
+    """Carhartt '0260' is White (house '02', finish '60'); the colour master
+    also has a different house colour called '0260' (Black). FW26 SAP: White."""
+    tables = {"colours": [{"code": "02", "colour": "White", "stat_code": "012"},
+                          {"code": "0260", "colour": "Scotty Stripe, Black / Wax", "stat_code": "001"}],
+              "stat_codes": core.seed_for("Carhartt WIP")["tables"]["stat_codes"]}
+    hit = core.resolve_from_table("White", core.colour_table_lookup(tables), "0260")
+    assert hit["value"] == "White"

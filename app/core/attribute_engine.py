@@ -132,8 +132,12 @@ def _parse_json(text):
 
 def enrich_style(style: dict) -> dict:
     """One AI call: SAP product type + FABRIC/FIT/STYLE/WEIGHT, validated."""
-    mg = style["master_group"]
+    mg = style.get("master_group") or ""
     cands = PRODUCT_TYPES_BY_GROUP.get(mg, [])
+    if not cands:
+        # Group unknown: offer every product type and let the choice decide
+        # the group, rather than forcing one that cannot fit.
+        cands = [pair for pairs in PRODUCT_TYPES_BY_GROUP.values() for pair in pairs]
     cand_txt = ", ".join(f"{c}={n}" for c, n in cands)
     valid_pt = {c for c, _ in cands}
     product = (
@@ -180,8 +184,12 @@ def enrich_style(style: dict) -> dict:
     except (TypeError, ValueError):
         conf = 0.0
     needs_review = (pt is None) or (conf < 0.5)
+    if pt and not PRODUCT_TYPES_BY_GROUP.get(mg):
+        mg = next((g for g, pairs in PRODUCT_TYPES_BY_GROUP.items()
+                   if any(c == pt for c, _n in pairs)), mg)
     return {
         **style,
+        "master_group": mg,
         "product_type": pt,
         "confidence": conf,
         "FABRIC": fab, "FIT": fit, "WEIGHT": wt, "STYLE": style_vals,

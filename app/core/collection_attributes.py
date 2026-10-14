@@ -12,7 +12,48 @@ thousand rows collapses to a few hundred decisions at most.
 """
 from __future__ import annotations
 
-from app.core.attribute_taxonomy import master_for_item_group
+import re
+
+from app.core.attribute_taxonomy import (
+    ITEM_GROUP_TO_MASTER, SAP_MASTER_GROUPS, master_for_item_group,
+)
+
+# Supplier wording -> SAP master group, checked against the group and then
+# the product name. Order matters: "shirt jacket" is a jacket, "t-shirt" is
+# not a shirt.
+_MASTER_WORDS = [
+    ("SHOES", r"shoe|sneaker|boot|sandal|slide|trainer|loafer|footwear"),
+    ("JACKETS", r"jacket|coat|parka|puffer|anorak|blazer|vest|gilet|bomber|overshirt"),
+    ("T-SHIRTS", r"t-?shirt|\btee\b|tees|tank|longsleeve|l/s tee|s/s tee"),
+    ("SWEATS", r"hood|sweat|crew ?neck|cardigan|knit|sweater|jumper|fleece|pullover"),
+    ("SHORTS", r"short"),
+    ("PANTS", r"pant|jean|trouser|chino|denim|jogger|overall|cargo"),
+    ("SHIRTS", r"shirt|polo|blouse"),
+    ("ACCS", r"\bbag|backpack|cap\b|hat\b|beanie|sock|belt|wallet|scarf|glove|"
+             r"keychain|necklace|ring\b|bracelet|earring|watch|sunglass|jewel|"
+             r"accessor|gadget|underwear|boxer"),
+]
+
+
+def guess_master(item_group: str, name: str = "") -> str:
+    """The SAP master group for a style, or '' when nothing says.
+
+    A SAP item group is looked up directly. A supplier's own wording
+    ("Pants Bib Non-Denim", "JACKETS", "OUTER") is matched by keyword — the
+    group first, then the product name. Unknown stays unknown: guessing
+    accessories for everything is how a cardigan was offered only bags.
+    """
+    key = str(item_group or "").strip().upper()
+    if key in ITEM_GROUP_TO_MASTER or key in SAP_MASTER_GROUPS:
+        return master_for_item_group(key)
+    for text in (item_group, name):
+        low = str(text or "").lower()
+        if not low:
+            continue
+        for master, pattern in _MASTER_WORDS:
+            if re.search(pattern, low):
+                return master
+    return ""
 
 # Below this the assignment is a suggestion, not an answer.
 CONFIDENT = 0.75
@@ -46,7 +87,7 @@ def styles_from_rows(rows, *, brand: str = "", season: str = "") -> list[dict]:
             "name": name,
             "material": _first(row, "Material", "Fabrication", "Materials"),
             "item_group": group,
-            "master_group": master_for_item_group(group),
+            "master_group": guess_master(group, name),
             "gender": _first(row, "Sex", "Gender", "Department", "gender"),
             "vendor_category": _first(row, "Category", "Subcategory"),
             "season": season,

@@ -309,14 +309,16 @@ def colour_table_lookup(tables: dict) -> dict[str, dict]:
 def resolve_from_table(colour: str, lookup: dict[str, dict], code: str = "") -> dict | None:
     """The brand table's answer for one colour, or None when it is not listed.
 
-    With a colour code the code decides: the full code, then the house colour
+    With a colour code the code decides: the house colour first — the code
     without its two-character finish (Carhartt '8902' is house colour '89'
-    with finish '02'). The name is the fallback.
+    with finish '02') — then the full code. House first matters: '0260' is
+    White ('02') with finish '60', while the table also lists an unrelated
+    house colour '0260' (Scotty Stripe, Black). The name is the fallback.
     """
     hit = None
     code = _clean(code).upper()
     if code:
-        for candidate in (code, code[:-2] if len(code) > 2 else ""):
+        for candidate in (code[:-2] if len(code) > 2 else "", code):
             if candidate and (lookup.get(_CODE + candidate) or {}).get("base"):
                 hit = lookup[_CODE + candidate]
                 break
