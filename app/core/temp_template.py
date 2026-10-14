@@ -292,7 +292,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
 
         if base_colour:
             base = propose_base_color(colour, vocab, colour_lookup,
-                                      table=colour_table, temporary=temporary)
+                                      table=colour_table, temporary=temporary,
+                                      code=get("Colour Code", "Color Code"))
             question = base_colour_exception(colour, base, "U_BaseColor")
             if question and question["severity"] != "warning":
                 exceptions.append({**question, "sku": style})

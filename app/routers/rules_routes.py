@@ -77,11 +77,30 @@ async def rules_index(request: Request, db: DBSession = Depends(get_db)):
         b["pending"] = per_brand.get(key, 0)
 
     return templates.TemplateResponse(request, "brand_rules.html", {
-        "user": db.get(User, uid),
+        "user": db.get(User, uid), "training": svc.training_mode(db),
+        "note": request.session.pop("rules_note", ""),
         "brands": sorted(brands.values(), key=lambda b: (-b["pending"], b["brand"].lower())),
         "pending_total": len(pending),
         "tables": core.TABLES,
     })
+
+
+@router.post("/brand-rules/training")
+async def rules_training(request: Request, mode: str = Form(...),
+                         db: DBSession = Depends(get_db)):
+    """Switch training mode on or off for the whole tool."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    applied = svc.set_training_mode(db, mode == "on", user_id=uid)
+    request.session["rules_note"] = (
+        f"Training mode is on — the system now writes the rules it works out "
+        f"straight into the tables. {applied} waiting suggestion"
+        f"{'s were' if applied != 1 else ' was'} applied." if mode == "on" else
+        "Training mode is off — new rules wait for approval again.")
+    target = request.headers.get("referer") or "/brand-rules"
+    return RedirectResponse(target if "/brand-rules" in target else "/brand-rules",
+                            status_code=302)
 
 
 @router.post("/brand-rules/new")
@@ -94,6 +113,9 @@ async def rules_new(request: Request, brand: str = Form(...),
         svc.get_rules(db, brand.strip())
         return _back(brand)
     return RedirectResponse("/brand-rules", status_code=302)
+
+
+SHOW_ROWS = 200
 
 
 @router.get("/brand-rules/{key}", response_class=HTMLResponse)
@@ -111,13 +133,25 @@ async def rules_detail(key: str, request: Request, db: DBSession = Depends(get_d
     vocab = sorted(set(DEFAULT_VOCAB) | {r.get("base") for r in v["tables"]["colours"]
                                          if r.get("base")}
                    | {r.get("base") for r in v["tables"]["stat_codes"] if r.get("base")})
+    # An imported colour master holds thousands of codes; the page shows a
+    # searchable slice so it stays usable. The download has everything.
+    q = (request.query_params.get("q") or "").strip().lower()
+    shown, totals = {}, {}
+    for t, rows in v["tables"].items():
+        totals[t] = len(rows)
+        if q and t == "colours":
+            rows = [r for r in rows if q in " ".join(str(x) for x in r.values()).lower()]
+        shown[t] = rows[:SHOW_ROWS]
     return templates.TemplateResponse(request, "brand_rule_detail.html", {
         "user": db.get(User, uid), "rs": rs, "settings": v["settings"],
-        "tables": v["tables"], "defs": core.TABLES, "order": core.TABLE_ORDER,
+        "tables": shown, "totals": totals, "q": q, "show_rows": SHOW_ROWS,
+        "row_key": core.row_key,
+        "defs": core.TABLES, "order": core.TABLE_ORDER,
         "setting_defs": core.SETTINGS, "sentence": core.sentence,
         "pending": svc.pending(db, rs.brand), "history": svc.history(db, rs.brand),
         "users": users, "jobs": jobs, "vocab": vocab,
         "field_names": FIELD_NAMES, "plain_names": PLAIN_NAMES,
+        "training": svc.training_mode(db),
         "note": request.session.pop("rules_note", ""),
     })
 
@@ -137,8 +171,7 @@ async def rules_save_row(key: str, request: Request, db: DBSession = Depends(get
     try:
         new = svc.edit_row(db, rs.brand, table, row, user_id=uid,
                            reason=str(form.get("reason") or "")[:500])
-        key_col = core.TABLES[table]["key"]
-        if original and original.lower() != new[key_col].lower():
+        if original and original.lower() != core.row_key(table, new):
             svc.remove_row(db, rs.brand, table, original, user_id=uid)
         request.session["rules_note"] = f"Saved: {core.sentence(table, new)}"
     except ValueError as exc:

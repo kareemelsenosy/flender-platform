@@ -139,7 +139,10 @@ def expand_rows(rows: list[dict], headers: list[str], *, has_size_field: bool) -
         size = "" if _blank(row.get("Size")) else str(row.get("Size")).strip()
         sizes: list[str] = []
 
-        if size and _is_one_size(size):
+        has_barcode = not _blank(row.get("Barcode"))
+        if size and (has_barcode or _is_one_size(size)):
+            # A line with its own barcode is one sellable size, whatever it is
+            # called: Carhartt's "S-M" / "M-L" are sizes, not ranges.
             sizes = [size]
         elif size and split_list(size):
             sizes, note["lists"] = split_list(size), note["lists"] + 1

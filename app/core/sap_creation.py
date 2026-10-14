@@ -145,7 +145,8 @@ def build_row(src: dict, *, season: str, collection: str,
     # it; for the rest it stays empty and is never asked about.
     if base_colour:
         base = propose_base_color(colour_name, vocab, lookup,
-                                  table=table, temporary=temporary)
+                                  table=table, temporary=temporary,
+                                  code=colour_code)
         out["BASE COLOR"] = base["value"] or ""
         question = base_colour_exception(colour_name, base, "BASE COLOR")
         if question:

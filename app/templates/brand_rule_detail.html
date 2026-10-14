@@ -38,6 +38,13 @@
   <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:11px 15px;margin-bottom:18px;font-size:0.87rem;color:#33536e">{{ note }}</div>
   {% endif %}
 
+  {% if training %}
+  <div style="background:#fdf3e0;border:1px solid #efe0c2;border-radius:10px;padding:11px 15px;margin-bottom:18px;font-size:0.87rem;color:#8a6011">
+    <strong>Training mode is on</strong> — new rules for {{ rs.brand }} are written straight into these tables (marked “training” in the history).
+    <a href="/brand-rules" style="color:#8a6011;font-weight:600">Change</a>
+  </div>
+  {% endif %}
+
   <!-- Requests -->
   <section id="requests" style="margin-bottom:28px">
     <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:4px">Waiting for approval
@@ -110,8 +117,14 @@
   <section id="{{ t }}" style="margin-bottom:30px">
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
       <h2 style="font-size:1.1rem;font-weight:700">{{ d.label }}
-        <span style="font-weight:500;color:var(--gray-500,#777);font-size:0.9rem">({{ rows|length }})</span></h2>
-      {% if rows|length > 12 %}
+        <span style="font-weight:500;color:var(--gray-500,#777);font-size:0.9rem">({{ '{:,}'.format(totals[t]) }})</span></h2>
+      {% if totals[t] > show_rows %}
+      <form method="get" action="/brand-rules/{{ rs.brand_key }}#{{ t }}" style="display:flex;gap:6px;align-items:center">
+        <input type="search" name="q" value="{{ q }}" placeholder="Search a code or colour…"
+               style="padding:6px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.84rem">
+        <span style="font-size:0.78rem;color:var(--gray-500,#777)">showing {{ rows|length }} of {{ '{:,}'.format(totals[t]) }}</span>
+      </form>
+      {% elif rows|length > 12 %}
       <input type="search" placeholder="Filter…" oninput="filterRows('{{ t }}', this.value)"
              style="padding:6px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.84rem">
       {% endif %}
@@ -121,7 +134,7 @@
     {% if t == 'colours' %}
     <form action="/brand-rules/{{ rs.brand_key }}/import-colours" method="post" enctype="multipart/form-data"
           style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:0.84rem">
-      <span style="color:var(--gray-500,#777)">Import the brand's Seasonal Colour Table (Excel, both sheets):</span>
+      <span style="color:var(--gray-500,#777)">Import the brand's colour table (Excel — Carhartt's colour master, or a two-sheet Seasonal Colour Table):</span>
       <input type="file" name="file" accept=".xlsx,.xls" required style="font-size:0.82rem">
       <button type="submit" style="padding:6px 13px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font-weight:600;cursor:pointer;font-size:0.82rem">Import</button>
     </form>
@@ -152,7 +165,7 @@
                 <form action="/brand-rules/{{ rs.brand_key }}/rows" method="post"
                       style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;background:#fafafa;padding:9px;border-radius:8px;min-width:280px">
                   <input type="hidden" name="table" value="{{ t }}">
-                  <input type="hidden" name="original_key" value="{{ r.get(d.key, '') }}">
+                  <input type="hidden" name="original_key" value="{{ row_key(t, r) }}">
                   {% for col, label in d.columns %}{{ field_input(t, col, r.get(col, ''), label) }}{% endfor %}
                   <button type="submit" style="padding:6px 12px;background:#111;color:#fff;border:0;border-radius:7px;font-weight:600;cursor:pointer;font-size:0.8rem">Save</button>
                 </form>
@@ -160,7 +173,7 @@
               <form action="/brand-rules/{{ rs.brand_key }}/rows/delete" method="post" style="display:inline"
                     onsubmit="return confirm('Remove this rule?')">
                 <input type="hidden" name="table" value="{{ t }}">
-                <input type="hidden" name="key_value" value="{{ r.get(d.key, '') }}">
+                <input type="hidden" name="key_value" value="{{ row_key(t, r) }}">
                 <button type="submit" style="margin-left:8px;background:none;border:0;color:#993325;cursor:pointer;font-size:0.82rem">Remove</button>
               </form>
             </td>
@@ -202,7 +215,7 @@
           {% endif %}
         </span>
         <span style="color:var(--gray-400,#999);margin-left:auto">
-          {{ users.get(h.decided_by_id, '') }}{% if h.source == 'decision' %} · package decision{% endif %}
+          {{ users.get(h.decided_by_id, '') }}{% if h.source == 'decision' %} · package decision{% elif h.source == 'training' %} · <span style="color:#8a6011;font-weight:600">learned in training mode</span>{% endif %}
         </span>
       </div>
       {% else %}

@@ -6,9 +6,37 @@
   <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Brand Rules</h1>
   <p style="color:var(--gray-500,#777);margin:6px 0 22px;max-width:720px;font-size:0.92rem;line-height:1.55">
     How the system reads each brand's data: base colours, size runs, size codes and which column holds which field.
-    Every rule is written out in plain words and can be changed here. The system never changes a rule by itself —
-    when it meets something new it raises a request, and nothing changes until someone approves it.
+    Every rule is written out in plain words and can be changed here. Normally the system does not change a rule by
+    itself — when it meets something new it raises a request for someone to approve. With training mode on, it writes
+    what it learns straight into the tables instead.
   </p>
+
+  {% if note %}
+  <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:11px 15px;margin-bottom:18px;font-size:0.87rem;color:#33536e">{{ note }}</div>
+  {% endif %}
+  <form action="/brand-rules/training" method="post"
+        style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+               background:{% if training %}#fdf3e0{% else %}#fff{% endif %};border:1px solid {% if training %}#efe0c2{% else %}var(--gray-200,#eee){% endif %};
+               border-radius:12px;padding:14px 18px;margin-bottom:22px">
+    <div style="max-width:720px">
+      <strong style="font-size:0.95rem">Training mode is {{ 'ON' if training else 'off' }}</strong>
+      <div style="font-size:0.84rem;color:var(--gray-500,#777);margin-top:3px">
+        {% if training %}
+        The system writes every rule it works out (base colours, size runs) straight into the brand tables, without asking.
+        Each one is marked “training” in the brand's history so it can be checked and changed. Turn it off once the brand is learned.
+        {% else %}
+        The system only suggests rules; each waits here for someone to approve. Turn training on to let it learn a brand by itself
+        — useful when onboarding a brand with hundreds of new colours.
+        {% endif %}
+      </div>
+    </div>
+    <input type="hidden" name="mode" value="{{ 'off' if training else 'on' }}">
+    <button type="submit"
+      style="padding:9px 18px;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.86rem;
+             {% if training %}background:#fff;color:#8a6011;border:1px solid #e3cf9f{% else %}background:#111;color:#fff;border:0{% endif %}">
+      {{ 'Turn training off' if training else 'Turn training on' }}
+    </button>
+  </form>
 
   {% if pending_total %}
   <div style="background:#fdfaf3;border:1px solid #efe0c2;border-left:3px solid #c9a227;border-radius:0 10px 10px 0;padding:13px 18px;margin-bottom:22px;color:#5f4a12">

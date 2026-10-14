@@ -78,13 +78,17 @@ def _settle_pending(db, rs, table: str) -> int:
     """Close requests the table now answers (after an import or an edit)."""
     from app.models import RuleChange
 
-    key = core.TABLES[table]["key"]
-    have = {str(r.get(key, "")).strip().lower() for r in rs.tables.get(table, [])}
+    have = {core.row_key(table, r) for r in rs.tables.get(table, [])}
+    if table == "colours":
+        # A request for a colour name is also settled when the table now
+        # answers that name through a code row.
+        have |= {core._norm_colour(r.get("colour")) for r in rs.tables.get(table, [])}
     settled = 0
     for p in db.query(RuleChange).filter(
             RuleChange.brand_key == rs.brand_key, RuleChange.table_name == table,
             RuleChange.status == "pending").all():
-        if str(p.row.get(key, "")).strip().lower() in have:
+        if core.row_key(table, p.row) in have or \
+                (table == "colours" and core._norm_colour(p.row.get("colour")) in have):
             p.status = "superseded"
             p.decided_at = _utcnow()
             settled += 1
@@ -145,13 +149,7 @@ def import_colour_table(db, brand: str, path: str, *, user_id=None,
     rs = get_rules(db, brand)
     tables = rs.tables
     for table in ("colours", "stat_codes"):
-        rows = tables.get(table, [])
-        for row in parsed[table]:
-            try:
-                rows, _old = core.upsert_row(rows, table, row)
-            except ValueError:
-                continue
-        tables[table] = rows
+        tables[table] = core.upsert_many(tables.get(table, []), table, parsed[table])
     rs.tables = tables
     rs.updated_by_id = user_id
     _log(db, rs, "colours", "import",
@@ -176,18 +174,16 @@ def request_change(db, brand: str, table: str, row: dict, *, reason: str,
 
     rs = get_rules(db, brand)
     row = core.clean_row(table, row)
-    key = core.TABLES[table]["key"]
-    value = row.get(key, "").lower()
+    value = core.row_key(table, row)
     if not value:
         return None
-    if any(str(r.get(key, "")).strip().lower() == value
-           for r in rs.tables.get(table, [])):
+    if any(core.row_key(table, r) == value for r in rs.tables.get(table, [])):
         return None
     for p in db.query(RuleChange).filter(
             RuleChange.brand_key == rs.brand_key,
             RuleChange.table_name == table,
             RuleChange.status.in_(("pending", "rejected"))).all():
-        if str(p.row.get(key, "")).strip().lower() == value:
+        if core.row_key(table, p.row) == value:
             # A rejected suggestion is not raised again for the same value.
             return None
     change = _log(db, rs, table, "upsert", row, None, reason=reason,
@@ -224,6 +220,72 @@ def decide_change(db, change_id: int, approve: bool, *, user_id=None,
     change.status = "approved"
     db.commit()
     return change
+
+
+# ── Training mode ────────────────────────────────────────────────────────────
+#
+# Off (the default): the system only *asks* — every rule it works out waits as
+# a request for a person. On: it learns by itself — what it works out goes
+# straight into the brand's tables, marked "training" in the history so it
+# can be reviewed and undone. For onboarding a brand, when there are hundreds
+# of colours and size runs to learn and nobody wants to click through them.
+
+TRAINING = "training_mode"
+
+
+def training_mode(db) -> bool:
+    from app.models import AppSetting
+    try:
+        row = db.get(AppSetting, TRAINING)
+    except Exception:
+        db.rollback()
+        return False
+    return bool(row and row.value == "on")
+
+
+def set_training_mode(db, on: bool, *, user_id=None) -> int:
+    """Switch training mode. Turning it on also applies every waiting
+    suggestion that already says what the rule should be. Returns how many."""
+    from app.models import AppSetting
+    row = db.get(AppSetting, TRAINING) or AppSetting(key=TRAINING)
+    row.value = "on" if on else "off"
+    row.updated_by_id = user_id
+    db.merge(row)
+    db.commit()
+    applied = 0
+    if on:
+        for change in pending(db):
+            if has_proposal(change):
+                decide_change(db, change.id, True, user_id=user_id)
+                change.source = "training"
+                applied += 1
+        db.commit()
+    return applied
+
+
+def propose_rule(db, brand: str, table: str, row: dict, *, reason: str,
+                 source: str = "system", job_id=None):
+    """What the system calls when it works out a rule.
+
+    In training mode a rule with a value is written straight into the table;
+    otherwise it waits as a request. A suggestion with nothing proposed
+    always waits — there is nothing to learn from it yet.
+    """
+    clean = core.clean_row(table, row)
+    needed = _PROPOSAL_FIELD.get(table)
+    if training_mode(db) and needed and clean.get(needed):
+        rs = get_rules(db, brand)
+        if any(core.row_key(table, r) == core.row_key(table, clean)
+               for r in rs.tables.get(table, [])):
+            return None
+        return edit_row(db, brand, table, clean, source="training", job_id=job_id,
+                        reason=f"Learned in training mode. {reason}")
+    return request_change(db, brand, table, row, reason=reason, source=source,
+                          job_id=job_id)
+
+
+_PROPOSAL_FIELD = {"colours": "base", "stat_codes": "base", "size_runs": "meaning",
+                   "size_codes": "meaning", "columns": "header"}
 
 
 def has_proposal(change) -> bool:

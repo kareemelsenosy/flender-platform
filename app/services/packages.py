@@ -415,6 +415,11 @@ def generate(db, job, kind: str, decisions=None) -> dict:
     if uses_base and kind in (PRODUCT_CREATION, TEMP):
         temporary = _temporary_colours(db, job, rows, vocab, colour_lookup,
                                        colour_table)
+        from app.services.brand_rules import training_mode
+        if training_mode(db):
+            # What training mode just learned is in the table now; use it.
+            rules = rules_for(db, job.brand or "")
+            colour_table = colour_table_lookup(rules["tables"])
 
     if kind == PRODUCT_CREATION:
         out = build_creation_sheet(rows, season=job.season or "",
@@ -577,6 +582,20 @@ def _colour_names(rows) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+def _colours_with_codes(rows) -> dict[str, list[str]]:
+    """Each colour name with the colour codes it appears under."""
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        v = str(r.get("Color") or r.get("Colour") or "").strip()
+        if not v or v.lower() == "nan":
+            continue
+        code = str(r.get("Colour Code") or "").strip()
+        codes = out.setdefault(v, [])
+        if code and code.lower() != "nan" and code not in codes:
+            codes.append(code)
+    return out
+
+
 def _temporary_colours(db, job, rows, vocab, lookup, table) -> dict:
     """Temporary base colours for names the brand colour table lacks.
 
@@ -602,14 +621,18 @@ def _temporary_colours(db, job, rows, vocab, lookup, table) -> dict:
                 "why": (change.reason or "suggested")[:160]}
 
     unresolved: list[str] = []
-    for name in _colour_names(rows):
-        if resolve_from_table(name, table) or lookup.get(name.lower()):
+    for name, codes in _colours_with_codes(rows).items():
+        # Settled when the table answers every code this name appears under
+        # (or the name itself, for a brand without colour codes).
+        if (codes and all(resolve_from_table(name, table, c) for c in codes)) \
+                or (not codes and resolve_from_table(name, table)) \
+                or lookup.get(name.lower()):
             continue
         guess = propose(name, vocab, lookup)
         if guess["value"] and name.strip().lower() == guess["value"].lower():
             continue                     # "Black" is Black; nothing to ask
         if guess["value"]:
-            rules_svc.request_change(
+            rules_svc.propose_rule(
                 db, brand, "colours", {"colour": name, "base": guess["value"]},
                 reason=f"Not in the colour table. Proposed {guess['value']} "
                        f"because {guess['reason']}.",
@@ -630,7 +653,7 @@ def _temporary_colours(db, job, rows, vocab, lookup, table) -> dict:
         hit = suggestions.get(name)
         if hit:
             temporary[name.lower()] = hit
-        rules_svc.request_change(
+        rules_svc.propose_rule(
             db, brand, "colours",
             {"colour": name, "base": hit["value"] if hit else ""},
             reason=("Not in the colour table. Temporary colour "
@@ -661,7 +684,7 @@ def _check_size_runs(db, job, out, rules) -> None:
             "reason": f"size run '{code}' is not in the brand's size-run table "
                       f"— a request to add it is waiting in Brand Rules",
             "suggestion": "Describe this size run in Brand Rules"})
-        rules_svc.request_change(
+        rules_svc.propose_rule(
             db, job.brand or "", "size_runs", {"code": code, "meaning": ""},
             reason=f"Size run {code} appears in {job.label} but is not in the table.",
             job_id=job.id)

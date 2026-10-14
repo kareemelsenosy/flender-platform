@@ -482,3 +482,87 @@ def test_seasons_written_as_quarters_or_year_first(text, expected):
 def test_a_short_brand_name_does_not_match_inside_another():
     from app.core.intake import detect_brand
     assert detect_brand("KOMONO.xlsx") == "Komono"
+
+
+def test_a_size_with_its_own_barcode_is_never_split():
+    """Carhartt sells 'S-M' and 'M-L' as sizes, each with a barcode. Reading
+    them as ranges split the line and threw the barcode away."""
+    from app.core.size_expand import expand_rows
+    rows, _ = expand_rows([{"Item No.": "I037159", "Size": "S-M", "Barcode": "4068584602566"}],
+                          [], has_size_field=True)
+    assert [(r["Size"], r["Barcode"]) for r in rows] == [("S-M", "4068584602566")]
+
+
+# ── Carhartt colour master, statistic codes, training mode ───────────────────
+
+def _colour_master(path):
+    """A small copy of Carhartt's colour master: one row per house colour code."""
+    with pd.ExcelWriter(path) as xw:
+        pd.DataFrame({"For YPLM": ["No"] * 4, "Code": ["89", "HZ", "3UB", "00W"],
+                      "Description": ["Black", "Hamilton Brown", "Shungite", "Tobacco / Gold"],
+                      "Statistic Colour Code": ["001", "003", "002", None],
+                      "BASE COLOR": ["Black", "Brown", "Grey", None]}
+                     ).to_excel(xw, sheet_name="051026", index=False)
+        pd.DataFrame({"Code": ["89"], "Description": ["Gold / Bordeaux"],
+                      "Statistic Colour Code": ["9"]}).to_excel(xw, sheet_name="Sheet1", index=False)
+
+
+def test_the_colour_master_is_read_by_code_through_the_statistic_code(tmp_path):
+    path = tmp_path / "colours.xlsx"
+    _colour_master(path)
+    parsed = core.parse_colour_workbook(str(path))
+    assert [r["code"] for r in parsed["colours"]] == ["89", "HZ", "3UB"]   # 00W has no stat code
+    tables = {"colours": parsed["colours"],
+              "stat_codes": core.seed_for("Carhartt WIP")["tables"]["stat_codes"]}
+    lookup = core.colour_table_lookup(tables)
+    # The order sheet's colour code is house colour + finish: 8902 -> 89.
+    hit = core.resolve_from_table("Black", lookup, "8902")
+    assert hit["value"] == "Black" and "statistic code 001" in hit["reason"]
+    assert core.resolve_from_table("Hamilton Brown", lookup, "HZ02")["value"] == "Brown"
+    assert core.resolve_from_table("Shungite", lookup, "3UB02")["value"] == "Grey"
+
+
+def test_carhartt_statistic_codes_are_built_in():
+    stats = {r["stat_code"]: r["base"] for r in core.seed_for("Carhartt WIP")["tables"]["stat_codes"]}
+    assert stats["001"] == "Black" and stats["013"] == "Multicolour" and len(stats) == 13
+
+
+def test_shungite_gets_its_base_colour_from_the_imported_table(client, login_as, db_session, tmp_path):
+    from app.models import PackageRun
+    from app.services import brand_rules as svc
+    login_as()
+    path = tmp_path / "colours.xlsx"
+    _colour_master(path)
+    svc.import_colour_table(db_session, "Carhartt WIP", str(path))
+    rows = [{**r, "Color": "Shungite", "Colour Code": "3UB02"} for r in _carhartt_rows()]
+    jid = _upload(client, "FW27 Importsheet.xlsx", rows)
+    client.post(f"/collections/{jid}/packages/product_creation/generate")
+    db_session.expire_all()
+    run = db_session.query(PackageRun).filter_by(job_id=jid, kind="product_creation").first()
+    assert set(pd.read_excel(run.file_path, dtype=str)["BASE COLOR"]) == {"Grey"}
+    assert not any(q["field"] == "BASE COLOR" for q in run.exceptions)
+
+
+def test_training_mode_writes_rules_instead_of_asking(db_session):
+    from app.services import brand_rules as svc
+    svc.request_change(db_session, "Carhartt WIP", "colours",
+                       {"colour": "Smoke Green", "base": "Green"}, reason="rule")
+    assert svc.set_training_mode(db_session, True) == 1          # waiting one applied
+    assert svc.pending(db_session, "Carhartt WIP") == []
+    svc.propose_rule(db_session, "Carhartt WIP", "colours",
+                     {"colour": "Dark Navy", "base": "Blue"}, reason="navy is blue")
+    lookup = core.colour_table_lookup(svc.rules_for(db_session, "Carhartt WIP")["tables"])
+    assert lookup["dark navy"]["base"] == "Blue" and lookup["smoke green"]["base"] == "Green"
+    assert any(h.source == "training" for h in svc.history(db_session, "Carhartt WIP"))
+    # Off again: back to asking.
+    svc.set_training_mode(db_session, False)
+    svc.propose_rule(db_session, "Carhartt WIP", "colours",
+                     {"colour": "Pumice", "base": "Grey"}, reason="x")
+    assert [p.row["colour"] for p in svc.pending(db_session, "Carhartt WIP")] == ["Pumice"]
+
+
+def test_the_training_switch_is_on_the_brand_rules_page(client, login_as):
+    login_as()
+    assert "Training mode is off" in client.get("/brand-rules").text
+    client.post("/brand-rules/training", data={"mode": "on"})
+    assert "Training mode is ON" in client.get("/brand-rules").text

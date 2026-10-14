@@ -143,7 +143,8 @@ def _match_word(text: str, vocab: list[str]) -> "tuple[str | None, str]":
 
 def propose(name: str, vocab: list[str] | None = None,
             lookup: dict[str, str] | None = None, _depth: int = 0, *,
-            table: dict | None = None, temporary: dict | None = None) -> dict:
+            table: dict | None = None, temporary: dict | None = None,
+            code: str = "") -> dict:
     """Resolve one supplier colour name to a base colour.
 
     Returns ``{"value", "confidence", "source", "reason"}``. ``value`` is None
@@ -162,7 +163,7 @@ def propose(name: str, vocab: list[str] | None = None,
 
     if table and _depth == 0:
         from app.core.brand_rules import resolve_from_table
-        hit = resolve_from_table(clean, table)
+        hit = resolve_from_table(clean, table, code)
         if hit:
             return hit
 

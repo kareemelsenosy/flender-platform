@@ -834,3 +834,14 @@ class RuleChange(Base):
             return json.loads(self.previous_json or "{}")
         except (TypeError, ValueError):
             return {}
+
+
+class AppSetting(Base):
+    """A switch that applies to the whole tool, such as training mode."""
+    __tablename__ = "app_settings"
+
+    key = Column(String(80), primary_key=True)
+    value = Column(Text)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                           nullable=True)

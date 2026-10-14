@@ -60,6 +60,7 @@ def _clear_database(test_app):
     db = test_app["database"].SessionLocal()
     try:
         for model in (
+            models.AppSetting,
             models.RuleChange,
             models.BrandRuleSet,
             models.PackageRun,

@@ -27,14 +27,17 @@ import re
 TABLES: dict[str, dict] = {
     "colours": {
         "label": "Base colours",
-        "help": ("The brand's Seasonal Colour Table. Each colour name the brand "
-                 "uses points to a statistic code, and the statistic code points "
-                 "to the base colour. A colour can also be given a base colour "
-                 "directly."),
-        "columns": [("colour", "Colour name (as the brand writes it)"),
+        "help": ("The brand's Seasonal Colour Table. Each colour (by its colour "
+                 "code, or by name when the brand has no codes) points to a "
+                 "statistic code, and the statistic code points to the base "
+                 "colour. A colour can also be given a base colour directly."),
+        "columns": [("code", "Colour code (optional)"),
+                    ("colour", "Colour name (as the brand writes it)"),
                     ("stat_code", "Statistic code"),
                     ("base", "Base colour (optional if the code has one)")],
+        # A row is identified by its colour code when it has one, else by name.
         "key": "colour",
+        "alt_key": "code",
     },
     "stat_codes": {
         "label": "Statistic codes",
@@ -105,6 +108,16 @@ SEEDS: dict[str, dict] = {
     "carhartt wip": {
         "settings": {"uses_base_colour": True},
         "tables": {
+            # Carhartt's statistic colour codes. Every one of the 7,995
+            # colours carrying both a statistic code and a BASE COLOR in the
+            # 051026 colour table agrees with this list, without exception.
+            "stat_codes": [
+                {"stat_code": c, "base": b} for c, b in (
+                    ("001", "Black"), ("002", "Grey"), ("003", "Brown"),
+                    ("004", "Beige"), ("005", "Green"), ("006", "Blue"),
+                    ("007", "Purple"), ("008", "Red"), ("009", "Pink"),
+                    ("010", "Orange"), ("011", "Yellow"), ("012", "White"),
+                    ("013", "Multicolour"))],
             "size_runs": [
                 {"code": "00", "meaning": "Set length for legwear", "sizes": ""},
                 {"code": "03", "meaning": "XS, S, … , L, XL sizes",
@@ -162,15 +175,25 @@ def clean_row(table: str, row: dict) -> dict:
     return out
 
 
+def row_key(table: str, row: dict) -> str:
+    """What makes a row unique. A colour with a code is that code — Carhartt
+    has many colours called "Black" — and a colour without one is its name."""
+    alt = TABLES[table].get("alt_key")
+    if alt and _clean(row.get(alt)):
+        return _clean(row.get(alt)).lower()
+    return _clean(row.get(TABLES[table]["key"])).lower()
+
+
 def upsert_row(rows: list[dict], table: str, row: dict) -> "tuple[list[dict], dict | None]":
     """Add a row, or replace the one with the same key. Returns (rows, old)."""
     row = clean_row(table, row)
     key = TABLES[table]["key"]
-    if not row.get(key):
+    if not row_key(table, row):
         raise ValueError(f"{dict(TABLES[table]['columns'])[key]} is required")
+    want = row_key(table, row)
     out, old = [], None
     for r in rows:
-        if _clean(r.get(key)).lower() == row[key].lower():
+        if row_key(table, r) == want:
             old = r
             continue
         out.append(r)
@@ -178,11 +201,27 @@ def upsert_row(rows: list[dict], table: str, row: dict) -> "tuple[list[dict], di
     return out, old
 
 
+def upsert_many(rows: list[dict], table: str, new_rows: list[dict]) -> list[dict]:
+    """Add or replace many rows at once (an imported table of thousands)."""
+    index = {row_key(table, r): i for i, r in enumerate(rows)}
+    out = list(rows)
+    for raw in new_rows:
+        row = clean_row(table, raw)
+        k = row_key(table, row)
+        if not k:
+            continue
+        if k in index:
+            out[index[k]] = row
+        else:
+            index[k] = len(out)
+            out.append(row)
+    return out
+
+
 def delete_row(rows: list[dict], table: str, key_value: str) -> "tuple[list[dict], dict | None]":
-    key = TABLES[table]["key"]
     out, old = [], None
     for r in rows:
-        if old is None and _clean(r.get(key)).lower() == _clean(key_value).lower():
+        if old is None and row_key(table, r) == _clean(key_value).lower():
             old = r
             continue
         out.append(r)
@@ -193,6 +232,13 @@ def sentence(table: str, row: dict) -> str:
     """One row in words a non-technical reader can check."""
     g = lambda k: _clean(row.get(k))                       # noqa: E731
     if table == "colours":
+        if g("code"):
+            label = f"Colour code {g('code')}" + (f" (“{g('colour')}”)" if g("colour") else "")
+            if g("stat_code"):
+                tail = f", so its base colour is {g('base')}." if g("base") else \
+                    "; the base colour comes from the statistic-code table."
+                return f"{label} has statistic code {g('stat_code')}{tail}"
+            return f"{label} is base colour {g('base') or '(not chosen yet)'}."
         if g("stat_code") and g("base"):
             return f"“{g('colour')}” has statistic code {g('stat_code')}, so its base colour is {g('base')}."
         if g("stat_code"):
@@ -226,29 +272,61 @@ def _norm_colour(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
 
+def _norm_stat(code) -> str:
+    """'001' and '1' are the same statistic code."""
+    c = _clean(code)
+    return str(int(c)) if c.isdigit() else c.lower()
+
+
+_CODE = "#code:"
+
+
 def colour_table_lookup(tables: dict) -> dict[str, dict]:
-    """Colour name -> {"base", "stat_code"} with statistic codes resolved."""
-    stats = {_clean(r.get("stat_code")).lower(): _clean(r.get("base"))
+    """Colour -> {"base", "stat_code", "via"} with statistic codes resolved.
+
+    Keys are colour names, plus ``#code:<code>`` for rows that carry a colour
+    code; ``resolve_from_table`` tries the code first.
+    """
+    stats = {_norm_stat(r.get("stat_code")): _clean(r.get("base"))
              for r in tables.get("stat_codes", []) if _clean(r.get("stat_code"))}
     out: dict[str, dict] = {}
     for r in tables.get("colours", []):
+        stat = _clean(r.get("stat_code"))
+        base = _clean(r.get("base")) or stats.get(_norm_stat(stat), "")
+        entry = {"base": base.title() if base else "", "stat_code": stat,
+                 "name": _clean(r.get("colour"))}
+        code = _clean(r.get("code"))
+        if code:
+            out[_CODE + code.upper()] = {**entry, "via": f"colour code {code}"}
         name = _norm_colour(r.get("colour"))
-        if not name:
-            continue
-        code = _clean(r.get("stat_code"))
-        base = _clean(r.get("base")) or stats.get(code.lower(), "")
-        out[name] = {"base": base.title() if base else "", "stat_code": code}
+        # By-name lookups only from rows without a code, or when unambiguous:
+        # Carhartt has dozens of codes all described as "Black".
+        if name and (not code or name not in out):
+            out.setdefault(name, {**entry, "via": f"colour name “{entry['name']}”"})
     return out
 
 
-def resolve_from_table(colour: str, lookup: dict[str, dict]) -> dict | None:
-    """The brand table's answer for one colour, or None when it is not listed."""
-    hit = lookup.get(_norm_colour(colour))
+def resolve_from_table(colour: str, lookup: dict[str, dict], code: str = "") -> dict | None:
+    """The brand table's answer for one colour, or None when it is not listed.
+
+    With a colour code the code decides: the full code, then the house colour
+    without its two-character finish (Carhartt '8902' is house colour '89'
+    with finish '02'). The name is the fallback.
+    """
+    hit = None
+    code = _clean(code).upper()
+    if code:
+        for candidate in (code, code[:-2] if len(code) > 2 else ""):
+            if candidate and (lookup.get(_CODE + candidate) or {}).get("base"):
+                hit = lookup[_CODE + candidate]
+                break
+    if hit is None:
+        hit = lookup.get(_norm_colour(colour))
     if not hit or not hit["base"]:
         return None
-    code = f" (statistic code {hit['stat_code']})" if hit["stat_code"] else ""
+    stat = f", statistic code {hit['stat_code']}" if hit["stat_code"] else ""
     return {"value": hit["base"], "confidence": 1.0, "source": "brand_table",
-            "reason": f"in the brand colour table{code}"}
+            "reason": f"brand colour table: {hit.get('via', 'listed')}{stat}"}
 
 
 def size_run_meaning(code: str, tables: dict) -> dict | None:
@@ -379,49 +457,89 @@ def _find_col(headers: list[str], *needles: str, avoid: tuple = ()) -> int | Non
 
 
 def parse_colour_workbook(path: str) -> dict:
-    """Read a Seasonal Colour Table workbook.
+    """Read a brand colour table workbook.
 
-    The table comes as two sheets: colour -> statistic code, then statistic
-    code -> base colour. Column names vary, so each sheet is read by what its
-    headers mention. A sheet with colour and base colour side by side is read
-    as direct entries.
+    Two shapes are understood:
+
+    * **A colour master** (Carhartt's): one row per colour *code* with a
+      description and a Statistic Colour Code, often several dated copies of
+      the sheet. The newest, fullest sheet is used; a BASE COLOR column, when
+      present, also teaches the statistic-code -> base-colour table.
+    * **Two sheets**: colour -> statistic code, then statistic code -> base.
 
     Returns ``{"colours": [...], "stat_codes": [...], "notes": [...]}``.
     """
     from app.core.sheet_layout import find_header_row, read_workbook
 
-    colours: list[dict] = []
-    stats: list[dict] = []
-    notes: list[str] = []
-    for name, raw in read_workbook(path).items():
+    sheets = read_workbook(path)
+    parsed = []
+    for name, raw in sheets.items():
         h = find_header_row(raw)
         headers = [_clean(v) for v in raw.iloc[h].tolist()]
-        stat = _find_col(headers, "statistic", "stat code", "stat.", "stat ")
-        base = _find_col(headers, "base")
-        colour = _find_col(headers, "colour", "color", avoid=("base", "code", "statistic"))
-        if colour is None:
-            colour = _find_col(headers, "description", "name", avoid=("base",))
+        cols = {
+            "stat": _find_col(headers, "statistic", "stat code", "stat.", "stat "),
+            "base": _find_col(headers, "base"),
+            "code": next((i for i, x in enumerate(headers)
+                          if x.lower() in ("code", "colour code", "color code")), None),
+            "colour": (_find_col(headers, "colour", "color", avoid=("base", "code", "statistic"))
+                       if _find_col(headers, "colour", "color", avoid=("base", "code", "statistic")) is not None
+                       else _find_col(headers, "description", "name", avoid=("base",))),
+        }
+        parsed.append((name, raw.iloc[h + 1:], cols))
 
-        body = raw.iloc[h + 1:]
-        added = 0
-        if colour is not None and (stat is not None or base is not None):
-            for _, r in body.iterrows():
-                vals = [_clean(v) for v in r.tolist()]
-                if colour < len(vals) and vals[colour]:
-                    colours.append({
-                        "colour": vals[colour],
-                        "stat_code": vals[stat] if stat is not None and stat < len(vals) else "",
-                        "base": vals[base].title() if base is not None and base < len(vals) else "",
-                    })
-                    added += 1
-            notes.append(f"{name}: {added} colours")
-        elif stat is not None and base is not None:
-            for _, r in body.iterrows():
-                vals = [_clean(v) for v in r.tolist()]
-                if stat < len(vals) and vals[stat] and base < len(vals) and vals[base]:
-                    stats.append({"stat_code": vals[stat], "base": vals[base].title()})
-                    added += 1
-            notes.append(f"{name}: {added} statistic codes")
-        else:
-            notes.append(f"{name}: skipped — no colour, statistic code or base colour column")
-    return {"colours": colours, "stat_codes": stats, "notes": notes}
+    colours: list[dict] = []
+    stats: dict[str, str] = {}
+    notes: list[str] = []
+
+    def val(vals, i):
+        return vals[i] if i is not None and i < len(vals) else ""
+
+    # A colour master: keep only the fullest sheet with codes and statistic
+    # codes — the dated copies are older versions of the same list.
+    masters = [p for p in parsed if p[2]["code"] is not None and p[2]["stat"] is not None]
+    if masters:
+        name, body, c = max(masters, key=lambda p: (p[2]["base"] is not None, len(p[1])))
+        skipped = 0
+        for _, r in body.iterrows():
+            vals = [_clean(v) for v in r.tolist()]
+            code, stat, base = val(vals, c["code"]), val(vals, c["stat"]), val(vals, c["base"])
+            if not code or not (stat or base) or set(code) <= {"0"}:
+                skipped += 1
+                continue
+            colours.append({"code": code, "colour": val(vals, c["colour"]),
+                            "stat_code": stat, "base": base.title() if base else ""})
+            if stat and base:
+                stats.setdefault(_norm_stat(stat), base.title())
+        notes.append(f"{name}: {len(colours)} colour codes with a statistic code "
+                     f"({skipped} without one skipped)")
+        others = [p[0] for p in masters if p[0] != name]
+        if others:
+            notes.append(f"older copies not used: {', '.join(others)}")
+    else:
+        for name, body, c in parsed:
+            added = 0
+            if c["colour"] is not None and (c["stat"] is not None or c["base"] is not None):
+                for _, r in body.iterrows():
+                    vals = [_clean(v) for v in r.tolist()]
+                    if val(vals, c["colour"]):
+                        colours.append({"code": val(vals, c["code"]),
+                                        "colour": val(vals, c["colour"]),
+                                        "stat_code": val(vals, c["stat"]),
+                                        "base": val(vals, c["base"]).title()})
+                        added += 1
+                notes.append(f"{name}: {added} colours")
+            elif c["stat"] is not None and c["base"] is not None:
+                for _, r in body.iterrows():
+                    vals = [_clean(v) for v in r.tolist()]
+                    if val(vals, c["stat"]) and val(vals, c["base"]):
+                        stats.setdefault(_norm_stat(val(vals, c["stat"])),
+                                         val(vals, c["base"]).title())
+                        added += 1
+                notes.append(f"{name}: {added} statistic codes")
+            else:
+                notes.append(f"{name}: skipped — no colour, statistic code or base colour column")
+
+    return {"colours": colours,
+            "stat_codes": [{"stat_code": k.zfill(3) if k.isdigit() else k, "base": v}
+                           for k, v in sorted(stats.items(), key=lambda kv: kv[0].zfill(5))],
+            "notes": notes}
