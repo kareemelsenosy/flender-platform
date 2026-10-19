@@ -25,7 +25,7 @@ _MASTER_WORDS = [
     ("SHOES", r"shoe|sneaker|boot|sandal|slide|trainer|loafer|footwear"),
     ("JACKETS", r"jacket|coat|parka|puffer|anorak|blazer|vest|gilet|bomber|overshirt"),
     ("T-SHIRTS", r"t-?shirt|\btee\b|tees|tank|longsleeve|l/s tee|s/s tee"),
-    ("SWEATS", r"hood|sweat|crew ?neck|cardigan|knit|sweater|jumper|fleece|pullover"),
+    ("SWEATS", r"hood|sweat|crew ?neck|cardigan|sweater|jumper|pullover"),
     ("SHORTS", r"short"),
     ("PANTS", r"pant|jean|trouser|chino|denim|jogger|overall|cargo"),
     ("SHIRTS", r"shirt|polo|blouse"),
@@ -67,7 +67,31 @@ def _first(row: dict, *names: str) -> str:
     return ""
 
 
-def styles_from_rows(rows, *, brand: str = "", season: str = "") -> list[dict]:
+def master_from_rules(item_group: str, name: str, group_map: dict | None) -> str:
+    """The master group from the brand's own product-group rules, or ''.
+
+    HUF's rules (learned from its finished TEMP) say KNIT BEANIES is HEAD —
+    accessories — where the word "knit" alone would say sweats.
+    """
+    if not group_map or not item_group:
+        return ""
+    candidates = group_map.get(str(item_group).strip().upper()) or []
+    if isinstance(candidates, str):
+        candidates = [candidates]
+    if len(candidates) > 1:
+        from app.core.temp_template import group_from_name
+        picked = group_from_name(name, candidates)
+        candidates = [picked] if picked else []
+    if len(candidates) != 1:
+        return ""
+    sap = candidates[0].upper()
+    if sap in ITEM_GROUP_TO_MASTER or sap in SAP_MASTER_GROUPS:
+        return master_for_item_group(sap)
+    return ""
+
+
+def styles_from_rows(rows, *, brand: str = "", season: str = "",
+                     group_map: dict | None = None) -> list[dict]:
     """Collapse supplier rows into the style records the engine expects.
 
     Colour and size fall away; what survives is what decides an attribute —
@@ -87,7 +111,7 @@ def styles_from_rows(rows, *, brand: str = "", season: str = "") -> list[dict]:
             "name": name,
             "material": _first(row, "Material", "Fabrication", "Materials"),
             "item_group": group,
-            "master_group": guess_master(group, name),
+            "master_group": master_from_rules(group, name, group_map) or guess_master(group, name),
             "gender": _first(row, "Sex", "Gender", "Department", "gender"),
             "vendor_category": _first(row, "Category", "Subcategory"),
             "season": season,

@@ -457,7 +457,7 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         from app.core.collection_attributes import (
             build_attribute_package, styles_from_rows)
         styles = styles_from_rows(rows, brand=job.brand or "",
-                                  season=job.season or "")
+                                  season=job.season or "", group_map=group_map)
         # A decision names the product type outright; that style is not
         # sent to the model again.
         chosen = {k.partition("::")[2]: v for k, v in decisions.items()

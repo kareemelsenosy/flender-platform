@@ -725,3 +725,16 @@ def test_images_and_attributes_use_the_cleaned_style_not_the_raw_column():
         "SILVERADO-JACKET_OLIVE_JK00527_OLIVE_01.jpg"])
     assert all(r["status"] != "missing" for r in out["rows"])
     assert [s["style_code"] for s in styles_from_rows(rows)] == ["JK00527"]
+
+
+def test_attributes_take_the_group_from_the_brands_rules():
+    """Live HUF: 'KNIT BEANIES' went to sweats on the word 'knit', and the
+    Seneca Zip Fleece to sweats; HUF's own rules say HEAD and JACKETS."""
+    from app.core.collection_attributes import styles_from_rows
+    rows = [{"Item No.": "BN00207", "Item Description": "CROSS SKULL BEANIE", "Item Group": "KNIT BEANIES"},
+            {"Item No.": "FL00263", "Item Description": "SENECA HIGH PILE QTR ZIP FLEECE",
+             "Item Group": "C&S ZIP FLEECE"}]
+    styles = styles_from_rows(rows, group_map={"KNIT BEANIES": ["HEAD"],
+                                               "C&S ZIP FLEECE": ["HOODYS", "JACKETS"]})
+    assert [s["master_group"] for s in styles] == ["ACCS", "JACKETS"]
+    assert styles_from_rows([{"Item No.": "X", "Item Description": "Knit Beanie"}])[0]["master_group"] == "ACCS"
