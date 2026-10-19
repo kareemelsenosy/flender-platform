@@ -696,3 +696,17 @@ def test_downloads_are_never_painted_as_pages():
     base = pathlib.Path("app/templates/base.html").read_text()
     assert "FILE_PATH" in base and "isHtml(r)" in base
     assert 'packages/{{ kind }}/download" download' in pathlib.Path("app/templates/package.html").read_text()
+
+
+def test_a_category_with_two_sap_groups_is_settled_by_the_product_name():
+    """HUF C&S ZIP FLEECE: a Zip Hoodie is HOODYS, a Zip Fleece is JACKETS."""
+    from app.core.temp_template import build_temp_sheet
+    rows = [{"Item No.": s, "Color": "BLACK", "Size": "M", "Item Description": n,
+             "Item Group": "C&S ZIP FLEECE", "Barcode": b}
+            for s, n, b in (("FL1", "International Luxury Zip Hoodie", "11111111"),
+                            ("FL3", "Seneca High Pile Qtr Zip Fleece", "22222222"))]
+    out = build_temp_sheet(rows, brand="HUF", season="HO26",
+                           group_map={"C&S ZIP FLEECE": ["HOODYS", "JACKETS"]},
+                           earliest_ship_date="2026-10-15", base_colour=False)
+    assert [r["U_ItmsGrpCod"] for r in out["rows"]] == ["HOODYS", "JACKETS"]
+    assert not any(e["field"] == "U_ItmsGrpCod" for e in out["exceptions"])

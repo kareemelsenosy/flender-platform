@@ -165,6 +165,36 @@ _GENDER = {"m": "M", "men": "M", "mens": "M", "men's": "M", "male": "M",
            "k": "K", "kids": "K", "children": "K", "youth": "K"}
 
 
+# What a product's name says about its SAP item group, checked only among
+# the groups a category is already known to map to.
+_GROUP_WORDS = {
+    "HOODYS": r"hood",
+    "SWEATER": r"sweater|crew ?neck|jumper|cardigan|knit",
+    "JACKETS": r"jacket|fleece|coat|parka|anorak|vest|gilet|shell|bomber",
+    "LONGSL": r"\bl/?s\b|long ?sleeve|longsleeve",
+    "T-SHIRTS": r"\btee\b|t-shirt",
+    "POLOS": r"polo",
+    "SHIRTS": r"shirt|overshirt",
+    "PANTS": r"pant|jean|trouser|chino",
+    "SHORTS": r"short",
+    "HEAD": r"\bhat\b|\bcap\b|beanie|snapback",
+    "SOCKS": r"sock",
+    "BAGS": r"\bbag|backpack|tote",
+    "BELT": r"belt",
+    "WALLET": r"wallet|card ?holder",
+}
+
+
+def group_from_name(name: str, candidates) -> str:
+    """The one candidate group the product name points to, or ''."""
+    low = str(name or "").lower()
+    hits = [g for g in candidates
+            if _GROUP_WORDS.get(g.upper()) and re.search(_GROUP_WORDS[g.upper()], low)]
+    if len(hits) > 1 and "JACKETS" in hits and "HOODYS" in hits:
+        hits = ["HOODYS"] if "hood" in low else hits
+    return hits[0] if len(hits) == 1 else ""
+
+
 def gender_code(value: str) -> str:
     """'Men' / 'M' / 'unisex' -> 'M'. SAP holds one letter (HUF HO26: M;
     Carhartt's unisex goods are M in the B2B master list)."""
@@ -326,6 +356,10 @@ def build_temp_sheet(rows, *, brand: str, season: str,
             candidates = [candidates]
         group = candidates[0] if len(candidates) == 1 else ""
         if len(candidates) > 1:
+            # The product's own name usually settles it: HUF's C&S ZIP FLEECE
+            # is HOODYS for a "Zip Hoodie" and JACKETS for a "Zip Fleece".
+            group = group_from_name(name, candidates)
+        if len(candidates) > 1 and not group:
             exceptions.append({
                 "sku": style, "field": "U_ItmsGrpCod", "subject": subcat,
                 "severity": "manual_review",
