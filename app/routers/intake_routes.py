@@ -837,6 +837,7 @@ async def learn_from_finished(job_id: int, request: Request,
         learned = learn(finished.to_dict("records"), list(finished.columns), rows)
         done = rules_svc.apply_learned(db, job.brand, learned, filename=file.filename or "",
                                        user_id=uid, job_id=job.id)
+        analyse_job(db, job)        # show the learned column mapping straight away
         request.session["learn_note"] = (
             f"Matched {learned['matched']} of {learned['lines']} lines. "
             + " ".join(done) + " Regenerate the packages to use it.")

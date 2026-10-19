@@ -66,7 +66,8 @@ async def rules_index(request: Request, db: DBSession = Depends(get_db)):
         key = core.brand_key(name)
         if key and key not in brands:
             seed = core.seed_for(name)
-            brands[key] = {"brand": name if name != key else name.title(), "key": key,
+            from app.core.intake import brand_display_name
+            brands[key] = {"brand": name if name != key else brand_display_name(key), "key": key,
                            "exists": False, "settings": seed["settings"],
                            "counts": {t: len(seed["tables"][t]) for t in core.TABLE_ORDER}}
 

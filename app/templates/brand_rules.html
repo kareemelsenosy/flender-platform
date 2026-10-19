@@ -51,7 +51,7 @@
         <tr style="text-align:left;color:var(--gray-500,#777);font-size:0.72rem;letter-spacing:.06em;text-transform:uppercase">
           <th style="padding:12px 16px">Brand</th>
           <th style="padding:12px 8px">Base colour</th>
-          {% for t in ['colours', 'size_runs', 'size_codes', 'columns'] %}
+          {% for t in ['colours', 'size_runs', 'size_codes', 'size_lists', 'item_groups', 'columns'] %}
           <th style="padding:12px 8px;text-align:right">{{ tables[t].label }}</th>
           {% endfor %}
           <th style="padding:12px 16px;text-align:right">Requests</th>
@@ -68,7 +68,7 @@
             {% if b.settings.get('uses_base_colour') %}<span style="color:#1b6e4f;font-weight:600">Yes</span>
             {% else %}<span style="color:var(--gray-400,#aaa)">No</span>{% endif %}
           </td>
-          {% for t in ['colours', 'size_runs', 'size_codes', 'columns'] %}
+          {% for t in ['colours', 'size_runs', 'size_codes', 'size_lists', 'item_groups', 'columns'] %}
           <td style="padding:11px 8px;text-align:right;font-variant-numeric:tabular-nums;color:{% if b.counts[t] %}#111{% else %}var(--gray-300,#ccc){% endif %}">{{ b.counts[t] }}</td>
           {% endfor %}
           <td style="padding:11px 16px;text-align:right">
