@@ -47,11 +47,21 @@ REQUIRED = ["Season", "Brand", "Barcode", "SKU", "Item No.", "Colour Code",
 _SEASON_SLOT = {"SS": "01", "SP": "01", "FW": "03", "AW": "03",
                 # HUF's summer and fall drops. Assumed to share the spring and
                 # fall slots until Flender confirms otherwise.
-                "SU": "01", "FA": "03"}
+                "SU": "01", "FA": "03",
+                # Pre-fall: Carhartt PRE FALL 27 is 2027-02.
+                "PF": "02",
+                # Holiday: HUF HO26 is 2026-04. HUF itself calls it WN (winter).
+                "HO": "04", "WN": "04"}
 
 
 def season_code(season: str) -> "tuple[str | None, str]":
-    """'SS27' -> ('2027-01', reason). Returns (None, why) when unmappable."""
+    """'SS27' -> ('2027-01', reason). Returns (None, why) when unmappable.
+
+    A season already written the SAP way ('2026-04') is taken as it is.
+    """
+    sap = re.match(r"^\s*(20\d{2})\s*[-/.]\s*(0[1-4])\s*$", str(season or ""))
+    if sap:
+        return f"{sap.group(1)}-{sap.group(2)}", "given as a SAP season code"
     m = re.match(r"^\s*([A-Za-z]{2})\s*(\d{2}|\d{4})\s*$", str(season or ""))
     if not m:
         return None, f"season {season!r} is not in the form SS27 / FW26"
@@ -103,9 +113,34 @@ def base_colour_exception(colour_name: str, base: dict, field: str) -> dict | No
         "suggestion": "Approve or correct the proposed base colour"}
 
 
+def item_colour_code(item_no: str, colour_code: str, colour_name: str,
+                     uses_colour_codes: bool) -> str:
+    """The per-colour item code.
+
+    Carhartt and Edwin: style + colour code (I026462.8902), whose code is house
+    colour + finish. Every other brand: style + colour name, as their own SAP
+    records hold it (AC01312-SILVER, PT00408-SANDED BLACK).
+    """
+    item_no = str(item_no or "").strip()
+    if not item_no:
+        return ""
+    if uses_colour_codes:
+        return f"{item_no}.{colour_code}" if colour_code else ""
+    name = re.sub(r"\s+", " ", str(colour_name or "")).strip().upper()
+    # 'BLACK/WHITE' is written BLACK-WHITE in the item code.
+    name = re.sub(r"(?<=\S)/(?=\S)", "-", name)
+    return f"{item_no}-{name}" if name else ""
+
+
+# Never copied from the supplier sheet: the supplier's own season ('WN26')
+# or colour split is not SAP's.
+_DERIVED = {"Season", "Item.Colour", "House Colour", "Finish", "BASE COLOR"}
+
+
 def build_row(src: dict, *, season: str, collection: str,
               vocab=None, lookup=None, table=None, temporary=None,
-              base_colour: bool = True) -> "tuple[dict, list[dict]]":
+              base_colour: bool = True,
+              uses_colour_codes: bool = True) -> "tuple[dict, list[dict]]":
     """Build one SAP creation row. Returns (row, exceptions)."""
     # Normalise here too: build_row is called directly as well as through
     # build_creation_sheet, and supplier headers carry stray double spaces.
@@ -134,8 +169,10 @@ def build_row(src: dict, *, season: str, collection: str,
 
     out["Item No."] = item_no
     out["Colour Code"] = colour_code
-    out["Item.Colour"] = f"{item_no}.{colour_code}" if item_no and colour_code else ""
-    out["House Colour"], out["Finish"] = split_colour_code(colour_code)
+    out["Item.Colour"] = item_colour_code(item_no, colour_code, colour_name,
+                                          uses_colour_codes)
+    if uses_colour_codes:
+        out["House Colour"], out["Finish"] = split_colour_code(colour_code)
 
     # SAP's Main Waregroup is the supplier's *Item Group*, not their own
     # "Main Waregroup" column, which is one level too coarse.
@@ -154,7 +191,7 @@ def build_row(src: dict, *, season: str, collection: str,
 
     # Everything else passes through untouched.
     for col in SAP_COLUMNS:
-        if not out[col]:
+        if not out[col] and col not in _DERIVED:
             direct = get(col, normalise_header(col))
             if direct:
                 out[col] = direct
@@ -211,7 +248,8 @@ def _expand_horizontal_sizes(rows):
 
 def build_creation_sheet(rows, *, season: str, collection: str = "Main",
                          vocab=None, lookup=None, table=None, temporary=None,
-                         base_colour: bool = True) -> dict:
+                         base_colour: bool = True,
+                         uses_colour_codes: bool = True) -> dict:
     """Build the whole package.
 
     Returns the rows, one exception record per problem (carrying the SKU so the
@@ -229,7 +267,8 @@ def build_creation_sheet(rows, *, season: str, collection: str = "Main",
     for src in src_rows:
         row, excs = build_row(src, season=season, collection=collection,
                               vocab=vocab, lookup=lookup, table=table,
-                              temporary=temporary, base_colour=base_colour)
+                              temporary=temporary, base_colour=base_colour,
+                              uses_colour_codes=uses_colour_codes)
         out_rows.append(row)
         sku = row.get("SKU") or row.get("Item.Colour") or ""
         for e in excs:

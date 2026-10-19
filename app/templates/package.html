@@ -14,7 +14,7 @@
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       {% if run and run.file_path %}
-      <a href="/collections/{{ job.id }}/packages/{{ kind }}/download"
+      <a href="/collections/{{ job.id }}/packages/{{ kind }}/download" download
          style="padding:9px 18px;border:1px solid var(--gray-200,#e4e4e4);border-radius:9px;
                 text-decoration:none;color:#111;font-weight:600;font-size:0.86rem">Download</a>
       {% endif %}
@@ -175,6 +175,7 @@
     </span>
   </div>
 
+  <form action="/collections/{{ job.id }}/packages/{{ kind }}/decide-all" method="post">
   <div style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden">
     {% for q in open_questions %}
     <div style="padding:14px 18px;{% if not loop.last %}border-bottom:1px solid var(--gray-100,#f4f4f4){% endif %}">
@@ -216,29 +217,31 @@
           <a href="/collections/{{ job.id }}#mapping" style="color:#993325;font-weight:600">Open column mapping</a>
         </div>
         {% else %}
-        <form action="/collections/{{ job.id }}/packages/{{ kind }}/decide" method="post"
-              style="display:flex;gap:8px;align-items:center">
-          <input type="hidden" name="key" value="{{ q.key }}">
+        <div style="display:flex;gap:8px;align-items:center">
           {% if q.options %}
-          <select name="value" required
-            style="padding:7px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.85rem;min-width:150px">
+          <select name="ans::{{ q.key }}"
+            style="padding:7px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.85rem;min-width:170px">
             <option value="">{{ q.suggestion or 'Choose…' }}</option>
             {% for o in q.options %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
           </select>
           {% else %}
-          <input type="text" name="value" required placeholder="{{ q.suggestion or 'Value' }}"
-            style="padding:7px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.85rem;min-width:150px">
+          <input type="text" name="ans::{{ q.key }}" placeholder="{{ q.suggestion or 'Value' }}"
+            style="padding:7px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.85rem;min-width:170px">
           {% endif %}
-          <button type="submit"
-            style="padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem">
-            Apply
-          </button>
-        </form>
+        </div>
         {% endif %}
       </div>
     </div>
     {% endfor %}
   </div>
+  <div style="position:sticky;bottom:0;background:var(--bg,#f6f6f1);padding:12px 0;display:flex;gap:12px;align-items:center;justify-content:flex-end">
+    <span style="font-size:0.82rem;color:var(--gray-500,#777)">Answer as many as you like — unanswered ones stay open.</span>
+    <button type="submit"
+      style="padding:10px 22px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.88rem">
+      Apply all answers
+    </button>
+  </div>
+  </form>
   {% else %}
   <div style="background:#e8f3ec;border:1px solid #cfe5d8;border-radius:10px;padding:16px 18px;margin-bottom:20px">
     <strong style="color:#1b6e4f">Nothing left to decide.</strong>

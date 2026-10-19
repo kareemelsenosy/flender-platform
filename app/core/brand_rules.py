@@ -62,8 +62,28 @@ TABLES: dict[str, dict] = {
         "columns": [("order_code", "Order form size code"),
                     ("list_code", "Product list (HS) size code"),
                     ("meaning", "What it means"),
-                    ("sizes", "Sizes (comma separated)")],
+                    ("sizes", "Sizes (comma separated)"),
+                    ("prefix", "SAP size prefix (e.g. R for rings)")],
         "key": "order_code",
+    },
+    "item_groups": {
+        "label": "Product groups",
+        "help": ("The brand's own product category and the SAP item group it goes "
+                 "to. When a category can be more than one group, list them all "
+                 "(comma separated) and the system asks per product."),
+        "columns": [("supplier", "Brand's category (as written)"),
+                    ("sap", "SAP item group(s)")],
+        "key": "supplier",
+    },
+    "size_lists": {
+        "label": "SAP size lists",
+        "help": ("Which SAP size list a style's sizes belong to, and the sort index "
+                 "SAP gives each size. A style uses the first list that holds all "
+                 "of its sizes. Learned from a finished TEMP sheet, or set here."),
+        "columns": [("list_code", "SAP size list code"),
+                    ("sizes", "Sizes, in order (comma separated)"),
+                    ("sort", "Sort index per size (comma separated)")],
+        "key": "list_code",
     },
     "columns": {
         "label": "Column mapping",
@@ -76,7 +96,8 @@ TABLES: dict[str, dict] = {
     },
 }
 
-TABLE_ORDER = ["colours", "stat_codes", "size_runs", "size_codes", "columns"]
+TABLE_ORDER = ["colours", "stat_codes", "size_runs", "size_codes", "size_lists",
+               "item_groups", "columns"]
 
 SETTINGS = {
     "uses_base_colour": {
@@ -84,6 +105,14 @@ SETTINGS = {
         "help": ("Base colour is filled per item for brands whose SAP records "
                  "carry it (Carhartt WIP, Edwin). For other brands it is left "
                  "empty and never asked about."),
+        "default": False,
+    },
+    "uses_colour_codes": {
+        "label": "Item codes use the colour code",
+        "help": ("On for Carhartt WIP and Edwin: the item code is style + colour code "
+                 "(I026462.8902) and House Colour / Finish are filled. Off for every "
+                 "other brand: the item code is style + colour name (AC01312-SILVER) "
+                 "and House Colour / Finish are left out."),
         "default": False,
     },
 }
@@ -106,7 +135,7 @@ _ALIASES = {"carhartt": "carhartt wip", "carhartt work in progress": "carhartt w
 
 SEEDS: dict[str, dict] = {
     "carhartt wip": {
-        "settings": {"uses_base_colour": True},
+        "settings": {"uses_base_colour": True, "uses_colour_codes": True},
         "tables": {
             # Carhartt's statistic colour codes. Every one of the 7,995
             # colours carrying both a statistic code and a BASE COLOR in the
@@ -129,23 +158,44 @@ SEEDS: dict[str, dict] = {
             ],
         },
     },
-    "edwin": {"settings": {"uses_base_colour": True}, "tables": {}},
+    "edwin": {"settings": {"uses_base_colour": True, "uses_colour_codes": True},
+              "tables": {}},
     "huf": {
         "settings": {"uses_base_colour": False},
         "tables": {
+            # Order form letters as printed in HUF's legend; the product-list
+            # letters as the UPC/HS list writes them (O, R, A, P).
             "size_codes": [
                 {"order_code": "C", "list_code": "O", "meaning": "O/S",
-                 "sizes": "O/S"},
+                 "sizes": "O/S", "prefix": ""},
                 {"order_code": "B", "list_code": "R", "meaning": "Ring sizes",
-                 "sizes": ""},
+                 "sizes": "7, 8, 9", "prefix": "R"},
                 {"order_code": "D", "list_code": "A", "meaning": "XS-XXL",
-                 "sizes": "XS, S, M, L, XL, XXL"},
+                 "sizes": "XS, S, M, L, XL, XXL", "prefix": ""},
                 {"order_code": "A", "list_code": "P", "meaning": "26-38",
-                 "sizes": "26, 28, 30, 32, 34, 36, 38"},
+                 "sizes": "26, 28, 30, 32, 34, 36, 38", "prefix": ""},
+            ],
+            # From HUF's own TEMP STANDARD TEMPLATE, 2026 Q4.
+            "size_lists": [
+                {"list_code": "XS26XL", "sizes": "XS, S, M, L, XL, XXL",
+                 "sort": "1000, 1500, 2000, 2500, 3000, 3500"},
+                {"list_code": "PANTS", "sizes": "26, 28, 30, 32, 34, 36, 38",
+                 "sort": "7000, 8000, 9000, 10000, 11000, 12000, 12500"},
+                {"list_code": "JEWELLERY", "sizes": "R7, R8, R9",
+                 "sort": "61000, 61500, 62000"},
+                {"list_code": "ONESIZE", "sizes": "onesize", "sort": "58000"},
             ],
         },
     },
 }
+
+# Size lists SAP uses for Carhartt, measured on the PRE FALL 27 B2B master
+# list (XXL is in XS26XL, at 3500).
+SEEDS["carhartt wip"]["tables"]["size_lists"] = [
+    {"list_code": "XS26XL", "sizes": "XS, S, M, L, XL, XXL",
+     "sort": "1000, 1500, 2000, 2500, 3000, 3500"},
+    {"list_code": "ONESIZE", "sizes": "onesize", "sort": "58000"},
+]
 
 
 def seed_for(brand: str) -> dict:
@@ -257,8 +307,22 @@ def sentence(table: str, row: dict) -> str:
         parts = [f"Order-form size code {g('order_code')}"]
         if g("list_code"):
             parts.append(f"(product-list code {g('list_code')})")
-        return " ".join(parts) + f" means {g('meaning') or '(not described)'}" + (
+        text = " ".join(parts) + f" means {g('meaning') or '(not described)'}" + (
             f": {g('sizes')}." if g("sizes") else ".")
+        if g("prefix"):
+            text += f" In SAP these sizes are written {g('prefix')} + size (e.g. {g('prefix')}7)."
+        return text
+    if table == "item_groups":
+        groups = split_sizes(g("sap"))
+        if len(groups) > 1:
+            return f"“{g('supplier')}” is one of {' or '.join(groups)} in SAP — asked per product."
+        return f"“{g('supplier')}” goes to SAP item group {g('sap') or '(not chosen yet)'}."
+    if table == "size_lists":
+        sizes = split_sizes(g("sizes"))
+        sorts = split_sizes(g("sort"))
+        pairs = ", ".join(f"{z} = {o}" for z, o in zip(sizes, sorts)) if sorts else g("sizes")
+        return f"Sizes {g('sizes')} use SAP size list {g('list_code')}" + (
+            f" (sort index {pairs})." if sorts else ".")
     if table == "columns":
         if g("header") == "-":
             return f"{g('field')} is not in this brand's files — never guess a column for it."
@@ -439,6 +503,51 @@ def expand_scale_rows(rows: list[dict], tables: dict,
                 line["Barcode"] = ""
                 line.pop("SKU", None)
             out.append(line)
+    return out
+
+
+def size_prefix(scale: str, tables: dict) -> str:
+    """The SAP prefix for sizes of a scale code ('R' for HUF's ring sizes)."""
+    scale = _clean(scale).lower()
+    if not scale:
+        return ""
+    for r in tables.get("size_codes", []):
+        if scale in (_clean(r.get("order_code")).lower(), _clean(r.get("list_code")).lower()):
+            return _clean(r.get("prefix"))
+    return ""
+
+
+def size_list_for(run: list[str], tables: dict) -> "tuple[str, dict[str, int]]":
+    """The SAP size list holding every size of a style, and its sort indexes.
+
+    Returns ``(list_code, {size: sort})``, or ``("", {})`` when no list in the
+    brand's table holds them all. Lists are tried in table order.
+    """
+    want = [_clean(s).lower() for s in run if _clean(s)]
+    if not want:
+        return "", {}
+    for r in tables.get("size_lists", []):
+        sizes = [x.lower() for x in split_sizes(r.get("sizes"))]
+        if sizes and all(w in sizes for w in want):
+            sorts = split_sizes(r.get("sort"))
+            order = {}
+            for i, z in enumerate(sizes):
+                try:
+                    order[z] = int(float(sorts[i]))
+                except (IndexError, ValueError):
+                    pass
+            return _clean(r.get("list_code")), order
+    return "", {}
+
+
+def item_group_map(tables: dict) -> dict[str, list[str]]:
+    """Brand category (upper-case) -> candidate SAP item groups."""
+    out: dict[str, list[str]] = {}
+    for r in tables.get("item_groups", []):
+        key = _clean(r.get("supplier")).upper()
+        groups = [x.upper() for x in split_sizes(r.get("sap"))]
+        if key and groups:
+            out[key] = groups
     return out
 
 

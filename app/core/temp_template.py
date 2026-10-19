@@ -82,14 +82,29 @@ def normalise_size(size: str) -> str:
     return SIZE_ALIASES.get(s.upper(), s)
 
 
-def smart_title(text: str) -> str:
-    """Title case that leaves acronyms alone."""
+def smart_title(text: str, keep_upper=()) -> str:
+    """Title case that leaves acronyms alone.
+
+    ``keep_upper`` adds the brand's own words (HUF, EXO, KCUF, PO, FZ),
+    learned from a finished sheet.
+    """
+    keep = ACRONYMS | {str(k).upper() for k in keep_upper}
     words = str(text or "").split()
     out = []
     for w in words:
         core = re.sub(r"[^A-Za-z0-9]", "", w).upper()
-        out.append(w.upper() if core in ACRONYMS else w.title())
+        if core in keep:
+            out.append(w.upper())
+        else:
+            out.append(w.title())
     return " ".join(out)
+
+
+def web_colour(colour: str) -> str:
+    """A colour as SAP shows it: 'BLACK/WHITE' -> 'Black-White'; a spaced
+    'Dark Navy / WIP H Brown' (Carhartt's own spelling) is kept."""
+    text = re.sub(r"(?<=\S)/(?=\S)", "-", str(colour or "").strip())
+    return smart_title(text)
 
 
 def size_list_code(sizes) -> "tuple[str, str]":
@@ -143,6 +158,22 @@ def barcode(style: str, colour: str, size: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", raw).upper()
 
 
+_GENDER = {"m": "M", "men": "M", "mens": "M", "men's": "M", "male": "M",
+           "man": "M", "herren": "M", "unisex": "M", "u": "M",
+           "w": "W", "f": "W", "women": "W", "womens": "W", "women's": "W",
+           "female": "W", "woman": "W", "ladies": "W", "damen": "W",
+           "k": "K", "kids": "K", "children": "K", "youth": "K"}
+
+
+def gender_code(value: str) -> str:
+    """'Men' / 'M' / 'unisex' -> 'M'. SAP holds one letter (HUF HO26: M;
+    Carhartt's unisex goods are M in the B2B master list)."""
+    v = str(value or "").strip()
+    if is_blank(v):
+        return ""
+    return _GENDER.get(v.lower(), v[:1].upper())
+
+
 def barcode_of(src: dict) -> str:
     """The supplier's barcode on a row, digits only, or ''."""
     for key in ("Barcode", "EAN", "UPC"):
@@ -189,7 +220,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                      group_map=None, vocab=None, colour_lookup=None,
                      history=None, earliest_ship_date: str = "",
                      colour_table=None, temporary=None,
-                     base_colour: bool = True) -> dict:
+                     base_colour: bool = True, size_tables=None,
+                     uses_colour_codes: bool = False, keep_upper=()) -> dict:
     """Build the TEMP sheet from supplier order rows.
 
     ``group_map`` maps a supplier subcategory to a SAP item group. It is
@@ -207,9 +239,21 @@ def build_temp_sheet(rows, *, brand: str, season: str,
     supplier's ship date — Hiking Patrol SS27 shipped 20 January on the order
     form and went into SAP as 15 January — so it is asked for, not copied.
     """
+    from app.core.brand_rules import size_list_for, size_prefix
+    from app.core.sap_creation import item_colour_code
+
     group_map = group_map or {}
     history = history or {}
+    size_tables = size_tables or {}
     out_rows: list[dict] = []
+
+    def sap_size(src_get, size):
+        """The size as SAP writes it: HUF's ring sizes are R7, R8, R9."""
+        size = normalise_size(size)
+        prefix = size_prefix(src_get("Size Scale", "Size Run"), size_tables)
+        if prefix and not size.upper().startswith(prefix.upper()):
+            return f"{prefix}{size}"
+        return size
     exceptions: list[dict] = []
 
     if is_blank(earliest_ship_date):
@@ -235,7 +279,7 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                              if x in src and not is_blank(src[x])), "")
         key = (g("Item No.", "Style Number", "Style Code"), g("Color", "Colour"))
         for sz in expand_sizes(src):
-            label = normalise_size(sz["size"])
+            label = sap_size(g, sz["size"])
             if label not in runs.setdefault(key, []):
                 runs[key].append(label)
 
@@ -259,10 +303,15 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                                "suggestion": "Check the size columns"})
             continue
 
-        run = runs.get((style, colour)) or [normalise_size(x["size"]) for x in sizes]
+        run = runs.get((style, colour)) or [sap_size(get, x["size"]) for x in sizes]
         if len(sizes) > 1:
-            run = [normalise_size(x["size"]) for x in sizes]
-        list_code, list_why = size_list_code(run)
+            run = [sap_size(get, x["size"]) for x in sizes]
+        # The brand's own SAP size lists first (learned from its finished
+        # TEMP sheets); the built-in runs only when the brand has none.
+        list_code, sort_of = size_list_for(run, size_tables)
+        list_why = ""
+        if not list_code:
+            list_code, list_why = size_list_code(run)
         if not list_code:
             # The subject is the size run, not the style: two styles sharing
             # an unknown run are one decision, not two.
@@ -283,6 +332,14 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "reason": f"'{subcat}' maps to {' or '.join(candidates)} — "
                           f"the description decides",
                 "suggestion": f"Choose the SAP group for '{name}'"})
+        elif not candidates and not subcat:
+            exceptions.append({
+                "sku": style, "field": "U_ItmsGrpCod", "subject": "no product category",
+                "severity": "warning",
+                "reason": "the brand's files have no product category mapped, so the SAP "
+                          "item group is empty — map Product group in Column mapping, or "
+                          "teach the brand from a finished TEMP",
+                "suggestion": "Map the product category"})
         elif not candidates and subcat:
             exceptions.append({
                 "sku": style, "field": "U_ItmsGrpCod", "subject": subcat,
@@ -304,7 +361,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         # season's data. History fills only what the sheet leaves empty.
         hs = re.sub(r"[^0-9]", "", get("Duty Position", "HS Code", "HTS Code"))
         from_sheet = {"U_HS_Code": hs,
-                      "U_COO": country_code(get("Country of Origin", "COO"))}
+                      "U_COO": country_code(get("Country of Origin", "COO")),
+                      "U_Gender": gender_code(get("Sex", "Gender"))}
         hist = {**history.get(style, {}),
                 **{k: v for k, v in from_sheet.items() if v}}
         colour_code = get("Colour Code", "Color Code")
@@ -317,8 +375,9 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                               f"{style} has no history",
                     "suggestion": f"Supply {field} for {style}"})
 
+        description = get("Item Description 2") or name
         for s in sizes:
-            size = normalise_size(s["size"])
+            size = sap_size(get, s["size"])
             row = {c: "" for c in TEMP_COLUMNS}
             row.update({
                 "U_Season": code or "",
@@ -328,22 +387,24 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 # that is what SAP holds; otherwise the built code.
                 "U_CodeBars": (barcode_of(src) if len(sizes) == 1 and barcode_of(src)
                                else barcode(style, colour, size)),
-                "U_SuppCatNum": (f"{style}.{colour_code}" if style and colour_code
-                                 else f"{style}-{colour}" if style and colour else ""),
+                # Carhartt / Edwin: style.colour-code; others: style-COLOUR NAME.
+                "U_SuppCatNum": item_colour_code(style, colour_code, colour,
+                                                 uses_colour_codes),
                 "U_Material": get("Material"),
                 "U_VCat": smart_title(subcat),
                 "U_ItmsGrpCod": group,
                 "U_SCode": style,
                 "U_SizeCode": size,
                 "U_webbeschreibung_gr": size,
-                "U_Webbeschreibung2": smart_title(name),
+                "U_Webbeschreibung2": smart_title(description,
+                                                  set(keep_upper) | set(str(brand).upper().split())),
                 # The accepted sheet stores the base colour lower-cased here,
                 # unlike the Carhartt creation sheet which title-cases it.
                 "U_BaseColor": (base["value"] or "").lower(),
                 "U_Webbeschreibung": (brand or "").upper(),
                 "U_def_size_list_code": list_code,
-                "U_Web_Color": smart_title(colour),
-                "U_SortIndex": str(sort_index(
+                "U_Web_Color": web_colour(colour),
+                "U_SortIndex": str(sort_of.get(size.lower()) or sort_index(
                     run.index(size) if size in run else s["position"], size)),
                 "U_ESDate": "" if is_blank(earliest_ship_date) else str(earliest_ship_date),
             })

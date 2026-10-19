@@ -278,6 +278,7 @@ def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
     """
     from app.core import field_mapping
     from app.core.brand_rules import column_overrides
+    from app.services import brand_rules as rules_svc
     from app.services.brand_rules import rules_for
     from app.services import packages as pkg
 
@@ -301,6 +302,24 @@ def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
                         f"{field_mapping.PLAIN_NAMES[essential].lower()} — "
                         f"set it under Column mapping")
     report["mappings"] = mappings
+
+    # A brand seen for the first time gets base rules from what was found.
+    if job.brand and mappings:
+        from app.core.brand_rules import read_size_legend
+        legend = {}
+        for cf in job.files:
+            if cf.kind == intake_core.ORDER_SHEET and cf.parse_path and os.path.exists(cf.parse_path):
+                for code, sizes in read_size_legend(cf.parse_path).items():
+                    legend.setdefault(code, sizes)
+        try:
+            made = rules_svc.generate_base_rules(
+                db, job.brand, mappings, legend, job_id=job.id,
+                source_files=", ".join(m["file"] for m in mappings.values()))
+            if made:
+                report["base_rules"] = made
+                rules = rules_for(db, job.brand)
+        except Exception:
+            db.rollback()
     _recount(job, report, rules)
 
     kinds = {f.kind for f in job.files}
@@ -571,6 +590,7 @@ async def collection_detail(job_id: int, request: Request,
         "plain_names": field_mapping.PLAIN_NAMES,
         "essential_fields": field_mapping.ESSENTIAL,
         "mapping_note": request.session.pop("mapping_note", ""),
+        "learn_note": request.session.pop("learn_note", ""),
         "package_kinds": pkg.KINDS, "package_state": state,
         "brand_config": brand_config,
         "sap_sheet_note": request.session.pop("sap_sheet_note", ""),
@@ -704,6 +724,10 @@ async def save_picture_links(job_id: int, request: Request,
         job.picture_links = list(dict.fromkeys(found))[:50]
         db.commit()
         analyse_job(db, job)
+        # Read what the links hold — a Dropbox folder can be over a GB, so in
+        # the background; the collection page shows the progress.
+        from app.services.picture_index import read_links_in_background
+        read_links_in_background(job.id)
     return RedirectResponse(f"/collections/{job_id}", status_code=302)
 
 
@@ -731,25 +755,35 @@ async def save_mapping(job_id: int, request: Request,
         return RedirectResponse(f"/collections/{job_id}#mapping", status_code=302)
 
     form = await request.form()
-    file_id = str(form.get("file_id") or "")
-    current = (job.report.get("mappings") or {}).get(file_id, {}).get("fields", {})
+    mappings = job.report.get("mappings") or {}
     changed = 0
+    # One save covers every file. A brand rule names the column per file
+    # ("Description | Style Name") so each file keeps its own column.
     for field in field_mapping.FIELD_NAMES:
-        name = f"col::{field}"
-        if name not in form:
+        chosen_by_file, moved = {}, False
+        for fid, m in mappings.items():
+            name = f"col::{fid}::{field}"
+            if name not in form:
+                continue
+            chosen = str(form.get(name) or "").strip()
+            info = (m.get("fields") or {}).get(field) or {}
+            was = info.get("header", "")
+            chosen_by_file[fid] = chosen
+            if chosen != was and not (chosen == "" and not was):
+                moved = True
+        if not moved:
             continue
-        chosen = str(form.get(name) or "").strip()
-        info = current.get(field) or {}
-        was = info.get("header", "")
-        if chosen == was and not (chosen == "" and info.get("source") == "missing"):
-            continue
-        if chosen == "" and not was and info.get("source") in ("missing", "brand rule"):
-            continue                    # already empty; nothing new to record
-        if chosen == "__auto":
+        values = list(dict.fromkeys(v for v in chosen_by_file.values()
+                                    if v and v != "__auto"))
+        if values:
+            rules_svc.edit_row(db, job.brand, "columns",
+                               {"field": field, "header": " | ".join(values)},
+                               user_id=uid, reason=f"Set on {job.label}", job_id=job.id)
+        elif "__auto" in chosen_by_file.values():
             rules_svc.remove_row(db, job.brand, "columns", field, user_id=uid)
         else:
             rules_svc.edit_row(db, job.brand, "columns",
-                               {"field": field, "header": chosen or field_mapping.NONE},
+                               {"field": field, "header": field_mapping.NONE},
                                user_id=uid, reason=f"Set on {job.label}", job_id=job.id)
         changed += 1
     analyse_job(db, job)
@@ -757,3 +791,95 @@ async def save_mapping(job_id: int, request: Request,
         f"Saved {changed} column{'s' if changed != 1 else ''} to the {job.brand} rules — "
         "regenerate packages to use them." if changed else "Nothing changed.")
     return RedirectResponse(f"/collections/{job_id}#mapping", status_code=302)
+
+
+@router.post("/collections/{job_id}/learn")
+async def learn_from_finished(job_id: int, request: Request,
+                              file: UploadFile = File(...),
+                              db: DBSession = Depends(get_db)):
+    """Teach the brand's rules from a TEMP sheet a person already finished.
+
+    The sheet is matched to this collection's rows by barcode (or style), and
+    what it shows — product groups, SAP size lists and sort indexes, the TEMP
+    columns and their fixed values — becomes the brand's rules, so the next
+    collection comes out the same way without anyone typing a rule.
+    """
+    import tempfile
+    import pandas as pd
+    from app.core.learn_from_sheet import learn
+    from app.services import brand_rules as rules_svc
+    from app.services import packages as pkg
+
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = db.query(CollectionJob).filter(
+        CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
+    if not job:
+        return RedirectResponse("/collections", status_code=302)
+    if not job.brand:
+        request.session["learn_note"] = "Set the brand first — what is learned is saved for the brand."
+        return RedirectResponse(f"/collections/{job_id}#learn", status_code=302)
+
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".xlsx"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        path = tmp.name
+    try:
+        finished = pd.read_excel(path, dtype=str)
+        finished.columns = [str(c).strip() for c in finished.columns]
+        if "U_CodeBars" not in finished.columns and "U_SCode" not in finished.columns:
+            request.session["learn_note"] = (
+                "That is not a finished TEMP sheet — it needs the U_ columns "
+                "(U_CodeBars, U_SCode, …).")
+            return RedirectResponse(f"/collections/{job_id}#learn", status_code=302)
+        rows, _problem, _rep = pkg.collection_rows(job, pkg.TEMP)
+        learned = learn(finished.to_dict("records"), list(finished.columns), rows)
+        done = rules_svc.apply_learned(db, job.brand, learned, filename=file.filename or "",
+                                       user_id=uid, job_id=job.id)
+        request.session["learn_note"] = (
+            f"Matched {learned['matched']} of {learned['lines']} lines. "
+            + " ".join(done) + " Regenerate the packages to use it.")
+    except Exception as exc:
+        request.session["learn_note"] = f"Could not read that sheet ({type(exc).__name__}: {exc})"[:300]
+    finally:
+        os.unlink(path)
+    return RedirectResponse(f"/collections/{job_id}#learn", status_code=302)
+
+
+@router.post("/collections/{job_id}/include-items")
+async def include_items(job_id: int, request: Request, db: DBSession = Depends(get_db)):
+    """Keep items that are only in the product list — or stop keeping them.
+
+    Fixing the supplier file and starting again is not the only way: an item
+    the order sheet left out can be taken from the product list here.
+    """
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = db.query(CollectionJob).filter(
+        CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
+    if not job:
+        return RedirectResponse("/collections", status_code=302)
+    form = await request.form()
+    add = [str(v) for v in form.getlist("add") if str(v).strip()]
+    remove = {str(v).upper() for v in form.getlist("remove")}
+    kept = [i for i in job.included_items if i.upper() not in remove] + add
+    job.included_items = kept
+    db.commit()
+    analyse_job(db, job)
+    return RedirectResponse(f"/collections/{job_id}#combine", status_code=302)
+
+
+@router.get("/collections/{job_id}/picture-status")
+async def picture_status(job_id: int, request: Request, db: DBSession = Depends(get_db)):
+    uid = get_current_user_id(request)
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    job = db.query(CollectionJob).filter(
+        CollectionJob.id == job_id, CollectionJob.user_id == uid).first()
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    idx = job.picture_index
+    return JSONResponse({"status": idx.get("status", ""), "photos": len(idx.get("files", [])),
+                         "error": idx.get("error", "")})

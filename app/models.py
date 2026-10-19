@@ -515,6 +515,12 @@ class CollectionJob(Base):
     picture_links_json = Column(Text, default="[]")
     # Where the brand / season were read from when not from the filename.
     identity_note = Column(Text)
+    # Items that are only in the product list but that staff chose to keep:
+    # they go into the packages as if the order sheet had them.
+    included_items_json = Column(Text, default="[]")
+    # What the picture links hold: {"status", "files": [...], "error", "at"}.
+    # Filled in the background — a brand's Dropbox folder can be over a GB.
+    picture_index_json = Column(Text, default="{}")
 
     files = relationship("CollectionFile", back_populates="job",
                          cascade="all, delete-orphan",
@@ -555,6 +561,28 @@ class CollectionJob(Base):
     @picture_links.setter
     def picture_links(self, val: list):
         self.picture_links_json = json.dumps(list(val or []))
+
+    @property
+    def picture_index(self) -> dict:
+        try:
+            return dict(json.loads(self.picture_index_json or "{}"))
+        except (TypeError, ValueError):
+            return {}
+
+    @picture_index.setter
+    def picture_index(self, val: dict):
+        self.picture_index_json = json.dumps(val or {})
+
+    @property
+    def included_items(self) -> list:
+        try:
+            return list(json.loads(self.included_items_json or "[]"))
+        except (TypeError, ValueError):
+            return []
+
+    @included_items.setter
+    def included_items(self, val: list):
+        self.included_items_json = json.dumps(sorted(set(val or [])))
 
     @report.setter
     def report(self, val: dict):

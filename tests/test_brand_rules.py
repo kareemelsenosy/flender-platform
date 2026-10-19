@@ -363,10 +363,12 @@ def test_saving_a_column_mapping_becomes_a_brand_rule(client, login_as, db_sessi
     job = db_session.get(CollectionJob, jid)
     fid = next(iter(job.report["mappings"]))
     client.post(f"/collections/{jid}/mapping",
-                data={"file_id": fid, "col::Item No.": "Article", "col::Color": "Shade"})
+                data={f"col::{fid}::Item No.": "Article", f"col::{fid}::Color": "Shade"})
     rules = svc.rules_for(db_session, "Gramicci")
-    # "Article" was already found automatically, so only the colour is a new rule.
-    assert core.column_overrides(rules["tables"]) == {"Color": "Shade"}
+    # The first upload generated the base rules (Article was found by itself);
+    # the colour is the rule staff added.
+    overrides = core.column_overrides(rules["tables"])
+    assert overrides["Color"] == "Shade" and overrides["Item No."] == "Article"
     db_session.expire_all()
     fields = db_session.get(CollectionJob, jid).report["mappings"][fid]["fields"]
     assert fields["Color"] == {"header": "Shade", "source": "brand rule"}
@@ -602,3 +604,95 @@ def test_the_house_colour_wins_over_a_look_alike_full_code():
               "stat_codes": core.seed_for("Carhartt WIP")["tables"]["stat_codes"]}
     hit = core.resolve_from_table("White", core.colour_table_lookup(tables), "0260")
     assert hit["value"] == "White"
+
+
+
+def test_a_new_brand_gets_base_rules_on_first_upload(client, login_as, db_session):
+    from app.services import brand_rules as svc
+    login_as()
+    _upload(client, "Gramicci SS27 order.xlsx",
+            [{"Brand": "GRAMICCI", "Collection": "SS27", "Style Number": "G1",
+              "Colour": "Navy", "Size": "M", "EAN": "123"}])
+    rules = svc.rules_for(db_session, "Gramicci")
+    assert core.column_overrides(rules["tables"])["Item No."] == "Style Number"
+    assert any(h.action == "generate" for h in svc.history(db_session, "Gramicci"))
+
+
+def test_huf_style_is_split_even_when_the_list_gave_a_colour_code():
+    """'JK00527-BLACK' joined to an HS list carrying Color Code BLACK became
+    item code JK00527-BLACK.BLACK — the colour twice."""
+    from app.services.packages import fill_from_collection
+
+    class Job:
+        brand = "HUF"
+    row = fill_from_collection([{"Item No.": "JK00527-BLACK", "Color": "BLACK",
+                                 "Colour Code": "BLACK", "Size": "S"}], Job())[0]
+    assert row["Item No."] == "JK00527"
+    from app.core.sap_creation import item_colour_code
+    assert item_colour_code(row["Item No."], row["Colour Code"], row["Color"], False) == "JK00527-BLACK"
+
+
+def test_item_code_is_style_and_colour_name_except_for_colour_code_brands():
+    from app.core.sap_creation import item_colour_code
+    assert item_colour_code("PT00242", "BKCP", "Black/Copper", False) == "PT00242-BLACK-COPPER"
+    assert item_colour_code("I026462", "8902", "Black", True) == "I026462.8902"
+
+
+def test_the_template_trims_renames_and_fixes_columns():
+    from app.core.output_templates import apply, default_template, template_for
+    huf = template_for("temp", {}, "huf")
+    out = apply({"rows": [{"U_SCode": "AC1", "U_VCName": "", "U_OSRow": "1"}],
+                 "columns": []}, huf)
+    assert out["columns"][0] == "U_Season" and "U_OSRow" not in out["columns"]
+    assert out["rows"][0]["U_VCName"] == "P"
+    pc = default_template("product_creation", uses_colour_codes=False)
+    assert not any(c["include"] for c in pc if c["column"] in ("House Colour", "Finish"))
+    assert any(c["label"] == "Item Code" for c in pc)
+
+
+def test_size_lists_give_the_sap_code_and_sort_index():
+    tables = core.seed_for("HUF")["tables"]
+    assert core.size_list_for(["28", "30", "38"], tables) == (
+        "PANTS", {"26": 7000, "28": 8000, "30": 9000, "32": 10000, "34": 11000,
+                  "36": 12000, "38": 12500})
+    assert core.size_prefix("R", tables) == "R"
+
+
+def test_holiday_and_sap_season_codes():
+    from app.core.sap_creation import season_code
+    assert season_code("HO26")[0] == season_code("WN26")[0] == season_code("2026-04")[0] == "2026-04"
+
+
+def test_pricing_is_one_row_per_item_code_with_sap_price_lists():
+    from app.core.pricing import sap_price_list
+    rows = [{"Item No.": "JK1", "Color": "BLACK", "Size": s, " Flender RRP AED ": "1065",
+             "Flender WHS USD": "138.1"} for s in ("S", "M", "L")]
+    out = sap_price_list(rows, lambda r: f"{r['Item No.']}-{r['Color']}")
+    assert len(out["rows"]) == 1
+    assert out["rows"][0]["Flender RRP AED"] == 1065 and out["rows"][0]["Item Code"] == "JK1-BLACK"
+
+
+def test_learning_from_a_finished_temp():
+    from app.core.learn_from_sheet import learn
+    finished = [{"U_CodeBars": str(100 + i), "U_SCode": f"S{i % 4}", "U_ItmsGrpCod": g,
+                 "U_def_size_list_code": "XS26XL", "U_SizeCode": z, "U_SortIndex": o,
+                 "U_VCName": "P", "U_Webbeschreibung2": "Box Logo PO Hoodie"}
+                for i, (g, z, o) in enumerate([("HOODYS", "S", "1500"), ("HOODYS", "M", "2000"),
+                                               ("T-SHIRTS", "S", "1500"), ("T-SHIRTS", "M", "2000")])]
+    rows = [{"Barcode": str(100 + i), "Item No.": f"S{i % 4}",
+             "P3 Name": ["HOODS", "HOODS", "TEES", "TEES"][i]} for i in range(4)]
+    out = learn(finished, ["U_CodeBars", "U_SCode", "U_ItmsGrpCod", "U_VCName"], rows)
+    assert out["item_groups"]["column"] == "P3 Name"
+    assert out["item_groups"]["map"] == {"HOODS": ["HOODYS"], "TEES": ["T-SHIRTS"]}
+    assert out["size_lists"][0]["sizes"] == "S, M"
+    assert out["template"][1] == {"U_VCName": "P"}
+    assert out["keep_upper"] == ["PO"]
+
+
+def test_downloads_are_never_painted_as_pages():
+    """Pressing Download painted the spreadsheet's bytes as a page and broke
+    every page after it until a reload."""
+    import pathlib
+    base = pathlib.Path("app/templates/base.html").read_text()
+    assert "FILE_PATH" in base and "isHtml(r)" in base
+    assert 'packages/{{ kind }}/download" download' in pathlib.Path("app/templates/package.html").read_text()

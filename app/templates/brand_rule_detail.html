@@ -28,7 +28,7 @@
         collection the next time a package is generated.
       </p>
     </div>
-    <a href="/brand-rules/{{ rs.brand_key }}/export"
+    <a href="/brand-rules/{{ rs.brand_key }}/export" download
        style="padding:9px 18px;border:1px solid var(--gray-200,#e4e4e4);border-radius:9px;text-decoration:none;color:#111;font-weight:600;font-size:0.86rem">
       Download all rules (Excel)
     </a>
@@ -108,6 +108,56 @@
       {% endfor %}
       <button type="submit" style="margin-top:12px;padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.84rem">Save settings</button>
     </form>
+  </section>
+
+  <!-- Templates -->
+  <section id="templates" style="margin-bottom:30px">
+    <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:4px">SAP sheet columns</h2>
+    <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:0 0 10px;max-width:760px">
+      Which columns {{ rs.brand }}'s sheets carry, in what order and under what heading. Every brand starts from the
+      standard template; untick what does not apply, add a column, or give a column a fixed value (e.g. U_VCName = P).
+      Teaching the brand from a finished TEMP on a collection sets this automatically.
+    </p>
+    {% for pkg_key, pkg_name in package_names.items() %}
+    {% set tmpl = templates[pkg_key] %}
+    <details {% if loop.first %}open{% endif %} style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;margin-bottom:10px">
+      <summary style="cursor:pointer;padding:12px 16px;font-weight:650;font-size:0.92rem">
+        {{ pkg_name }} <span style="font-weight:400;color:var(--gray-500,#777);font-size:0.84rem">— {{ tmpl|selectattr('include')|list|length }} of {{ tmpl|length }} columns</span>
+      </summary>
+      <form action="/brand-rules/{{ rs.brand_key }}/template/{{ pkg_key }}" method="post" style="padding:0 16px 14px">
+        <table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+          <thead><tr style="text-align:left;color:var(--gray-500,#777);font-size:0.7rem;letter-spacing:.05em;text-transform:uppercase">
+            <th style="padding:6px 4px">Use</th><th style="padding:6px 4px">Column</th><th style="padding:6px 4px">Heading in the sheet</th>
+            <th style="padding:6px 4px">Fixed value (optional)</th><th style="padding:6px 4px">Order</th></tr></thead>
+          <tbody>
+          {% for c in tmpl %}
+          <tr style="border-top:1px solid var(--gray-100,#f6f6f6);{% if not c.include %}opacity:.55{% endif %}">
+            <td style="padding:4px"><input type="checkbox" name="inc_{{ loop.index0 }}" {% if c.include %}checked{% endif %}>
+              <input type="hidden" name="col_{{ loop.index0 }}" value="{{ c.column }}"></td>
+            <td style="padding:4px;font-family:ui-monospace,Menlo,monospace;font-size:0.78rem">{{ c.column }}</td>
+            <td style="padding:4px"><input type="text" name="label_{{ loop.index0 }}" value="{{ c.label or c.column }}"
+                 style="padding:4px 7px;border:1px solid var(--gray-200,#e4e4e4);border-radius:6px;font:inherit;font-size:0.8rem;width:170px"></td>
+            <td style="padding:4px"><input type="text" name="value_{{ loop.index0 }}" value="{{ c.value or '' }}" placeholder="from the data"
+                 style="padding:4px 7px;border:1px solid var(--gray-200,#e4e4e4);border-radius:6px;font:inherit;font-size:0.8rem;width:140px"></td>
+            <td style="padding:4px"><input type="number" name="pos_{{ loop.index0 }}" value="{{ loop.index0 }}"
+                 style="padding:4px 6px;border:1px solid var(--gray-200,#e4e4e4);border-radius:6px;font:inherit;font-size:0.8rem;width:64px"></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+          <span style="font-size:0.8rem;font-weight:600;color:var(--gray-500,#777)">Add a column:</span>
+          <input type="text" name="new_column" placeholder="Column name"
+                 style="padding:6px 9px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.82rem">
+          <input type="text" name="new_value" placeholder="Fixed value (optional)"
+                 style="padding:6px 9px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.82rem">
+          <button type="submit" style="margin-left:auto;padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">Save columns</button>
+          <button type="submit" name="reset" value="1" formnovalidate
+                  style="padding:7px 13px;background:#fff;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font-weight:600;cursor:pointer;font-size:0.82rem">Reset to standard</button>
+        </div>
+      </form>
+    </details>
+    {% endfor %}
   </section>
 
   <!-- Tables -->
@@ -210,12 +260,15 @@
         <span>
           {% if h.action == 'delete' %}removed: {{ sentence(h.table_name, h.row) }}
           {% elif h.action == 'import' %}imported {{ h.row.get('colours', 0) }} colours and {{ h.row.get('stat_codes', 0) }} statistic codes from {{ h.row.get('file', 'a file') }}
+          {% elif h.action == 'template' %}{{ package_names.get(h.row.get('package'), h.row.get('package')) }} columns {{ 'reset to standard' if h.row.get('columns') == 'standard' else 'set (' ~ h.row.get('columns') ~ ' columns)' }}
+          {% elif h.action == 'generate' %}base rules generated from {{ h.row.get('file') }}: {{ (h.row.get('made') or [])|join(', ') }}
+          {% elif h.action == 'learn' %}learned from {{ h.row.get('file') or 'a finished sheet' }} ({{ h.row.get('matched') }} of {{ h.row.get('lines') }} lines matched)
           {% elif h.action == 'setting' %}{% for k, v in h.row.items() %}{{ setting_defs.get(k, {}).get('label', k) }}: {{ 'yes' if v else 'no' }}{% endfor %}
           {% else %}{{ sentence(h.table_name, h.row) }}{% if h.previous %} <span style="color:var(--gray-400,#999)">(was: {{ sentence(h.table_name, h.previous) }})</span>{% endif %}
           {% endif %}
         </span>
         <span style="color:var(--gray-400,#999);margin-left:auto">
-          {{ users.get(h.decided_by_id, '') }}{% if h.source == 'decision' %} · package decision{% elif h.source == 'training' %} · <span style="color:#8a6011;font-weight:600">learned in training mode</span>{% endif %}
+          {{ users.get(h.decided_by_id, '') }}{% if h.source == 'decision' %} · package decision{% elif h.source == 'training' %} · <span style="color:#8a6011;font-weight:600">learned in training mode</span>{% elif h.source == 'learned' %} · <span style="color:#1b6e4f;font-weight:600">learned from a finished sheet</span>{% endif %}
         </span>
       </div>
       {% else %}

@@ -38,7 +38,10 @@ FIELDS: list[tuple[str, str, tuple[str, ...]]] = [
      ("size run", "size scale", "size code", "scale", "sr")),
     ("Barcode", "Barcode (EAN / UPC)",
      ("barcode", "ean", "ean code", "eancode", "upc", "gtin", "upc code",
-      "ean13", "upc a")),
+      "upc number", "ean number", "barcode number", "ean13", "upc a")),
+    ("Item Description 2", "Item description 2",
+     ("item description 2", "description 2", "web description 2",
+      "style name 2", "name 2")),
     ("Item Description", "Product name",
      ("item description", "description", "style name", "product name", "name",
       "article name", "style description", "product description",
@@ -51,7 +54,8 @@ FIELDS: list[tuple[str, str, tuple[str, ...]]] = [
     ("Material", "Material / composition",
      ("material", "material composition", "material description",
       "composition", "fabric comp", "fabric composition", "fabric",
-      "fabrication", "materials")),
+      "fabrication", "materials", "style detail content description",
+      "style content description", "content description", "fabric content")),
     ("Wholesale Price EUR", "Wholesale price",
      ("wholesale price eur", "wholesale price", "wholesale", "whs price",
       "whs", "whsl", "ws", "w s", "dt price", "cost price", "purchase price",
@@ -60,7 +64,8 @@ FIELDS: list[tuple[str, str, tuple[str, ...]]] = [
      ("retail eur", "retail price", "rrp", "msrp", "srp", "retail")),
     ("Duty Position", "HS code",
      ("duty position", "hs code", "hs", "hts", "hts code", "hs tariff",
-      "tariff code", "tariff", "commodity code", "customs code", "hs number")),
+      "tariff code", "tariff", "commodity code", "customs code", "hs number",
+      "rm hs number", "hs code number")),
     ("Country of Origin", "Country of origin",
      ("country of origin", "coo", "c o o", "origin", "made in", "country")),
     ("Brand", "Brand", ("brand", "brand name")),
@@ -127,7 +132,10 @@ def detect(headers: list[str], overrides: dict[str, str] | None = None) -> dict[
     taken: set[str] = set()
     out: dict[str, dict] = {}
 
-    # Brand rules first, then exact standard names, then aliases.
+    # Brand rules first, then exact standard names, then aliases. A rule may
+    # name a column per file ("Description | Style Name"); a rule naming a
+    # column this file does not have falls back to detection for this file,
+    # so a rule written for the product list never blanks the order sheet.
     for field in FIELD_NAMES:
         wanted = overrides.get(field)
         if wanted == NONE:
@@ -135,12 +143,12 @@ def detect(headers: list[str], overrides: dict[str, str] | None = None) -> dict[
                           "note": "brand rule: not in this brand's files"}
             continue
         if wanted:
-            real = by_norm.get(norm(wanted))
-            out[field] = ({"header": real, "source": "brand rule"} if real else
-                          {"header": "", "source": "missing",
-                           "note": f"brand rule says “{wanted}” but this file has no such column"})
-            if real:
-                taken.add(real)
+            for option in [w.strip() for w in str(wanted).split("|") if w.strip()]:
+                real = by_norm.get(norm(option))
+                if real and real not in taken:
+                    out[field] = {"header": real, "source": "brand rule"}
+                    taken.add(real)
+                    break
     for field in FIELD_NAMES:
         if field in out:
             continue
@@ -159,6 +167,21 @@ def detect(headers: list[str], overrides: dict[str, str] | None = None) -> dict[
                 break
         else:
             out[field] = {"header": "", "source": "missing"}
+
+    # Last resort, by the words in the header: HUF's "UPC Number" and
+    # "RM HS Number" carry the barcode and HS code under names no list holds.
+    for field, words in (("Barcode", {"upc", "ean", "gtin", "barcode"}),
+                         ("Duty Position", {"hs", "hts", "tariff"}),
+                         ("Material", {"content", "composition"})):
+        if out[field]["header"]:
+            continue
+        hits = [h for h in headers if h not in taken and words & set(norm(h).split())]
+        # A description beats a code: "Style Detail Content Desc" (100% NYLON)
+        # over "Style Content" (NYLN01).
+        hits.sort(key=lambda h: 0 if re.search(r"desc|name", str(h), re.I) else 1)
+        if hits:
+            out[field] = {"header": str(hits[0]), "source": "detected"}
+            taken.add(str(hits[0]))
 
     # A style code column the aliases did not name ("KOM-Code") — a header
     # that is just "<something> code" and not a colour, HS, EAN or size code.

@@ -159,7 +159,7 @@ def review_prices(rows, strategy, previous_by_sku=None) -> dict:
 # ── A first price list from the supplier's own prices ────────────────────────
 
 PRICE_LIST_COLUMNS = [
-    "Item No.", "Colour", "Item Description", "Supplier Currency",
+    "Item Code", "Style", "Colour", "Item Description", "Supplier Currency",
     "Supplier WHS", "Supplier RRP", "Supplier WHS EUR", "Supplier WHS USD",
     "Supplier WHS AED", "Flender Cost Prices (EUR-USD)", "Flender WHS USD",
     "Flender RRP USD", "Flender WHS AED", "Flender RRP AED",
@@ -168,7 +168,7 @@ PRICE_LIST_COLUMNS = [
 _TO_USD = {"USD": 1.0, "EUR": USD_PER_EUR, "AED": 1 / AED_PER_USD}
 
 
-def draft_price_list(rows) -> dict:
+def draft_price_list(rows, item_code=None) -> dict:
     """One line per style and colour, priced from the supplier's sheet.
 
     The step after processing: the supplier's cost is converted with the
@@ -182,7 +182,8 @@ def draft_price_list(rows) -> dict:
     for r in rows:
         style = str(r.get("Item No.") or "").strip()
         colour = str(r.get("Color") or "").strip()
-        key = (style.upper(), colour.upper())
+        code = (item_code(r) if item_code else "") or f"{style}-{colour.upper()}".strip("-")
+        key = code.upper()
         if not style or key in seen:
             continue
         seen.add(key)
@@ -196,7 +197,7 @@ def draft_price_list(rows) -> dict:
         currencies.add(cur or "unstated")
         usd = whs * _TO_USD[cur] if whs is not None and cur in _TO_USD else None
         out.append({
-            "Item No.": style, "Colour": colour,
+            "Item Code": code, "Style": style, "Colour": colour,
             "Item Description": str(r.get("Item Description") or "").strip(),
             "Supplier Currency": cur or "not stated",
             "Supplier WHS": whs, "Supplier RRP": rrp,
@@ -225,3 +226,86 @@ def draft_price_list(rows) -> dict:
     return {"columns": PRICE_LIST_COLUMNS, "rows": out, "exceptions": exceptions,
             "summary": {"rows": len(out), "draft": True,
                         "currencies": sorted(currencies)}}
+
+
+# ── The price list SAP takes: one row per item code ──────────────────────────
+#
+# SAP's price lists, as named in Flender's SAP (Price Lists window). A price
+# holds across sizes, so the list is per item code — style + colour — not per
+# size: a size-level list only made the same number to check many times over.
+
+SAP_PRICE_LISTS = [
+    "Flender RRP AED", "Flender WHS AED", "Official RRP USD", "Official RRP EUR",
+    "Official WHS EUR", "Flender RRP USD", "Flender WHS USD", "India Target RRP INR",
+    "Flender Cost Prices (EUR-USD)", "Turkish Target RRP USD",
+    "Flender Turkey RRP AED", "Flender Turkey WHS AED", "Flender RRP EUR",
+    "Flender WHS EUR", "Flender Turkey RRP USD", "Flender Turkey WHS USD",
+    "Official WHS USD", "Russia RRP USD", "Russia RRP EUR",
+]
+
+# Other spellings seen in Flender's own pricing files.
+_PRICE_ALIASES = {"flender cost price": "Flender Cost Prices (EUR-USD)",
+                  "flender cost prices": "Flender Cost Prices (EUR-USD)",
+                  "flender cost price (eur-usd)": "Flender Cost Prices (EUR-USD)"}
+
+
+def _price_key(header) -> str:
+    return " ".join(str(header or "").split()).lower()
+
+
+def price_list_columns(headers) -> dict[str, str]:
+    """SAP price list -> the header that holds it in this file.
+
+    Matched by name, ignoring case and stray spaces (HUF's file writes
+    ' Flender RRP AED ').
+    """
+    wanted = {_price_key(n): n for n in SAP_PRICE_LISTS}
+    wanted.update(_PRICE_ALIASES)
+    found: dict[str, str] = {}
+    for h in headers:
+        sap = wanted.get(_price_key(h))
+        if sap and sap not in found:
+            found[sap] = h
+    return found
+
+
+def sap_price_list(rows, item_code) -> dict:
+    """One row per item code with the SAP price lists the file carries.
+
+    ``item_code(row)`` returns the row's item code (style + colour). When the
+    sizes of one item disagree on a price, the first is kept and the item is
+    flagged, because SAP holds one price per item.
+    """
+    headers = list(rows[0].keys()) if rows else []
+    cols = price_list_columns(headers)
+    order = [n for n in SAP_PRICE_LISTS if n in cols]
+    items: dict[str, dict] = {}
+    differs: dict[str, set] = {}
+    for r in rows:
+        code = item_code(r)
+        if not code:
+            continue
+        item = items.setdefault(code, {
+            "Item Code": code, "Style": str(r.get("Item No.") or "").strip(),
+            "Colour": str(r.get("Color") or "").strip(),
+            "Item Description": str(r.get("Item Description") or "").strip()})
+        for name in order:
+            v = _num(r.get(cols[name]))
+            if v is None:
+                continue
+            if item.get(name) is None:
+                item[name] = round(v, 2)
+            elif abs(item[name] - v) > 0.01:
+                differs.setdefault(code, set()).add(name)
+
+    exceptions = [{
+        "sku": code, "field": "price per size", "subject": code, "severity": "warning",
+        "reason": f"sizes of {code} carry different {', '.join(sorted(names))} — "
+                  f"the first size's price is used",
+        "suggestion": "Check the price for this item"} for code, names in differs.items()]
+    out_rows = [{c: it.get(c) for c in ["Item Code", "Style", "Colour", "Item Description"] + order}
+                for it in items.values()]
+    return {"columns": ["Item Code", "Style", "Colour", "Item Description"] + order,
+            "rows": out_rows, "exceptions": exceptions,
+            "summary": {"rows": len(out_rows), "price_lists": order,
+                        "price_lists_missing": [n for n in SAP_PRICE_LISTS if n not in cols]}}

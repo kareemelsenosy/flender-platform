@@ -252,7 +252,8 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
                     f.parse_path, overrides, read_size_legend(f.parse_path))[0])
         if list_rows:
             rows, joined = combine(rows, list_rows,
-                                   scale_codes=scale_codes(rules["tables"]) | set(legend))
+                                   scale_codes=scale_codes(rules["tables"]) | set(legend),
+                                   include=set(getattr(job, "included_items", []) or []))
             report.update(joined)
     rows = expand_scale_rows(rows, rules["tables"], legend)
     rows = fill_from_collection(rows, job)
@@ -320,8 +321,15 @@ def fill_from_collection(rows: list[dict], job) -> list[dict]:
             row["Brand"] = brand
         item = str(row.get("Item No.") or "").strip()
         m = _SPLIT_STYLE.match(item)
-        if m and _blank(row.get("Colour Code")) and _abbreviates(m.group(2), row.get("Color")):
-            row["Item No."], row["Colour Code"] = m.group(1), m.group(2).upper()
+        code = str(row.get("Colour Code") or "").strip().upper()
+        if m and (_abbreviates(m.group(2), row.get("Color"))
+                  or (code and m.group(2).upper() == code)):
+            # 'JK00527-BLACK' is style JK00527 in BLACK. Split even when the
+            # product list already gave a colour code — leaving it whole made
+            # the item code 'JK00527-BLACK.BLACK', the colour twice.
+            row["Item No."] = m.group(1)
+            if not code:
+                row["Colour Code"] = m.group(2).upper()
         if _blank(row.get("SKU")):
             colour = (row.get("Colour Code") if not _blank(row.get("Colour Code"))
                       else row.get("Color"))
@@ -386,6 +394,7 @@ def generate(db, job, kind: str, decisions=None) -> dict:
                 "summary": {}}
 
     uses_base = bool(rules["settings"].get("uses_base_colour"))
+    uses_codes = bool(rules["settings"].get("uses_colour_codes"))
     colour_table = colour_table_lookup(rules["tables"])
 
     config = _brand_config(db, job)
@@ -393,6 +402,9 @@ def generate(db, job, kind: str, decisions=None) -> dict:
 
     colour_lookup = dict((config.colour_map if config else {}) or {})
     group_map = dict((config.group_map if config else {}) or {})
+    # The brand's product-group rules (taught, learned or decided) win.
+    from app.core.brand_rules import item_group_map
+    group_map.update(item_group_map(rules["tables"]))
 
     # Decisions already taken become part of the lookups, so an answered
     # question never comes back.
@@ -425,8 +437,10 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         out = build_creation_sheet(rows, season=job.season or "",
                                    vocab=vocab, lookup=colour_lookup,
                                    table=colour_table, temporary=temporary,
-                                   base_colour=uses_base)
+                                   base_colour=uses_base,
+                                   uses_colour_codes=uses_codes)
         _check_size_runs(db, job, out, rules)
+        out = _template_questions(out, kind, rules, job)
     elif kind == TEMP:
         out = build_temp_sheet(
             rows, brand=job.brand or "", season=job.season or "",
@@ -434,7 +448,10 @@ def generate(db, job, kind: str, decisions=None) -> dict:
             history=_history_from(reference, rows),
             earliest_ship_date=(config.earliest_ship_date if config else "") or "",
             colour_table=colour_table, temporary=temporary,
-            base_colour=uses_base)
+            base_colour=uses_base, size_tables=rules["tables"],
+            uses_colour_codes=uses_codes,
+            keep_upper=rules["settings"].get("keep_upper") or ())
+        out = _template_questions(out, kind, rules, job)
     elif kind == ATTRIBUTES:
         from app.core.attribute_engine import enrich_style
         from app.core.collection_attributes import (
@@ -493,25 +510,38 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         from app.core.collection_images import build_image_package
         supplied = [f.filename for f in job.files
                     if f.kind == intake_core.IMAGES]
+        # Photos read from the brand's picture links (Dropbox etc.).
+        supplied += list((getattr(job, "picture_index", {}) or {}).get("files", []))
         out = build_image_package(rows, reference=reference,
                                   supplied_files=supplied, decisions=decisions)
 
     elif kind == PRICING:
-        priced = {"Flender WHS USD", "Flender Cost Prices (EUR-USD)",
-                  "Flender RRP USD", "Flender WHS AED", "Flender RRP AED"}
-        if rows and not (priced & set(rows[0])):
+        from app.core.pricing import (
+            draft_price_list, price_list_columns, sap_price_list)
+        from app.core.sap_creation import item_colour_code
+
+        def code_of(r):
+            return item_colour_code(r.get("Item No."), r.get("Colour Code"),
+                                    r.get("Color"), uses_codes)
+
+        if not price_list_columns(list(rows[0].keys()) if rows else []):
             # Not a Flender price sheet: start the price list from the
             # supplier's own prices, for a person to finish.
-            from app.core.pricing import draft_price_list
-            out = draft_price_list(rows)
+            out = draft_price_list(rows, item_code=code_of)
             out["reference_note"] = ref_note
             return out
-        history = _price_history(reference)
-        strategy = learn_strategy(history) if history else {"known": False}
-        review = review_prices(rows, strategy)
-        out = {"columns": list(rows[0].keys()) if rows else [],
-               "rows": rows, "exceptions": review["exceptions"],
-               "summary": {**review["summary"], "strategy": strategy}}
+        out = sap_price_list(rows, code_of)
+        # The margin check, per item, wherever the sheet carries what it needs.
+        priced = [r for r in out["rows"]
+                  if r.get("Flender WHS USD") is not None
+                  and r.get("Flender Cost Prices (EUR-USD)") is not None]
+        if priced:
+            history = _price_history(reference)
+            strategy = learn_strategy(history) if history else {"known": False}
+            review = review_prices([{**r, "Item No.": r["Item Code"]} for r in priced],
+                                   strategy)
+            out["exceptions"] += review["exceptions"]
+            out["summary"]["strategy"] = strategy
     else:
         return {"error": f"unknown package {kind!r}", "columns": [], "rows": [],
                 "exceptions": [], "summary": {}}
@@ -844,8 +874,38 @@ def progress_of(run) -> dict:
             "pct": round(done / total * 100) if total else 0}
 
 
+def _template_questions(out: dict, kind: str, rules: dict, job) -> dict:
+    """Drop questions about columns this brand's template leaves out or fills
+    with a fixed value — asking about them only adds noise."""
+    from app.core.brand_rules import brand_key
+    from app.core.output_templates import template_for
+    tmpl = template_for(kind, rules["settings"], brand_key(job.brand or ""))
+    settled = {c["column"] for c in tmpl if not c.get("include") or c.get("value")}
+    # Fields that feed other columns are still worth knowing about.
+    settled -= {"Item No.", "Color", "Size", "Barcode"}
+    out["exceptions"] = [e for e in out.get("exceptions", [])
+                         if e.get("field") not in settled]
+    return out
+
+
 def _write_sheet(job, kind: str, out) -> str:
-    """Write the package to disk so it can be downloaded and handed to SAP."""
+    """Write the package to disk so it can be downloaded and handed to SAP.
+
+    TEMP and SAP Product Creation are written through the brand's template:
+    its columns, its order, its headings, its fixed values.
+    """
+    if kind in (TEMP, PRODUCT_CREATION):
+        try:
+            from sqlalchemy.orm import object_session
+            from app.core.brand_rules import brand_key
+            from app.core.output_templates import apply, template_for
+            from app.services.brand_rules import rules_for
+            db = object_session(job)
+            rules = rules_for(db, job.brand or "") if db else {"settings": {}}
+            out = apply(out, template_for(kind, rules["settings"],
+                                          brand_key(job.brand or "")))
+        except Exception:
+            pass                      # the full sheet is better than none
     folder = OUTPUT_DIR / f"collection_{job.id}"
     folder.mkdir(parents=True, exist_ok=True)
     name = f"{(job.brand or 'collection').replace(' ', '_')}_{job.season or ''}_{kind}.xlsx"
@@ -853,6 +913,39 @@ def _write_sheet(job, kind: str, out) -> str:
     columns = out.get("columns") or (list(out["rows"][0].keys()) if out["rows"] else [])
     pd.DataFrame(out["rows"], columns=columns).to_excel(path, index=False)
     return str(path)
+
+
+def apply_decisions(db, run, answers: dict, user_id=None):
+    """Record many answers at once and rebuild the package a single time.
+
+    Answering one question at a time rebuilt the package after each, and the
+    page reload threw away whatever had been typed into the other boxes.
+    """
+    decisions = run.decisions
+    for key, value in answers.items():
+        value = (value or "").strip()
+        if value:
+            decisions[key] = value
+    run.decisions = decisions
+    db.commit()
+    job = run.job
+    for key, value in answers.items():
+        field, _, subject = key.partition("::")
+        value = (value or "").strip()
+        if not (value and subject and job.brand):
+            continue
+        if field in ("BASE COLOR", "U_BaseColor"):
+            _record_colour_decision(db, job, subject, value, user_id)
+        elif field == "U_ItmsGrpCod":
+            from app.services import brand_rules as rules_svc
+            try:
+                rules_svc.edit_row(db, job.brand, "item_groups",
+                                   {"supplier": subject, "sap": value}, user_id=user_id,
+                                   source="decision", job_id=job.id,
+                                   reason=f"Decided while reviewing {job.label}")
+            except Exception:
+                db.rollback()
+    return run_package(db, job, run.kind)
 
 
 def apply_decision(db, run, key: str, value: str, user_id=None):
@@ -874,6 +967,16 @@ def apply_decision(db, run, key: str, value: str, user_id=None):
     field, _, subject = key.partition("::")
     if value and subject and job.brand and field in ("BASE COLOR", "U_BaseColor"):
         _record_colour_decision(db, job, subject, value, user_id)
+    if value and subject and job.brand and field == "U_ItmsGrpCod":
+        # A product group answered once is a rule for the brand.
+        from app.services import brand_rules as rules_svc
+        try:
+            rules_svc.edit_row(db, job.brand, "item_groups",
+                               {"supplier": subject, "sap": value}, user_id=user_id,
+                               source="decision", job_id=job.id,
+                               reason=f"Decided while reviewing {job.label}")
+        except Exception:
+            db.rollback()
     return run_package(db, job, run.kind)
 
 

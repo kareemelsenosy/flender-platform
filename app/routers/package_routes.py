@@ -37,7 +37,11 @@ def _options_for(field: str, job, db) -> list[str]:
             BrandConfig.brand == (job.brand or "")).first()
         learned = sorted({v for v in (config.colour_map or {}).values()}) if config else []
         return learned or DEFAULT_VOCAB
-    if field in ("U_ItmsGrpCod", "Main Waregroup"):
+    if field == "U_ItmsGrpCod":
+        # SAP's item groups (HOODYS, LONGSL, POLOS…), not the 8 master groups.
+        from app.core.attribute_taxonomy import ITEM_GROUP_TO_MASTER
+        return sorted(ITEM_GROUP_TO_MASTER)
+    if field == "Main Waregroup":
         from app.core.attribute_taxonomy import SAP_MASTER_GROUPS
         return list(SAP_MASTER_GROUPS)
     if field == "image_status":
@@ -133,6 +137,28 @@ async def decide(job_id: int, kind: str, request: Request,
                                           PackageRun.kind == kind).first()
         if run and not run.is_approved:
             pkg.apply_decision(db, run, key, value.strip(), user_id=uid)
+    return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
+                            status_code=302)
+
+
+@router.post("/collections/{job_id}/packages/{kind}/decide-all")
+async def decide_all(job_id: int, kind: str, request: Request,
+                     db: DBSession = Depends(get_db)):
+    """Apply every answer on the page in one go."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    job = _job(db, job_id, uid)
+    if job:
+        run = db.query(PackageRun).filter(PackageRun.job_id == job.id,
+                                          PackageRun.kind == kind).first()
+        if run and not run.is_approved:
+            form = await request.form()
+            # Each answer box is named "ans::<question key>".
+            answers = {k[len("ans::"):]: str(v) for k, v in form.items()
+                       if k.startswith("ans::") and str(v).strip()}
+            if answers:
+                pkg.apply_decisions(db, run, answers, user_id=uid)
     return RedirectResponse(f"/collections/{job_id}/packages/{kind}",
                             status_code=302)
 

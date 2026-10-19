@@ -48,7 +48,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 # Filename keywords, checked against the normalised stem. Order matters inside
 # each tuple only for readability; scoring below picks the strongest signal.
-_PRICE_WORDS = ("pricelist", "price list", "price", "prices", "rrp", "msrp",
+_PRICE_WORDS = ("pricelist", "price list", "pricing", "price", "prices", "rrp", "msrp",
                 "wholesale", "whsl", "cost")
 _ORDER_WORDS = ("ordersheet", "order sheet", "order form", "orderform",
                 "importsheet", "import sheet",
@@ -60,6 +60,8 @@ _PRODUCT_LIST_WORDS = ("hs code", "hs codes", "hscode", "hts", "upc", "tariff",
                        "customs", "product list", "productlist", "product data",
                        "master list", "masterlist", "item list", "itemlist",
                        "material list", "commodity")
+_NOT_PRODUCT_WORDS = ("deviation", "temp standard template", "standard template",
+                      "sap template", "data creation", "b2b management")
 _IMAGE_WORDS = ("image", "images", "photo", "photos", "picture", "pictures",
                 "packshot", "packshots", "visual", "visuals", "assets")
 
@@ -104,6 +106,10 @@ def classify_attachment(filename: str) -> str:
         return CATALOG
 
     if ext in SPREADSHEET_EXTS:
+        # Not product data to build from: a sales deviation list, or a SAP
+        # template / finished TEMP sheet kept for reference.
+        if _hits(name, _NOT_PRODUCT_WORDS):
+            return OTHER
         # "SU27 UPC HS code.xlsx" — the half of the data that carries HS codes.
         # A bare "HS" only counts as a whole word: it is inside too many others.
         product_list = max(_hits(name, _PRODUCT_LIST_WORDS),
@@ -220,7 +226,7 @@ _SEASON_CODES = {
     "ss": "SS", "sp": "SS", "spring": "SS", "summer": "SS",
     # HUF splits the year four ways (SP/SU/FA/HO) and SU27 is a different drop
     # from SP27, so its own letters are kept rather than folded into SS/FW.
-    "su": "SU", "fa": "FA",
+    "su": "SU", "fa": "FA", "wn": "HO",
     "fw": "FW", "aw": "FW", "fall": "FW", "autumn": "FW", "winter": "FW",
     "ho": "HO", "holiday": "HO", "resort": "RE", "pf": "PF", "prefall": "PF",
 }
@@ -236,7 +242,7 @@ def detect_season(*texts: str) -> str | None:
     blob = re.sub(r"[_\-/]+", " ", blob).lower()
 
     # Compact form first: SS27, FW 26, SP2027.
-    m = re.search(r"\b(ss|sp|su|fa|fw|aw|ho|pf)\s?((?:20)?\d{2})\b", blob)
+    m = re.search(r"\b(ss|sp|su|fa|fw|aw|ho|wn|pf)\s?((?:20)?\d{2})\b", blob)
     if m:
         return f"{_SEASON_CODES[m.group(1)]}{m.group(2)[-2:]}"
 

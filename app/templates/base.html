@@ -1302,13 +1302,25 @@
       } catch { return false; }
     }
 
+    // A file, not a page: package downloads end in /download, rule exports
+    // in /export. Fetching one and painting it as a page showed the raw
+    // spreadsheet bytes and pushed the download URL into the history, so
+    // every page after it looked broken until a reload.
+    const FILE_PATH = /\/(download|download-zip|export)(\/|$)|\.(xlsx|xls|csv|zip|pdf)$/i;
+
     function canInstantNav(href) {
       try {
         const url = new URL(href, location.origin);
         if (url.origin !== location.origin) return false;
         if (SKIP.some(s => url.pathname === s || url.pathname.startsWith(s + '/'))) return false;
+        if (FILE_PATH.test(url.pathname)) return false;
         return true;
       } catch { return false; }
+    }
+
+    // Only an HTML response may be painted into the page.
+    function isHtml(r) {
+      return ((r.headers.get('content-type') || '').toLowerCase()).includes('text/html');
     }
 
     // Full document replace — used when navigating between layouts (login ↔ app)
@@ -1331,7 +1343,7 @@
         if (Object.keys(cache).length >= MAX_CACHED) delete cache[Object.keys(cache)[0]];
         inflight++;
         cache[key] = fetch(url.href, { credentials: 'same-origin' })
-          .then(r => r.ok ? r.text() : null)
+          .then(r => (r.ok && isHtml(r)) ? r.text() : null)
           .catch(() => null)
           .finally(() => { inflight--; });
       }, HOVER_INTENT_MS);
@@ -1379,6 +1391,8 @@
           const r = await fetch(url.href, { credentials: 'same-origin' });
           // Server redirected us (e.g. session expired → /login) — follow it
           if (!r.ok || r.redirected) { location.href = r.url || href; return; }
+          // A file: let the browser download it the ordinary way.
+          if (!isHtml(r)) { finishBar(); location.href = href; return; }
           html = await r.text();
         }
 
@@ -1473,8 +1487,9 @@
           credentials: 'same-origin',
           redirect: 'follow',
         });
-        const html = await r.text();
         const finalUrl = r.url;
+        if (!isHtml(r)) { finishBar(); location.href = finalUrl; return; }
+        const html = await r.text();
         if (!canInstantNav(finalUrl)) { writeDoc(html, finalUrl); return; }
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const newMain = doc.querySelector('.main-content');

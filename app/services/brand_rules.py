@@ -42,8 +42,25 @@ def view(rs) -> dict:
     """Settings and tables with defaults filled, for reading and display."""
     seed = core.seed_for(rs.brand if rs else "")
     settings = {**seed["settings"], **(rs.settings if rs else {})}
-    tables = {name: list((rs.tables if rs else {}).get(name, []))
-              for name in core.TABLE_ORDER}
+    stored = rs.tables if rs else {}
+    tables = {}
+    for name in core.TABLE_ORDER:
+        if name not in stored:
+            # A table this brand has never had (added to the tool after the
+            # brand was set up) starts from the seed.
+            tables[name] = [dict(r) for r in seed["tables"].get(name, [])]
+            continue
+        rows = [dict(r) for r in stored[name]]
+        # Seed values fill cells that are still blank — a column added later
+        # (the ring prefix) — and never overwrite what staff entered.
+        by_key = {core.row_key(name, r): r for r in seed["tables"].get(name, [])}
+        for r in rows:
+            src = by_key.get(core.row_key(name, r))
+            if src:
+                for k, v in src.items():
+                    if v and not str(r.get(k) or "").strip():
+                        r[k] = v
+        tables[name] = rows
     return {"settings": settings, "tables": tables}
 
 
@@ -101,7 +118,7 @@ def edit_row(db, brand: str, table: str, row: dict, *, user_id=None,
     if table not in core.TABLES:
         raise ValueError(f"unknown table {table!r}")
     rs = get_rules(db, brand)
-    tables = rs.tables
+    tables = view(rs)["tables"]
     rows, old = core.upsert_row(tables.get(table, []), table, row)
     tables[table] = rows
     rs.tables = tables
@@ -116,7 +133,7 @@ def edit_row(db, brand: str, table: str, row: dict, *, user_id=None,
 
 def remove_row(db, brand: str, table: str, key_value: str, *, user_id=None) -> bool:
     rs = get_rules(db, brand)
-    tables = rs.tables
+    tables = view(rs)["tables"]
     rows, old = core.delete_row(tables.get(table, []), table, key_value)
     if old is None:
         return False
@@ -147,7 +164,7 @@ def import_colour_table(db, brand: str, path: str, *, user_id=None,
     """Load the brand's Seasonal Colour Table into its rules."""
     parsed = core.parse_colour_workbook(path)
     rs = get_rules(db, brand)
-    tables = rs.tables
+    tables = view(rs)["tables"]
     for table in ("colours", "stat_codes"):
         tables[table] = core.upsert_many(tables.get(table, []), table, parsed[table])
     rs.tables = tables
@@ -209,7 +226,7 @@ def decide_change(db, change_id: int, approve: bool, *, user_id=None,
 
     row = {**change.row, **{k: v for k, v in (override or {}).items() if v is not None}}
     rs = db.query(BrandRuleSet).filter_by(brand_key=change.brand_key).first()
-    tables = rs.tables
+    tables = view(rs)["tables"]
     rows, old = core.upsert_row(tables.get(change.table_name, []),
                                 change.table_name, row)
     tables[change.table_name] = rows
@@ -310,3 +327,124 @@ def history(db, brand: str, limit: int = 60) -> list:
             .filter(RuleChange.brand_key == core.brand_key(brand),
                     RuleChange.status.notin_(("pending", "superseded")))
             .order_by(RuleChange.created_at.desc()).limit(limit).all())
+
+
+# ── Templates and learning ───────────────────────────────────────────────────
+
+def save_template(db, brand: str, package: str, entries: list[dict], *,
+                  user_id=None, reason: str = "", source: str = "staff") -> None:
+    """Store a brand's column template for one package (None resets it)."""
+    from app.core.output_templates import clean
+    rs = get_rules(db, brand)
+    settings = view(rs)["settings"]
+    templates = dict(settings.get("templates") or {})
+    if entries is None:
+        templates.pop(package, None)
+    else:
+        templates[package] = clean(package, entries)
+    settings["templates"] = templates
+    rs.settings = settings
+    rs.updated_by_id = user_id
+    included = sum(1 for e in templates.get(package, []) if e.get("include"))
+    _log(db, rs, "templates", "template",
+         {"package": package,
+          "columns": included if entries is not None else "standard"},
+         None, reason=reason, source=source, user_id=user_id)
+    db.commit()
+
+
+def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
+                  user_id=None, job_id=None) -> list[str]:
+    """Write what a finished sheet taught into the brand's rules.
+
+    Applied directly: a finished sheet is a person's answer, not a guess.
+    Returns plain sentences of what changed, for the page.
+    """
+    rs = get_rules(db, brand)
+    tables = view(rs)["tables"]
+    done: list[str] = []
+    why = f"Learned from the finished sheet {filename}".strip()
+
+    groups = learned.get("item_groups") or {}
+    if groups.get("column"):
+        tables["columns"], _ = core.upsert_row(
+            tables.get("columns", []), "columns",
+            {"field": "Item Group", "header": groups["column"]})
+        rows = [{"supplier": val, "sap": ", ".join(g)} for val, g in groups["map"].items()]
+        tables["item_groups"] = core.upsert_many(tables.get("item_groups", []),
+                                                 "item_groups", rows)
+        done.append(f"Product group read from the “{groups['column']}” column: "
+                    f"{groups['total']} categories mapped to SAP item groups "
+                    f"({groups['clean']} map to exactly one).")
+    if learned.get("size_lists"):
+        tables["size_lists"] = core.upsert_many(tables.get("size_lists", []),
+                                                "size_lists", learned["size_lists"])
+        done.append(f"{len(learned['size_lists'])} SAP size lists with their sort indexes "
+                    f"({', '.join(r['list_code'] for r in learned['size_lists'])}).")
+    rs.tables = tables
+    rs.updated_by_id = user_id
+    _log(db, rs, "learned", "learn", {"file": filename, "lines": learned.get("lines"),
+                                      "matched": learned.get("matched")},
+         None, reason=why + ". " + " ".join(done), source="learned",
+         user_id=user_id, job_id=job_id)
+    db.commit()
+
+    if learned.get("keep_upper"):
+        settings = view(rs)["settings"]
+        words = sorted(set(settings.get("keep_upper") or []) | set(learned["keep_upper"]))
+        settings["keep_upper"] = words
+        rs.settings = settings
+        db.commit()
+        done.append(f"Words kept in capitals in descriptions: {', '.join(learned['keep_upper'])}.")
+
+    template, constants = learned.get("template") or ([], {})
+    if template:
+        save_template(db, brand, "temp", template, user_id=user_id, reason=why,
+                      source="learned")
+        fixed = ", ".join(f"{k} = {v}" for k, v in constants.items())
+        done.append(f"TEMP columns set to the sheet's {len(template)} columns"
+                    + (f"; fixed values {fixed}." if fixed else "."))
+    return done
+
+
+def generate_base_rules(db, brand: str, mappings: dict, legend: dict, *,
+                        job_id=None, source_files: str = "") -> list[str]:
+    """The first time a brand's files are read, write down what was found.
+
+    The specification: the programme generates the base rules for a brand,
+    then hands control to staff. Detected column mappings and the size-scale
+    letters an order form defines become the brand's rules — visible, editable
+    and in the history — instead of being worked out silently every time.
+    Tables that already hold rules are left exactly as they are.
+    """
+    rs = get_rules(db, brand)
+    tables = view(rs)["tables"]
+    done: list[str] = []
+
+    if not tables.get("columns"):
+        per_field: dict[str, list[str]] = {}
+        for m in (mappings or {}).values():
+            for field, info in (m.get("fields") or {}).items():
+                header = (info or {}).get("header")
+                if header and info.get("source") in ("detected", "same name"):
+                    per_field.setdefault(field, [])
+                    if header not in per_field[field]:
+                        per_field[field].append(header)
+        rows = [{"field": f, "header": " | ".join(h)} for f, h in per_field.items()]
+        if rows:
+            tables["columns"] = core.upsert_many([], "columns", rows)
+            done.append(f"{len(rows)} column mappings")
+
+    if legend and not tables.get("size_codes"):
+        rows = [{"order_code": code, "meaning": ", ".join(sizes[:2]) + ("…" if len(sizes) > 2 else ""),
+                 "sizes": ", ".join(sizes)} for code, sizes in legend.items()]
+        tables["size_codes"] = core.upsert_many([], "size_codes", rows)
+        done.append(f"{len(rows)} size-scale codes from the order form's legend")
+
+    if done:
+        rs.tables = tables
+        _log(db, rs, "base", "generate", {"file": source_files, "made": done}, None,
+             reason="Base rules generated the first time this brand's files were read",
+             source="generated", job_id=job_id)
+        db.commit()
+    return done

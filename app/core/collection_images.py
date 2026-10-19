@@ -44,6 +44,34 @@ def _first(row: dict, *names: str) -> str:
     return ""
 
 
+def _flat(name) -> str:
+    """Upper-case, with dashes, spaces and dots read as underscores: the
+    order sheet's JK00532-TAN and the photo's JK00532_TAN are the same."""
+    import re as _re
+    return "_" + _re.sub(r"[\s\-./]+", "_", str(name or "").upper()) + "_"
+
+
+def matching_photos(style: str, code: str, colour: str, flat_names) -> list[int]:
+    """Indexes of the photos whose name carries this product.
+
+    Style + colour code first (HUF: ..._JK00532_TAN_01.jpg), then style +
+    colour name, then the style alone when there is no colour to go by.
+    """
+    s = _flat(style).strip("_")
+    if not s:
+        return []
+    for colour_part in (code, colour):
+        c = _flat(colour_part).strip("_")
+        if c:
+            key = f"_{s}_{c}_"
+            hits = [i for i, n in enumerate(flat_names) if key in n]
+            if hits:
+                return hits
+    if not code and not colour:
+        return [i for i, n in enumerate(flat_names) if f"_{s}_" in n]
+    return []
+
+
 def build_image_package(rows, *, reference=None, supplied_files=None,
                         decisions=None) -> dict:
     """Per style-colour: does an image exist, and if not, what is its status?
@@ -52,7 +80,7 @@ def build_image_package(rows, *, reference=None, supplied_files=None,
     or when the supplier's image package contains a file naming it. Anything
     else is open work, and its status is whatever a human last set.
     """
-    supplied = {str(n).lower() for n in (supplied_files or [])}
+    supplied = [_flat(n) for n in (supplied_files or [])]
     decisions = decisions or {}
     out_rows, exceptions = [], []
     seen: set[str] = set()
@@ -72,12 +100,14 @@ def build_image_package(rows, *, reference=None, supplied_files=None,
             known = reference.known_values(style=style, colour=colour) or {}
 
         in_sap = bool(known.get("has_images"))
-        in_drop = any(style.lower() in name for name in supplied)
+        code = _first(row, "Colour Code", "Color Code")
+        photos = matching_photos(style, code, colour, supplied)
+        in_drop = bool(photos)
 
         if in_sap:
             status, source = APPROVED, "already in SAP"
         elif in_drop:
-            status, source = REVIEW_REQUIRED, "in the supplier image package"
+            status, source = REVIEW_REQUIRED, f"{len(photos)} photo(s) from the brand"
         else:
             status, source = MISSING, ""
 

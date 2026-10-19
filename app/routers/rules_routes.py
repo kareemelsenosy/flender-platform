@@ -18,6 +18,7 @@ from app.auth import get_current_user_id
 from app.core import brand_rules as core
 from app.core.base_color import DEFAULT_VOCAB
 from app.core.field_mapping import FIELD_NAMES, PLAIN_NAMES
+from app.core.output_templates import PACKAGES, template_for
 from app.database import get_db
 from app.models import BrandRuleSet, CollectionJob, RuleChange, User
 from app.services import brand_rules as svc
@@ -152,8 +153,52 @@ async def rules_detail(key: str, request: Request, db: DBSession = Depends(get_d
         "users": users, "jobs": jobs, "vocab": vocab,
         "field_names": FIELD_NAMES, "plain_names": PLAIN_NAMES,
         "training": svc.training_mode(db),
+        "templates": {p: template_for(p, v["settings"], rs.brand_key) for p in PACKAGES},
+        "package_names": PACKAGES,
         "note": request.session.pop("rules_note", ""),
     })
+
+
+@router.post("/brand-rules/{key}/template/{package}")
+async def rules_save_template(key: str, package: str, request: Request,
+                              db: DBSession = Depends(get_db)):
+    """Save which columns this brand's TEMP or SAP Product Creation sheet has."""
+    from app.core.output_templates import PACKAGES
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    if package not in PACKAGES:
+        return _back(key)
+    rs = _ruleset(db, key)
+    form = await request.form()
+    if form.get("reset"):
+        svc.save_template(db, rs.brand, package, None, user_id=uid,
+                          reason="Reset to the standard template")
+        request.session["rules_note"] = f"{PACKAGES[package]} reset to the standard template."
+        return _back(key, "#templates")
+    entries = []
+    i = 0
+    while f"col_{i}" in form:
+        try:
+            pos = float(form.get(f"pos_{i}") or i)
+        except ValueError:
+            pos = i
+        entries.append((pos, i, {"column": form.get(f"col_{i}"),
+                                 "label": form.get(f"label_{i}"),
+                                 "include": form.get(f"inc_{i}") == "on",
+                                 "value": form.get(f"value_{i}")}))
+        i += 1
+    new_col = str(form.get("new_column") or "").strip()
+    if new_col:
+        entries.append((len(entries) + 1, i, {"column": new_col, "label": new_col,
+                                              "include": True,
+                                              "value": form.get("new_value") or ""}))
+    entries.sort(key=lambda e: (e[0], e[1]))
+    svc.save_template(db, rs.brand, package, [e[2] for e in entries], user_id=uid,
+                      reason="Edited on Brand Rules")
+    shown = sum(1 for e in entries if e[2]["include"])
+    request.session["rules_note"] = f"{PACKAGES[package]} saved — {shown} columns. Regenerate packages to use it."
+    return _back(key, "#templates")
 
 
 @router.post("/brand-rules/{key}/rows")

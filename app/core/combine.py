@@ -21,6 +21,12 @@ import re
 # stamp one size's barcode onto every size.
 LINE_FIELDS = {"Size", "Barcode", "SKU", "Quantity", "Units", "Qty"}
 
+# The product list is the brand's master data; the order sheet is an order.
+# Where both describe the product, the list's wording is the one SAP gets
+# (HUF: "T1 KCUF SHELL JACKET" in the list, "T1-KCUF SHELL JACKET" ordered).
+LIST_WINS = {"Item Description", "Item Description 2", "Material",
+             "Duty Position", "Country of Origin", "Sex"}
+
 
 def _n(value) -> str:
     text = str(value or "").strip()
@@ -66,7 +72,8 @@ def _item_key(row: dict) -> str:
 
 
 def combine(order_rows: list[dict], list_rows: list[dict], *,
-            scale_codes: set[str] | None = None) -> "tuple[list[dict], dict]":
+            scale_codes: set[str] | None = None,
+            include: "set[str] | None" = None) -> "tuple[list[dict], dict]":
     """Join the product list onto the order sheet.
 
     ``scale_codes`` are size values that name a whole size scale rather than
@@ -103,7 +110,7 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
                 continue
             if not line_level and k in LINE_FIELDS:
                 continue
-            if _blank(new.get(k)):
+            if _blank(new.get(k)) or k in LIST_WINS:
                 new[k] = v
                 added_fields.add(k)
         return new
@@ -161,13 +168,23 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
         else:
             out.append(merge(row, matches[0], False))
 
+    # Items only in the product list that a person chose to keep join the
+    # collection, one line per size, exactly as the list has them.
+    include = {i.strip().upper() for i in (include or set())}
     only_in_list: dict[str, str] = {}
+    added = 0
     for r in list_rows:
         if id(r) in used:
             continue
         key = _item_key(r)
-        if key:
-            only_in_list.setdefault(key, _item_label(r))
+        if not key:
+            continue
+        label = _item_label(r)
+        if label.upper() in include:
+            out.append(dict(r))
+            added += 1
+            continue
+        only_in_list.setdefault(key, label)
 
     order_items = {_item_key(r) for r in order_rows if _item_key(r)}
     list_items = {_item_key(r) for r in list_rows if _item_key(r)}
@@ -181,6 +198,8 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
         "only_in_list_count": len(only_in_list),
         "fields_added": sorted(f for f in added_fields if f[:1] != "_"),
         "lines_expanded": expanded,
+        "added_from_list": added,
+        "included": sorted(include),
         "rows_out": len(out),
     }
     return out, report

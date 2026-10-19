@@ -31,10 +31,12 @@ def test_season_code(season, expected):
 
 
 def test_unknown_season_is_refused_not_guessed():
-    # Holiday has no slot defined; inventing one would silently mis-file a
-    # whole collection in SAP.
-    code, reason = season_code("HO26")
-    assert code is None and "HO" in reason
+    # A season letter with no slot defined must not be guessed: inventing one
+    # would silently mis-file a whole collection in SAP. (Holiday is defined:
+    # Flender confirmed HUF HO26 is 2026-04.)
+    code, reason = season_code("XX26")
+    assert code is None and "XX" in reason
+    assert season_code("HO26")[0] == "2026-04"
 
 
 def test_malformed_season_is_refused():

@@ -313,6 +313,25 @@
       </div>
       <textarea name="links" rows="3" placeholder="https://…"
         style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--gray-200,#e4e4e4);border-radius:8px;font:inherit;font-size:0.82rem">{{ job.picture_links|join('\n') }}</textarea>
+      {% set pidx = job.picture_index %}
+      {% if job.picture_links %}
+      <div id="picture-status" data-status="{{ pidx.get('status', '') }}" style="font-size:0.8rem;margin:6px 0;color:{% if pidx.get('status') == 'error' %}#993325{% else %}#2c5e48{% endif %}">
+        {% if pidx.get('status') == 'reading' %}Reading the link — a Dropbox folder can take a few minutes…
+        {% elif pidx.get('status') == 'done' %}{{ pidx.get('files', [])|length }} product photos read from the link{% if pidx.get('error') %} (some links failed: {{ pidx.get('error') }}){% endif %}. Generate the image package to match them.
+        {% elif pidx.get('status') == 'error' %}Could not read the link: {{ pidx.get('error') }}
+        {% endif %}
+      </div>
+      {% if pidx.get('status') == 'reading' %}
+      <script>
+        (function poll() {
+          fetch("/collections/{{ job.id }}/picture-status").then(r => r.json()).then(d => {
+            if (d.status && d.status !== "reading") { location.reload(); return; }
+            setTimeout(poll, 5000);
+          }).catch(() => setTimeout(poll, 10000));
+        })();
+      </script>
+      {% endif %}
+      {% endif %}
       {% for link in job.picture_links %}
       <div style="font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="{{ link }}" target="_blank" rel="noopener" style="color:#33536e">{{ link }}</a></div>
       {% endfor %}
@@ -342,17 +361,40 @@
       {% if cb.fields_added %}Brought in from the product list: {{ cb.fields_added[:12]|join(', ') }}.{% endif %}
       {% if cb.lines_expanded %} {{ cb.lines_expanded }} extra lines created where one order line covered a whole size scale.{% endif %}
     </div>
-    {% for title, items, count in [('In the order sheet but not the product list (no HS code)', cb.only_in_order, cb.only_in_order_count),
-                                    ('In the product list but not the order sheet', cb.only_in_list, cb.only_in_list_count)] %}
-    {% if items %}
+    {% if cb.only_in_order %}
     <details style="margin-top:10px">
-      <summary style="cursor:pointer;font-size:0.85rem;font-weight:600">{{ title }} ({{ count }})</summary>
+      <summary style="cursor:pointer;font-size:0.85rem;font-weight:600">In the order sheet but not the product list — no HS code ({{ cb.only_in_order_count }})</summary>
       <div style="font-family:ui-monospace,Menlo,monospace;font-size:0.76rem;color:var(--gray-500,#777);margin-top:6px;line-height:1.7">
-        {{ items|join(' · ') }}{% if count > items|length %} … and {{ count - items|length }} more{% endif %}
+        {{ cb.only_in_order|join(' · ') }}{% if cb.only_in_order_count > cb.only_in_order|length %} … and {{ cb.only_in_order_count - cb.only_in_order|length }} more{% endif %}
       </div>
     </details>
     {% endif %}
-    {% endfor %}
+    {% if cb.only_in_list %}
+    <details open style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:0.85rem;font-weight:600">In the product list but not the order sheet ({{ cb.only_in_list_count }})</summary>
+      <form action="/collections/{{ job.id }}/include-items" method="post" style="margin-top:8px">
+        <div style="font-size:0.8rem;color:var(--gray-500,#777);margin-bottom:6px">
+          Tick the ones that belong in this collection — they are added to every package, one line per size, from the product list.
+        </div>
+        {% for item in cb.only_in_list[:200] %}
+        <label style="display:inline-flex;align-items:center;gap:5px;margin:2px 14px 2px 0;font-family:ui-monospace,Menlo,monospace;font-size:0.78rem">
+          <input type="checkbox" name="add" value="{{ item }}"> {{ item }}
+        </label>
+        {% endfor %}
+        <div><button type="submit" style="margin-top:8px;padding:6px 14px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.82rem">Add ticked items to the collection</button></div>
+      </form>
+    </details>
+    {% endif %}
+    {% if cb.included %}
+    <form action="/collections/{{ job.id }}/include-items" method="post" style="margin-top:10px;font-size:0.82rem;color:#2c5e48">
+      Added from the product list ({{ cb.added_from_list }} lines):
+      {% for item in cb.included %}
+      <span style="font-family:ui-monospace,Menlo,monospace;margin-right:8px">{{ item }}
+        <button type="submit" name="remove" value="{{ item }}" title="Take it out again"
+          style="background:none;border:0;color:#993325;cursor:pointer;font-size:0.78rem">undo</button></span>
+      {% endfor %}
+    </form>
+    {% endif %}
     {% endif %}
   </div>
   {% endif %}
@@ -368,39 +410,71 @@
   {% if mapping_note %}
   <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:0.85rem;color:#33536e">{{ mapping_note }}</div>
   {% endif %}
-  {% for fid, m in maps.items() %}
   <form action="/collections/{{ job.id }}/mapping" method="post"
         style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;overflow:hidden;margin-bottom:12px">
-    <input type="hidden" name="file_id" value="{{ fid }}">
-    <div style="padding:11px 16px;border-bottom:1px solid var(--gray-100,#f4f4f4);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-      <span><strong style="font-size:0.9rem">{{ m.file }}</strong>
-        <span style="font-size:0.78rem;color:var(--gray-500,#777)"> · {{ labels.get(m.kind, m.kind) }}</span></span>
-      <button type="submit" style="padding:5px 13px;background:#111;color:#fff;border:0;border-radius:7px;font-weight:600;cursor:pointer;font-size:0.8rem">Save mapping</button>
-    </div>
+    <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:0.84rem">
+      <thead>
+        <tr style="background:#fafafa">
+          <th style="padding:10px 16px;text-align:left;font-size:0.72rem;letter-spacing:.05em;text-transform:uppercase;color:var(--gray-500,#777)">Field</th>
+          {% for fid, m in maps.items() %}
+          <th style="padding:10px 8px;text-align:left">
+            <strong style="font-size:0.85rem">{{ m.file }}</strong>
+            <div style="font-size:0.74rem;font-weight:400;color:var(--gray-500,#777)">{{ labels.get(m.kind, m.kind) }}</div>
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
       {% for f in field_names %}
-      {% set cur = m.fields.get(f, {}) %}
+      {% set found_in = [] %}
+      {% for fid, m in maps.items() %}{% if (m.fields.get(f) or {}).get('header') %}{% set _ = found_in.append(m.file) %}{% endif %}{% endfor %}
       <tr style="border-top:1px solid var(--gray-100,#f6f6f6)">
-        <td style="padding:6px 16px;width:36%">
+        <td style="padding:6px 16px;white-space:nowrap">
           {{ plain_names[f] }}
-          {% if f in essential_fields and not cur.get('header') %}<span style="color:#993325;font-size:0.74rem;font-weight:600"> · missing</span>{% endif %}
+          {% if f in essential_fields and not found_in %}<span style="color:#993325;font-size:0.74rem;font-weight:600"> · missing in every file</span>{% endif %}
         </td>
-        <td style="padding:6px 8px">
-          <select name="col::{{ f }}" style="padding:5px 8px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.82rem;max-width:280px">
+        {% for fid, m in maps.items() %}
+        {% set cur = m.fields.get(f, {}) %}
+        <td style="padding:6px 8px;vertical-align:top">
+          <select name="col::{{ fid }}::{{ f }}" style="padding:5px 8px;border:1px solid var(--gray-200,#e4e4e4);border-radius:7px;font:inherit;font-size:0.82rem;max-width:240px">
             <option value="">— not in this file —</option>
             {% if cur.get('source') == 'brand rule' %}<option value="__auto">— detect automatically —</option>{% endif %}
             {% for h in m.headers %}<option value="{{ h }}" {% if cur.get('header') == h %}selected{% endif %}>{{ h|replace('\n', ' ') }}</option>{% endfor %}
           </select>
+          <div style="font-size:0.72rem;margin-top:2px;color:var(--gray-400,#999)">
+            {% if cur.get('header') %}{{ cur.get('note') or cur.get('source', '') }}
+            {% elif found_in %}<span style="color:#1b6e4f">comes from {{ found_in|join(', ') }}</span>
+            {% else %}{{ cur.get('note') or '' }}{% endif %}
+          </div>
         </td>
-        <td style="padding:6px 16px;font-size:0.74rem;color:var(--gray-400,#999)">
-          {{ cur.get('note') or cur.get('source', '') }}
-        </td>
+        {% endfor %}
       </tr>
       {% endfor %}
+      </tbody>
     </table>
+    </div>
+    <div style="padding:11px 16px;border-top:1px solid var(--gray-100,#f4f4f4);display:flex;justify-content:flex-end">
+      <button type="submit" style="padding:8px 18px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.84rem">Save mapping for all files</button>
+    </div>
   </form>
-  {% endfor %}
   {% endif %}
+
+  <!-- Teach the brand from a finished sheet -->
+  <h2 id="learn" style="font-size:1.05rem;font-weight:700;margin:24px 0 6px">Teach {{ job.brand or 'the brand' }} from a finished TEMP</h2>
+  <p style="font-size:0.84rem;color:var(--gray-500,#777);margin:0 0 10px;max-width:720px">
+    Upload a TEMP sheet someone already corrected by hand for this collection (or an earlier one). The system matches it
+    to these files and learns the brand's rules from it — which column gives the SAP item group and how each category maps,
+    the SAP size lists and sort indexes, the TEMP columns and fixed values — so the next collection comes out the same way.
+  </p>
+  {% if learn_note %}
+  <div style="background:#eef4f9;border:1px solid #d6e3ee;border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.85rem;color:#33536e">{{ learn_note }}</div>
+  {% endif %}
+  <form action="/collections/{{ job.id }}/learn" method="post" enctype="multipart/form-data"
+        style="background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:12px 16px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <input type="file" name="file" accept=".xlsx,.xls" required style="font-size:0.82rem">
+    <button type="submit" style="padding:7px 15px;background:#111;color:#fff;border:0;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.83rem">Learn from this sheet</button>
+  </form>
 
   <!-- Files, with the detected kind correctable -->
   <h2 style="font-size:1.05rem;font-weight:700;margin:24px 0 12px">Files received</h2>
