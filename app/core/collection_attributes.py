@@ -75,7 +75,7 @@ def styles_from_rows(rows, *, brand: str = "", season: str = "") -> list[dict]:
     """
     styles: dict[str, dict] = {}
     for row in rows:
-        code = _first(row, "Style Number", "Item No.", "Style Code", "item_code")
+        code = _first(row, "Item No.", "Style Number", "Style Code", "item_code")
         if not code:
             continue
         name = _first(row, "Name", "Item Description", "Description",

@@ -710,3 +710,18 @@ def test_a_category_with_two_sap_groups_is_settled_by_the_product_name():
                            earliest_ship_date="2026-10-15", base_colour=False)
     assert [r["U_ItmsGrpCod"] for r in out["rows"]] == ["HOODYS", "JACKETS"]
     assert not any(e["field"] == "U_ItmsGrpCod" for e in out["exceptions"])
+
+
+def test_images_and_attributes_use_the_cleaned_style_not_the_raw_column():
+    """Live HUF: rows keep the raw 'Style Number' (JK00527-BLACK) next to the
+    cleaned style (JK00527). Reading the raw one matched 1 photo of 162 and
+    ran attributes per colourway instead of per style."""
+    from app.core.collection_images import build_image_package
+    from app.core.collection_attributes import styles_from_rows
+    rows = [{"Style Number": f"JK00527-{c}", "Item No.": "JK00527", "Colour Code": c,
+             "Color": c, "Size": "M"} for c in ("BLACK", "OLIVE")]
+    out = build_image_package(rows, supplied_files=[
+        "SILVERADO-JACKET_BLACK_JK00527_BLACK_01.jpg",
+        "SILVERADO-JACKET_OLIVE_JK00527_OLIVE_01.jpg"])
+    assert all(r["status"] != "missing" for r in out["rows"])
+    assert [s["style_code"] for s in styles_from_rows(rows)] == ["JK00527"]

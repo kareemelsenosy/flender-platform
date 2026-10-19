@@ -732,7 +732,7 @@ def _history_from(reference, rows) -> dict:
         return {}
     history: dict[str, dict] = {}
     for r in rows:
-        style = str(r.get("Style Number") or r.get("Item No.") or "").strip()
+        style = str(r.get("Item No.") or r.get("Style Number") or "").strip()
         if not style or style in history:
             continue
         known = reference.known_values(style=style,

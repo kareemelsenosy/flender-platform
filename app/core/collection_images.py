@@ -86,7 +86,7 @@ def build_image_package(rows, *, reference=None, supplied_files=None,
     seen: set[str] = set()
 
     for row in rows:
-        style = _first(row, "Style Number", "Item No.", "Style Code", "item_code")
+        style = _first(row, "Item No.", "Style Number", "Style Code", "item_code")
         colour = _first(row, "Color", "Colour", "color_name")
         if not style:
             continue
