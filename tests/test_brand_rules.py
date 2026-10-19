@@ -738,3 +738,11 @@ def test_attributes_take_the_group_from_the_brands_rules():
                                                "C&S ZIP FLEECE": ["HOODYS", "JACKETS"]})
     assert [s["master_group"] for s in styles] == ["ACCS", "JACKETS"]
     assert styles_from_rows([{"Item No.": "X", "Item Description": "Knit Beanie"}])[0]["master_group"] == "ACCS"
+
+
+def test_product_creation_writes_hs_codes_as_digits():
+    from app.core.sap_creation import build_row
+    row, _ = build_row({"Item No.": "JK1", "Duty Position": "6201.40.5011", "Color": "BLACK"},
+                       season="HO26", collection="Main", base_colour=False,
+                       uses_colour_codes=False)
+    assert row["Duty Position"] == "6201405011"

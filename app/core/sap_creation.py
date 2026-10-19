@@ -196,6 +196,10 @@ def build_row(src: dict, *, season: str, collection: str,
             if direct:
                 out[col] = direct
 
+    # SAP holds an HS code as digits (62034259); suppliers write 6201.40.5011.
+    if out["Duty Position"]:
+        out["Duty Position"] = re.sub(r"\D", "", out["Duty Position"])
+
     supplier_price = get("Supplier Wholesale Price")
     for col in REQUIRED:
         if col == "Wholesale Price EUR" and not out[col] and supplier_price:
