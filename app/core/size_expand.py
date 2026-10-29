@@ -26,7 +26,8 @@ ONE_SIZE = {"OS", "O/S", "ONESIZE", "ONE SIZE", "UNI", "U", "TU", "NS"}
 
 
 def _blank(v) -> bool:
-    return v is None or str(v).strip().lower() in ("", "nan", "none", "null", "nat")
+    return (v is None or str(v).strip().lower() in ("", "nan", "none", "null")
+            or str(v).strip() == "NaT")
 
 
 def letter_rank(size: str) -> int | None:
@@ -148,6 +149,12 @@ def expand_rows(rows: list[dict], headers: list[str], *, has_size_field: bool) -
             sizes, note["lists"] = split_list(size), note["lists"] + 1
         elif size and expand_range(size, cols):
             sizes, note["ranges"] = expand_range(size, cols), note["ranges"] + 1
+        elif not size and row.get("__size_columns"):
+            # This row's section names its own sizes in the same columns.
+            own = row["__size_columns"]
+            ordered = [h for h in own if _qty(row.get(h))]
+            sizes = [own[h] for h in (ordered or own)]
+            note["from_columns"] += 1
         elif not size and cols:
             ordered = [h for h in cols if _qty(row.get(h))]
             sizes = [_label(h) for h in (ordered or cols)]
@@ -197,7 +204,10 @@ def legend_in_header(raw, header_row: int) -> dict[str, list[str]]:
     with B, C… and their sizes under the same columns.
     """
     hdr = [str(v).strip() if not _blank(v) else "" for v in raw.iloc[header_row].tolist()]
-    scale_col = next((i for i, h in enumerate(hdr) if re.fullmatch(r"[A-Z]", h)), None)
+    # One letter that is not itself a size: Dime's size columns are headed
+    # S, M, L — those are sizes, not a scale column.
+    scale_col = next((i for i, h in enumerate(hdr)
+                      if re.fullmatch(r"[A-Z]", h) and letter_rank(h) is None), None)
     if scale_col is None:
         return {}
     # The size block ends at the first header that is a word, not a size.

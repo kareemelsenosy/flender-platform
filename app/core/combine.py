@@ -50,6 +50,17 @@ def _style_keys(row: dict) -> list[str]:
     return [k for k in keys if k]
 
 
+def _stem_key(row: dict) -> str:
+    """Style without the colour letters on its end, with the colour name.
+
+    Dime's order form writes DIMESU2656GRP for Charcoal Grape where its COO
+    list writes DIMESU2656GRA: the codes disagree, the style and colour do not.
+    """
+    m = re.match(r"^(.*\d)[A-Z]{1,4}$", _n(row.get("Item No.")))
+    colour = _n(row.get("Color"))
+    return f"{m.group(1)}|{colour}" if m and colour else ""
+
+
 def _colour_keys(row: dict) -> list[str]:
     return [k for k in (_n(row.get("Colour Code")), _n(row.get("Color"))) if k]
 
@@ -86,6 +97,7 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
     by_barcode: dict[str, dict] = {}
     by_sc: dict[str, list[dict]] = {}
     by_style: dict[str, list[dict]] = {}
+    by_stem: dict[str, list[dict]] = {}
     for r in list_rows:
         bc = _n(r.get("Barcode"))
         if bc:
@@ -96,6 +108,8 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
             for c in colours:
                 by_sc.setdefault(s + "|" + c, []).append(r)
                 by_sc.setdefault(s + c, []).append(r)   # 'JK00525-CAMO' style
+        if _stem_key(r):
+            by_stem.setdefault(_stem_key(r), []).append(r)
 
     used: set[int] = set()
     out: list[dict] = []
@@ -111,6 +125,10 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
             if not line_level and k in LINE_FIELDS:
                 continue
             if _blank(new.get(k)) or k in LIST_WINS:
+                if k in LIST_WINS and not _blank(new.get(k)) and str(new[k]) != str(v):
+                    # Keep the order sheet's own wording: some brands' SAP
+                    # sheets use it (Dime) and the brand rule says which.
+                    new[f"Order {k}"] = new[k]
                 new[k] = v
                 added_fields.add(k)
         return new
@@ -139,6 +157,8 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
                 matches = by_style.get(s) or []
                 if matches:
                     break
+        if not matches and _stem_key(row):
+            matches = by_stem.get(_stem_key(row)) or []
         if not matches:
             out.append(row)
             key = _item_key(row)

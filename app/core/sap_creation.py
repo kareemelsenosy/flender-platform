@@ -47,7 +47,8 @@ REQUIRED = ["Season", "Brand", "Barcode", "SKU", "Item No.", "Colour Code",
 _SEASON_SLOT = {"SS": "01", "SP": "01", "FW": "03", "AW": "03",
                 # HUF's summer and fall drops. Assumed to share the spring and
                 # fall slots until Flender confirms otherwise.
-                "SU": "01", "FA": "03",
+                # Summer is its own slot: Dime SU26 went into SAP as 2026-02.
+                "SU": "02", "FA": "03",
                 # Pre-fall: Carhartt PRE FALL 27 is 2027-02.
                 "PF": "02",
                 # Holiday: HUF HO26 is 2026-04. HUF itself calls it WN (winter).
@@ -114,7 +115,7 @@ def base_colour_exception(colour_name: str, base: dict, field: str) -> dict | No
 
 
 def item_colour_code(item_no: str, colour_code: str, colour_name: str,
-                     uses_colour_codes: bool) -> str:
+                     uses_colour_codes: bool, keep_slash: bool = False) -> str:
     """The per-colour item code.
 
     Carhartt and Edwin: style + colour code (I026462.8902), whose code is house
@@ -127,8 +128,9 @@ def item_colour_code(item_no: str, colour_code: str, colour_name: str,
     if uses_colour_codes:
         return f"{item_no}.{colour_code}" if colour_code else ""
     name = re.sub(r"\s+", " ", str(colour_name or "")).strip().upper()
-    # 'BLACK/WHITE' is written BLACK-WHITE in the item code.
-    name = re.sub(r"(?<=\S)/(?=\S)", "-", name)
+    # 'BLACK/WHITE' is written BLACK-WHITE in the item code (Komono's keeps it).
+    if not keep_slash:
+        name = re.sub(r"(?<=\S)/(?=\S)", "-", name)
     return f"{item_no}-{name}" if name else ""
 
 
@@ -140,7 +142,8 @@ _DERIVED = {"Season", "Item.Colour", "House Colour", "Finish", "BASE COLOR"}
 def build_row(src: dict, *, season: str, collection: str,
               vocab=None, lookup=None, table=None, temporary=None,
               base_colour: bool = True,
-              uses_colour_codes: bool = True) -> "tuple[dict, list[dict]]":
+              uses_colour_codes: bool = True,
+              hs_digits: int = 0, keep_slash: bool = False) -> "tuple[dict, list[dict]]":
     """Build one SAP creation row. Returns (row, exceptions)."""
     # Normalise here too: build_row is called directly as well as through
     # build_creation_sheet, and supplier headers carry stray double spaces.
@@ -170,7 +173,7 @@ def build_row(src: dict, *, season: str, collection: str,
     out["Item No."] = item_no
     out["Colour Code"] = colour_code
     out["Item.Colour"] = item_colour_code(item_no, colour_code, colour_name,
-                                          uses_colour_codes)
+                                          uses_colour_codes, keep_slash=keep_slash)
     if uses_colour_codes:
         out["House Colour"], out["Finish"] = split_colour_code(colour_code)
 
@@ -199,6 +202,8 @@ def build_row(src: dict, *, season: str, collection: str,
     # SAP holds an HS code as digits (62034259); suppliers write 6201.40.5011.
     if out["Duty Position"]:
         out["Duty Position"] = re.sub(r"\D", "", out["Duty Position"])
+        if hs_digits:
+            out["Duty Position"] = out["Duty Position"][:hs_digits]
 
     supplier_price = get("Supplier Wholesale Price")
     for col in REQUIRED:
@@ -253,7 +258,8 @@ def _expand_horizontal_sizes(rows):
 def build_creation_sheet(rows, *, season: str, collection: str = "Main",
                          vocab=None, lookup=None, table=None, temporary=None,
                          base_colour: bool = True,
-                         uses_colour_codes: bool = True) -> dict:
+                         uses_colour_codes: bool = True, hs_digits: int = 0,
+                         keep_slash: bool = False) -> dict:
     """Build the whole package.
 
     Returns the rows, one exception record per problem (carrying the SKU so the
@@ -272,7 +278,8 @@ def build_creation_sheet(rows, *, season: str, collection: str = "Main",
         row, excs = build_row(src, season=season, collection=collection,
                               vocab=vocab, lookup=lookup, table=table,
                               temporary=temporary, base_colour=base_colour,
-                              uses_colour_codes=uses_colour_codes)
+                              uses_colour_codes=uses_colour_codes, hs_digits=hs_digits,
+                              keep_slash=keep_slash)
         out_rows.append(row)
         sku = row.get("SKU") or row.get("Item.Colour") or ""
         for e in excs:

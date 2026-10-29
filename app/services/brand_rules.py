@@ -366,7 +366,17 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
     why = f"Learned from the finished sheet {filename}".strip()
 
     groups = learned.get("item_groups") or {}
-    if groups.get("column"):
+    if groups.get("by_product_word"):
+        rows = [{"supplier": val, "sap": ", ".join(g)} for val, g in groups["map"].items()]
+        tables["item_groups"] = core.upsert_many(tables.get("item_groups", []),
+                                                 "item_groups", rows)
+        settings = view(rs)["settings"]
+        settings["group_by_product_word"] = True
+        rs.settings = settings
+        examples = ", ".join(f"{k.title()} → {v[0]}" for k, v in list(groups["map"].items())[:4])
+        done.append(f"Product group read from the product word that ends each name "
+                    f"({examples}…): {groups['total']} words mapped to SAP item groups.")
+    elif groups.get("column"):
         tables["columns"], _ = core.upsert_row(
             tables.get("columns", []), "columns",
             {"field": "Item Group", "header": groups["column"]})
@@ -388,6 +398,38 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
          None, reason=why + ". " + " ".join(done), source="learned",
          user_id=user_id, job_id=job_id)
     db.commit()
+
+    learned_settings = dict(learned.get("settings") or {})
+    if learned.get("colours"):
+        rs = get_rules(db, brand)
+        tables = view(rs)["tables"]
+        tables["colours"] = core.upsert_many(tables.get("colours", []), "colours",
+                                             learned["colours"])
+        rs.tables = tables
+        learned_settings["uses_base_colour"] = True
+        done.append(f"{len(learned['colours'])} colours with their base colour.")
+    if learned_settings:
+        rs = get_rules(db, brand)
+        settings = view(rs)["settings"]
+        settings.update(learned_settings)
+        rs.settings = settings
+        db.commit()
+        words = []
+        if "gender_map" in learned_settings:
+            words.append("gender: " + ", ".join(f"{k or '(blank)'} = {v}"
+                                                for k, v in learned_settings["gender_map"].items()))
+        if learned_settings.get("hs_digits"):
+            words.append(f"HS codes kept to {learned_settings['hs_digits']} digits")
+        if learned_settings.get("style_has_colour_code"):
+            words.append("the colour code is taken off the end of the style code")
+        if learned_settings.get("one_size"):
+            words.append("every item is one-size in SAP (the supplier's Size column is not a size)")
+        if learned_settings.get("colour_slash") == "keep":
+            words.append("colours keep their slash (Black/Tortoise)")
+        if learned_settings.get("barcode_size") == "supplier":
+            words.append("built barcodes end with the supplier's own size (OS, S/M)")
+        if words:
+            done.append("Also learned " + "; ".join(words) + ".")
 
     if learned.get("keep_upper"):
         settings = view(rs)["settings"]

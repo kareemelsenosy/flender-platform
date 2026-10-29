@@ -23,9 +23,9 @@ import re
 
 import pandas as pd
 
-# How far down to look for a header. The deepest real case seen is row 12
-# (Thisisneverthat); the margin covers worse.
-MAX_HEADER_SCAN = 30
+# How far down to look for a header. Dime's order form opens with a 34-row
+# block of store, billing and shipping fields before the product table.
+MAX_HEADER_SCAN = 60
 MIN_HEADER_CELLS = 3
 
 
@@ -48,7 +48,22 @@ def score_header_row(row, index: int) -> float:
         return -1.0
     non_numeric = sum(1 for v in vals if not _looks_numeric(v))
     distinct = len({v.casefold() for v in vals})
-    return len(vals) * 2 + non_numeric + distinct - index * 0.5
+    # Cells that are field names (Style, Description, Color, Price...) are
+    # the strongest sign of a header; a form's "Store Name." block has none.
+    known = sum(1 for v in vals if _is_field_name(v))
+    return len(vals) * 2 + non_numeric + distinct + known * 4 - index * 0.5
+
+
+def _is_field_name(value: str) -> bool:
+    from app.core.field_mapping import FIELDS, norm
+    global _FIELD_WORDS
+    if _FIELD_WORDS is None:
+        _FIELD_WORDS = {a for _f, _p, aliases in FIELDS for a in aliases} | {
+            norm(f) for f, _p, _a in FIELDS} | {"qty", "units", "total", "sizes"}
+    return norm(value) in _FIELD_WORDS
+
+
+_FIELD_WORDS = None
 
 
 def find_header_row(df: pd.DataFrame, scan: int = MAX_HEADER_SCAN) -> int:
@@ -114,11 +129,21 @@ def load_supplier_table(path: str) -> "tuple[pd.DataFrame, dict]":
 
     used = pick_data_sheets(sheets)
     frames, header_row = [], None
+    section_above = ""
     for name in used:
         raw = sheets[name]
         h = find_header_row(raw)
         if header_row is None:
             header_row = h
+            # A one-cell heading straight above the header names the first
+            # section (Dime: JACKETS, then the Style / Description header).
+            for i in range(h - 1, max(h - 3, -1), -1):
+                cells = _cells(raw.iloc[i])
+                if len(cells) == 1 and not _looks_numeric(cells[0]) and len(cells[0]) <= 40:
+                    section_above = cells[0]
+                    break
+                if cells:
+                    break
         cols = [str(v).strip() if pd.notna(v) else "" for v in raw.iloc[h].tolist()]
         body = raw.iloc[h + 1:].copy()
         body.columns = cols
@@ -131,6 +156,7 @@ def load_supplier_table(path: str) -> "tuple[pd.DataFrame, dict]":
         "sheets_used": used,
         "sheets_available": list(sheets),
         "header_row": header_row,
+        "section_above": section_above,
         "rows": len(table),
     }
 

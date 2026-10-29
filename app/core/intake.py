@@ -59,7 +59,7 @@ _CATALOG_WORDS = ("lookbook", "look book", "catalogue", "catalog",
 _PRODUCT_LIST_WORDS = ("hs code", "hs codes", "hscode", "hts", "upc", "tariff",
                        "customs", "product list", "productlist", "product data",
                        "master list", "masterlist", "item list", "itemlist",
-                       "material list", "commodity")
+                       "material list", "commodity", "coo", "country of origin")
 _NOT_PRODUCT_WORDS = ("deviation", "temp standard template", "standard template",
                       "sap template", "data creation", "b2b management")
 _IMAGE_WORDS = ("image", "images", "photo", "photos", "picture", "pictures",

@@ -107,6 +107,19 @@ SETTINGS = {
                  "empty and never asked about."),
         "default": False,
     },
+    "style_has_colour_code": {
+        "label": "Style codes end with the colour code",
+        "help": ("Dime writes DIMESU262CHA: style DIMESU262 in colour CHA. With this on, "
+                 "the colour code is taken off the end so the style code is the style."),
+        "default": False,
+    },
+    "group_by_product_word": {
+        "label": "Item group comes from the product word in the name",
+        "help": ("Dime names end with what the product is: 'Houndstooth Jacket' is JACKETS, "
+                 "'LS T-Shirt' is LONGSL. With this on, that word decides the SAP item group "
+                 "before the brand's category column does."),
+        "default": False,
+    },
     "uses_colour_codes": {
         "label": "Item codes use the colour code",
         "help": ("On for Carhartt WIP and Edwin: the item code is style + colour code "
@@ -160,6 +173,7 @@ SEEDS: dict[str, dict] = {
     },
     "edwin": {"settings": {"uses_base_colour": True, "uses_colour_codes": True},
               "tables": {}},
+    "dime": {"settings": {"style_has_colour_code": True}, "tables": {}},
     "huf": {
         "settings": {"uses_base_colour": False},
         "tables": {
@@ -538,6 +552,14 @@ def size_list_for(run: list[str], tables: dict) -> "tuple[str, dict[str, int]]":
                     pass
             return _clean(r.get("list_code")), order
     return "", {}
+
+
+def size_spelling(list_code: str, tables: dict) -> dict[str, str]:
+    """How a SAP size list writes its sizes: {'onesize': 'Onesize'}."""
+    for r in tables.get("size_lists", []):
+        if _clean(r.get("list_code")) == list_code:
+            return {z.lower(): z for z in split_sizes(r.get("sizes"))}
+    return {}
 
 
 def item_group_map(tables: dict) -> dict[str, list[str]]:

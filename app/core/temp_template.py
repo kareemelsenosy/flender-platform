@@ -68,12 +68,15 @@ SORT_BASE, SORT_STEP = 1000, 500
 # A DataFrame converted to dicts carries NaN, and str(nan) is "nan" — a
 # non-empty string that would otherwise sail through every emptiness check and
 # invent rows and values that were never in the supplier file.
-_BLANKS = {"", "nan", "none", "nat", "null", "<na>"}
+# Pandas' missing date prints as 'NaT' — matched exactly, because 'NAT' is
+# Dime's colour code for Natural.
+_BLANKS = {"", "nan", "none", "null", "<na>"}
 
 
 def is_blank(value) -> bool:
     """True for None, empty text, and the string forms of a missing value."""
-    return value is None or str(value).strip().lower() in _BLANKS
+    text = "" if value is None else str(value).strip()
+    return value is None or text.lower() in _BLANKS or text == "NaT"
 
 
 def normalise_size(size: str) -> str:
@@ -89,6 +92,10 @@ def smart_title(text: str, keep_upper=()) -> str:
     learned from a finished sheet.
     """
     keep = ACRONYMS | {str(k).upper() for k in keep_upper}
+    # Only shouting is re-cased: "OLD E EXO RING" becomes "Old E EXO Ring",
+    # but Dime's own "Plaid Button up Shirt" is kept as the brand wrote it.
+    if not str(text or "").isupper():
+        return " ".join(str(text or "").split())
     words = str(text or "").split()
     out = []
     for w in words:
@@ -100,10 +107,13 @@ def smart_title(text: str, keep_upper=()) -> str:
     return " ".join(out)
 
 
-def web_colour(colour: str) -> str:
+def web_colour(colour: str, keep_slash: bool = False) -> str:
     """A colour as SAP shows it: 'BLACK/WHITE' -> 'Black-White'; a spaced
-    'Dark Navy / WIP H Brown' (Carhartt's own spelling) is kept."""
-    text = re.sub(r"(?<=\S)/(?=\S)", "-", str(colour or "").strip())
+    'Dark Navy / WIP H Brown' (Carhartt's own spelling) is kept, and so is
+    every slash for a brand whose SAP keeps them (Komono)."""
+    text = str(colour or "").strip()
+    if not keep_slash:
+        text = re.sub(r"(?<=\S)/(?=\S)", "-", text)
     return smart_title(text)
 
 
@@ -139,6 +149,22 @@ COUNTRY_CODES = {
     "mexico": "MX", "usa": "US", "united states": "US", "peru": "PE",
     "mauritius": "MU", "madagascar": "MG", "hong kong": "HK", "macedonia": "MK",
     "north macedonia": "MK", "laos": "LA", "philippines": "PH", "malaysia": "MY",
+    "canada": "CA", "united states of america": "US", "uk": "GB",
+    "united kingdom": "GB", "great britain": "GB", "england": "GB",
+    "netherlands": "NL", "the netherlands": "NL", "holland": "NL",
+    "switzerland": "CH", "austria": "AT", "denmark": "DK", "sweden": "SE",
+    "greece": "GR", "hungary": "HU", "czech republic": "CZ", "czechia": "CZ",
+    "slovakia": "SK", "slovenia": "SI", "croatia": "HR", "serbia": "RS",
+    "bosnia and herzegovina": "BA", "albania": "AL", "moldova": "MD",
+    "ukraine": "UA", "estonia": "EE", "latvia": "LV", "ireland": "IE",
+    "brazil": "BR", "colombia": "CO", "guatemala": "GT", "honduras": "HN",
+    "el salvador": "SV", "nicaragua": "NI", "dominican republic": "DO",
+    "haiti": "HT", "jordan": "JO", "ethiopia": "ET", "kenya": "KE",
+    "south africa": "ZA", "lesotho": "LS",
+    "australia": "AU", "new zealand": "NZ", "nepal": "NP", "uzbekistan": "UZ",
+    "kyrgyzstan": "KG", "georgia": "GE", "armenia": "AM", "israel": "IL",
+    "united arab emirates": "AE", "uae": "AE", "saudi arabia": "SA",
+    "prc": "CN", "p.r. china": "CN",
 }
 
 
@@ -152,14 +178,18 @@ def country_code(value: str) -> str:
     return COUNTRY_CODES.get(v.lower(), v)
 
 
-def barcode(style: str, colour: str, size: str) -> str:
-    """U_CodeBars — style, colour and size run together, letters and digits."""
-    raw = f"{style or ''}{colour or ''}{normalise_size(size)}"
+def barcode(style: str, colour: str, size: str, supplier_size: bool = False) -> str:
+    """U_CodeBars — style, colour and size run together, letters and digits.
+
+    ``supplier_size``: the size as the supplier labels it — Dime's SAP holds
+    DIMESU2625BLUOS where Hiking Patrol's holds HP0127302BLACKONESIZE.
+    """
+    raw = f"{style or ''}{colour or ''}{size if supplier_size else normalise_size(size)}"
     return re.sub(r"[^A-Za-z0-9]", "", raw).upper()
 
 
 _GENDER = {"m": "M", "men": "M", "mens": "M", "men's": "M", "male": "M",
-           "man": "M", "herren": "M", "unisex": "M", "u": "M",
+           "man": "M", "herren": "M", "unisex": "U", "u": "U",
            "w": "W", "f": "W", "women": "W", "womens": "W", "women's": "W",
            "female": "W", "woman": "W", "ladies": "W", "damen": "W",
            "k": "K", "kids": "K", "children": "K", "youth": "K"}
@@ -174,7 +204,7 @@ _GROUP_WORDS = {
     "LONGSL": r"\bl/?s\b|long ?sleeve|longsleeve",
     "T-SHIRTS": r"\btee\b|t-shirt",
     "POLOS": r"polo",
-    "SHIRTS": r"shirt|overshirt",
+    "SHIRTS": r"(?<!t-)(?<!\bt )(?<!sweat)shirt",
     "PANTS": r"pant|jean|trouser|chino",
     "SHORTS": r"short",
     "HEAD": r"\bhat\b|\bcap\b|beanie|snapback",
@@ -192,14 +222,50 @@ def group_from_name(name: str, candidates) -> str:
             if _GROUP_WORDS.get(g.upper()) and re.search(_GROUP_WORDS[g.upper()], low)]
     if len(hits) > 1 and "JACKETS" in hits and "HOODYS" in hits:
         hits = ["HOODYS"] if "hood" in low else hits
+    # A long-sleeve T-shirt is LONGSL, not T-SHIRTS.
+    if len(hits) > 1 and "LONGSL" in hits and "T-SHIRTS" in hits:
+        hits = [g for g in hits if g != "T-SHIRTS"]
     return hits[0] if len(hits) == 1 else ""
 
 
-def gender_code(value: str) -> str:
-    """'Men' / 'M' / 'unisex' -> 'M'. SAP holds one letter (HUF HO26: M;
-    Carhartt's unisex goods are M in the B2B master list)."""
-    v = str(value or "").strip()
-    if is_blank(v):
+def product_words(name: str) -> list[str]:
+    """The words of a product name that say what it is, most specific first.
+
+    Dime names end with the product: 'Classic Veins LS T-Shirt' gives
+    ['LS T-SHIRT', 'T-SHIRT']; 'Much Hoodie (HW)' gives ['MUCH HOODIE',
+    'HOODIE']. A brand's finished TEMP teaches which of these maps to which
+    SAP group, and the words come back next season under new names.
+    """
+    text = re.sub(r"\([^)]*\)", " ", str(name or "")).upper()
+    words = re.findall(r"[A-Z0-9][A-Z0-9/&'-]*", text)
+    if not words:
+        return []
+    out = [words[-1]]
+    if len(words) > 1:
+        out.insert(0, f"{words[-2]} {words[-1]}")
+    return out
+
+
+def group_for_product(name: str, group_map: dict) -> list[str]:
+    """SAP group candidates from the product word of the name, or []."""
+    for key in product_words(name):
+        if key in group_map:
+            found = group_map[key]
+            return [found] if isinstance(found, str) else list(found)
+    return []
+
+
+def gender_code(value: str, brand_map=None) -> str:
+    """'Men' -> 'M', 'Ladies' -> 'W', 'Unisex' -> 'U'. SAP holds one letter.
+
+    ``brand_map`` is the brand's own spelling, learned from a finished TEMP
+    (Komono: Ladies W, Men M, Unisex U, and an empty gender U).
+    """
+    v = "" if is_blank(value) else str(value).strip()
+    brand_map = {str(k).lower(): val for k, val in (brand_map or {}).items()}
+    if v.lower() in brand_map:
+        return brand_map[v.lower()]
+    if not v:
         return ""
     return _GENDER.get(v.lower(), v[:1].upper())
 
@@ -251,7 +317,11 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                      history=None, earliest_ship_date: str = "",
                      colour_table=None, temporary=None,
                      base_colour: bool = True, size_tables=None,
-                     uses_colour_codes: bool = False, keep_upper=()) -> dict:
+                     uses_colour_codes: bool = False, keep_upper=(),
+                     gender_map=None, hs_digits: int = 0,
+                     group_by_word: bool = False,
+                     barcode_supplier_size: bool = False,
+                     keep_colour_slash: bool = False) -> dict:
     """Build the TEMP sheet from supplier order rows.
 
     ``group_map`` maps a supplier subcategory to a SAP item group. It is
@@ -269,7 +339,7 @@ def build_temp_sheet(rows, *, brand: str, season: str,
     supplier's ship date — Hiking Patrol SS27 shipped 20 January on the order
     form and went into SAP as 15 January — so it is asked for, not copied.
     """
-    from app.core.brand_rules import size_list_for, size_prefix
+    from app.core.brand_rules import size_list_for, size_prefix, size_spelling
     from app.core.sap_creation import item_colour_code
 
     group_map = group_map or {}
@@ -339,6 +409,7 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         # The brand's own SAP size lists first (learned from its finished
         # TEMP sheets); the built-in runs only when the brand has none.
         list_code, sort_of = size_list_for(run, size_tables)
+        spelled = size_spelling(list_code, size_tables)
         list_why = ""
         if not list_code:
             list_code, list_why = size_list_code(run)
@@ -354,6 +425,13 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         candidates = group_map.get(subcat.upper(), [])
         if isinstance(candidates, str):
             candidates = [candidates]
+        if group_by_word or len(candidates) != 1:
+            # The product word ('Jacket', 'LS T-Shirt') when the brand was
+            # taught by it: Dime's sections (Tops, Bottoms) are too coarse.
+            by_word = group_for_product(name, group_map)
+            if by_word and (group_by_word or not candidates
+                            or set(by_word) <= set(candidates)):
+                candidates = by_word
         group = candidates[0] if len(candidates) == 1 else ""
         if len(candidates) > 1:
             # The product's own name usually settles it: HUF's C&S ZIP FLEECE
@@ -394,9 +472,11 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         # What the supplier sheet itself says wins over history: it is this
         # season's data. History fills only what the sheet leaves empty.
         hs = re.sub(r"[^0-9]", "", get("Duty Position", "HS Code", "HTS Code"))
+        if hs_digits:
+            hs = hs[:hs_digits]          # Komono's SAP holds 8 of the 10 digits
         from_sheet = {"U_HS_Code": hs,
                       "U_COO": country_code(get("Country of Origin", "COO")),
-                      "U_Gender": gender_code(get("Sex", "Gender"))}
+                      "U_Gender": gender_code(get("Sex", "Gender"), gender_map)}
         hist = {**history.get(style, {}),
                 **{k: v for k, v in from_sheet.items() if v}}
         colour_code = get("Colour Code", "Color Code")
@@ -419,17 +499,23 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "U_NRStatus": "N",
                 # The supplier's own EAN when the sheet has one per size —
                 # that is what SAP holds; otherwise the built code.
+                # Without one, style + colour code + size (DIMESU262CHAXXS),
+                # or the colour name where the brand has no codes.
                 "U_CodeBars": (barcode_of(src) if len(sizes) == 1 and barcode_of(src)
-                               else barcode(style, colour, size)),
+                               else barcode(style, colour_code or colour,
+                                            s["size"] if barcode_supplier_size else size,
+                                            barcode_supplier_size)),
                 # Carhartt / Edwin: style.colour-code; others: style-COLOUR NAME.
                 "U_SuppCatNum": item_colour_code(style, colour_code, colour,
-                                                 uses_colour_codes),
+                                                 uses_colour_codes,
+                                                 keep_slash=keep_colour_slash),
                 "U_Material": get("Material"),
                 "U_VCat": smart_title(subcat),
                 "U_ItmsGrpCod": group,
                 "U_SCode": style,
-                "U_SizeCode": size,
-                "U_webbeschreibung_gr": size,
+                # Written as the brand's SAP size list spells it ("Onesize").
+                "U_SizeCode": spelled.get(size.lower(), size),
+                "U_webbeschreibung_gr": spelled.get(size.lower(), size),
                 "U_Webbeschreibung2": smart_title(description,
                                                   set(keep_upper) | set(str(brand).upper().split())),
                 # The accepted sheet stores the base colour lower-cased here,
@@ -437,7 +523,7 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "U_BaseColor": (base["value"] or "").lower(),
                 "U_Webbeschreibung": (brand or "").upper(),
                 "U_def_size_list_code": list_code,
-                "U_Web_Color": web_colour(colour),
+                "U_Web_Color": web_colour(colour, keep_colour_slash),
                 "U_SortIndex": str(sort_of.get(size.lower()) or sort_index(
                     run.index(size) if size in run else s["position"], size)),
                 "U_ESDate": "" if is_blank(earliest_ship_date) else str(earliest_ship_date),

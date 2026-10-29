@@ -117,7 +117,7 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
     """
     from app.core.size_expand import expand_rows
 
-    table, _info = load_supplier_table(path)
+    table, info = load_supplier_table(path)
     if table.empty:
         return [], {}
     # Unlabelled columns keep their position so a layout that relies on them
@@ -139,6 +139,9 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
 
     rows = field_mapping.apply(table.to_dict("records"), mapping)
     _colour_code_from_unnamed(rows, headers, mapping)
+    _hs_code_by_value(rows, headers, mapping)
+    rows = _sections(rows, headers, info.get("section_above", ""), mapping)
+    _colour_from_description(rows, headers, mapping)
 
     # Section headings ("MIJ Men Pants"), legend rows and totals carry no
     # style, or a "style" with nothing else on the row.
@@ -158,6 +161,156 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
                                   has_size_field=bool(mapping["Size"]["header"]))
     mapping["_size_note"] = size_note
     return rows, mapping
+
+
+_HEADING = re.compile(r"^[^\d]{2,40}$")
+
+
+def _sections(rows, headers, first: str, mapping) -> list[dict]:
+    """Section headings become the category of the rows beneath them.
+
+    Dime groups its order form under headings — JACKETS, TOPS, BOTTOMS — each
+    followed by its own copy of the column header. The heading is the
+    product category (VCat); the repeated header is not a product.
+    """
+    header_words = {field_mapping.norm(h) for h in headers if h}
+    product_fields = ("Color", "Item Description", "Size", "Barcode", "Colour Code")
+    from app.core.size_expand import size_label_parts
+    section = first.strip()
+    section_sizes: dict | None = None
+    out, found = [], 0
+    for r in rows:
+        item = "" if _blank(r.get("Item No.")) else str(r.get("Item No.")).strip()
+        if item and field_mapping.norm(item) in header_words:
+            # Each section repeats the header with its own sizes: tops
+            # XXS..XXL, pants 28..38, socks S/M and L/XL. Those columns hold
+            # these sizes for the rows that follow.
+            labels = {}
+            for h in headers:
+                v = "" if _blank(r.get(h)) else str(r.get(h)).strip()
+                # Caps in 7.125, decks in 8.25" — the inch mark is not the size.
+                inches = re.fullmatch(r'(\d{1,2}(?:\.\d{1,3})?)\s*(?:"|”|in)?', v)
+                if inches:
+                    labels[h] = inches.group(1)
+                elif v and size_label_parts(v) != (None, None) and len(v) <= 9:
+                    labels[h] = v
+            section_sizes = labels or None
+            continue
+        if item and _HEADING.match(item) and not any(
+                not _blank(r.get(f)) for f in product_fields):
+            section = item
+            found += 1
+            continue
+        if section and _blank(r.get("Item Group")):
+            r["Item Group"] = section.title() if section.isupper() else section
+        if section_sizes:
+            r["__size_columns"] = section_sizes
+        out.append(r)
+    if section and not mapping["Item Group"]["header"]:
+        mapping["Item Group"] = {"header": "", "source": "detected",
+                                 "note": "from the section headings in the sheet"}
+    return out
+
+
+def _hs_code_by_value(rows, headers, mapping) -> None:
+    """An HS code column with a name nothing recognises ("CODE"), found by its
+    values: mostly 6-10 digits, often written 6201.30.00."""
+    if mapping["Duty Position"]["header"]:
+        return
+    taken = {m.get("header") for m in mapping.values() if isinstance(m, dict)}
+    pattern = re.compile(r"^\d{4}[.\s]?\d{2}([.\s]?\d{2,4})?$")
+    for h in headers:
+        if h in taken or str(h).startswith("("):
+            continue
+        values = [str(r.get(h) or "").strip() for r in rows if not _blank(r.get(h))][:200]
+        if len(values) >= 3 and sum(bool(pattern.match(v)) for v in values) / len(values) >= 0.8:
+            for r in rows:
+                if _blank(r.get("Duty Position")):
+                    r["Duty Position"] = r.get(h)
+            mapping["Duty Position"] = {"header": h, "source": "detected",
+                                        "note": "recognised by its values"}
+            return
+
+
+_NAME_COLUMNS = ("style name", "model name", "model", "name", "family name")
+
+
+def _colour_from_description(rows, headers, mapping) -> None:
+    """Komono writes no colour column: the colour is the description less the
+    style name ("Sora Bronze" with style "Sora" is Bronze), and the SAP name
+    is the style name. Lines that do not follow the pattern are kept but
+    flagged, because their colour is a best guess."""
+    if mapping["Color"]["header"] or not mapping["Item Description"]["header"]:
+        return
+    desc_col = mapping["Item Description"]["header"]
+    name_col = next((h for h in headers if field_mapping.norm(h) in _NAME_COLUMNS
+                     and h != desc_col), None)
+    if not name_col:
+        return
+    unsure_by_name: dict[str, list] = {}
+    for r in rows:
+        desc = " ".join(str(r.get(desc_col) or "").replace("\xa0", " ").split())
+        name = " ".join(str(r.get(name_col) or "").replace("\xa0", " ").split())
+        if not desc or not name or _blank(desc) or _blank(name):
+            continue
+        colour, sure = _strip_name(desc, name)
+        if colour:
+            r["Color"] = colour
+            r["Item Description"] = name
+            if not sure:
+                unsure_by_name.setdefault(name, []).append((r, desc))
+    unsure = []
+    for name, group in unsure_by_name.items():
+        if not _shared_prefix_split(name, group):
+            unsure += [f"{r.get('Item No.')}: {desc}" for r, desc in group]
+    mapping["Color"] = {"header": "", "source": "detected",
+                        "note": f"from “{desc_col}” less “{name_col}”"}
+    mapping["_colour_unsure"] = unsure
+
+
+def _shared_prefix_split(name: str, group) -> bool:
+    """Colourways of one style share their name: what they all start with.
+
+    Komono's style column says "Gabrielle" for "Komono X Gabrielle
+    Szwarcenberg White Gold / Silver / Gun": the shared words are the name
+    (it holds the style name), the rest is each colour. Returns whether the
+    group was settled that way.
+    """
+    if len(group) < 2:
+        return False
+    split = [desc.split() for _r, desc in group]
+    n = 0
+    while all(len(w) > n + 1 for w in split) and len({w[n].lower() for w in split}) == 1:
+        n += 1
+    prefix = split[0][:n]
+    if not prefix or not {w.lower() for w in name.split()} <= {w.lower() for w in prefix}:
+        return False
+    for (r, _desc), words in zip(group, split):
+        r["Item Description"] = " ".join(prefix)
+        r["Color"] = " ".join(words[n:])
+    return True
+
+
+def _strip_name(desc: str, name: str) -> "tuple[str, bool]":
+    """The colour left when the style name is taken out of the description."""
+    low_d, low_n = desc.lower(), name.lower()
+    if low_d.startswith(low_n + " "):
+        return desc[len(name):].strip(), True
+    at = low_d.find(low_n)
+    if at >= 0:
+        # "The Glitch Atlantic" — one word ahead of the name is part of the
+        # colour. More than that ("Komono X Gabrielle ...") is a collab name
+        # the style column spells differently: kept, but flagged.
+        before = desc[:at].split()
+        return " ".join((desc[:at] + desc[at + len(name):]).split()), len(before) <= 1
+    # The style name is spelled differently: the colour is what follows the
+    # last word the two share. Kept, but flagged.
+    words = desc.split()
+    shared = {w.lower() for w in name.split()}
+    last = max((i for i, w in enumerate(words) if w.lower() in shared), default=-1)
+    if 0 <= last < len(words) - 1:
+        return " ".join(words[last + 1:]), False
+    return "", False
 
 
 def _colour_code_from_unnamed(rows, headers, mapping) -> None:
@@ -229,12 +382,15 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
         return [], f"no {intake_core.KIND_LABELS.get(want, want)} in this collection", {}
 
     rows: list[dict] = []
+    unsure_colours: list[str] = []
     legend: dict[str, list[str]] = {}
     for f in files:
         if not os.path.exists(f.parse_path):
             continue
         own = read_size_legend(f.parse_path)
-        rows.extend(_read_mapped(f.parse_path, overrides, own)[0])
+        got, fmap = _read_mapped(f.parse_path, overrides, own)
+        rows.extend(got)
+        unsure_colours.extend(fmap.get("_colour_unsure", []))
         for code, sizes in own.items():
             legend.setdefault(code, sizes)
     if not rows:
@@ -243,6 +399,8 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
     report: dict = {}
     if legend:
         report["size_legend"] = legend
+    if unsure_colours:
+        report["colour_unsure"] = unsure_colours[:50]
     if want == intake_core.ORDER_SHEET:
         list_rows: list[dict] = []
         for f in job.files:
@@ -255,8 +413,13 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
                                    scale_codes=scale_codes(rules["tables"]) | set(legend),
                                    include=set(getattr(job, "included_items", []) or []))
             report.update(joined)
+    if rules["settings"].get("description_from") == "order":
+        for r in rows:
+            for k in ("Item Description", "Item Description 2"):
+                if not _blank(r.get(f"Order {k}")):
+                    r[k] = r[f"Order {k}"]
     rows = expand_scale_rows(rows, rules["tables"], legend)
-    rows = fill_from_collection(rows, job)
+    rows = fill_from_collection(rows, job, rules["settings"])
     rows, dropped = _dedupe_lines(rows)
     if dropped:
         report["duplicate_lines_removed"] = dropped
@@ -305,7 +468,33 @@ def _dedupe_lines(rows: list[dict]) -> "tuple[list[dict], int]":
 _SPLIT_STYLE = re.compile(r"^([A-Z0-9]{4,})-([A-Z0-9]{2,8})$", re.I)
 
 
-def fill_from_collection(rows: list[dict], job) -> list[dict]:
+_TRAILING_CODE = re.compile(r"^(.*\d)([A-Za-z]{2,4})$")
+
+
+def _colour_code_suffix(item: str, colour) -> str:
+    """The colour code on the end of a style code, or ''.
+
+    Dime: DIMESU262CHA in Electric Charcoal ends in CHA; DIMESU2644GFOG in Fog
+    ends in FOG, not GFOG — the G belongs to the style. The longest trailing
+    run of letters that spells the colour short wins; with no colour to check
+    against, a three-letter code is assumed.
+    """
+    t = _TRAILING_CODE.match(str(item or ""))
+    if not t:
+        return ""
+    letters = t.group(2)
+    words = re.sub(r"[^A-Z ]", " ", str(colour or "").upper()).split()
+    for n in range(len(letters), 1, -1):
+        cand = letters[-n:].upper()
+        for i, w in enumerate(words):
+            if w[0] == cand[0]:
+                rest = iter("".join(words[i:]))
+                if all(ch in rest for ch in cand):
+                    return letters[-n:]
+    return letters[-3:] if len(letters) >= 3 and not words else ""
+
+
+def fill_from_collection(rows: list[dict], job, settings: dict | None = None) -> list[dict]:
     """Fields the supplier never writes but the collection already knows.
 
     * **Brand** — HUF's order form has no brand column; the collection does.
@@ -320,6 +509,18 @@ def fill_from_collection(rows: list[dict], job) -> list[dict]:
         if brand and _blank(row.get("Brand")):
             row["Brand"] = brand
         item = str(row.get("Item No.") or "").strip()
+        row.setdefault("Original Item No.", item)
+        if (settings or {}).get("one_size"):
+            # Komono's "Size" is the frame measurement; SAP has one size.
+            row.setdefault("Supplier Size", row.get("Size"))
+            row["Size"] = "onesize"
+        # Dime: DIMESU262CHA is style DIMESU262 in colour CHA.
+        if (settings or {}).get("style_has_colour_code"):
+            cut = _colour_code_suffix(item, row.get("Color"))
+            if cut:
+                item = row["Item No."] = item[:-len(cut)]
+                if _blank(row.get("Colour Code")):
+                    row["Colour Code"] = cut.upper()
         m = _SPLIT_STYLE.match(item)
         code = str(row.get("Colour Code") or "").strip().upper()
         if m and (_abbreviates(m.group(2), row.get("Color"))
@@ -438,7 +639,9 @@ def generate(db, job, kind: str, decisions=None) -> dict:
                                    vocab=vocab, lookup=colour_lookup,
                                    table=colour_table, temporary=temporary,
                                    base_colour=uses_base,
-                                   uses_colour_codes=uses_codes)
+                                   uses_colour_codes=uses_codes,
+                                   hs_digits=int(rules["settings"].get("hs_digits") or 0),
+                                   keep_slash=rules["settings"].get("colour_slash") == "keep")
         _check_size_runs(db, job, out, rules)
         out = _template_questions(out, kind, rules, job)
     elif kind == TEMP:
@@ -450,7 +653,12 @@ def generate(db, job, kind: str, decisions=None) -> dict:
             colour_table=colour_table, temporary=temporary,
             base_colour=uses_base, size_tables=rules["tables"],
             uses_colour_codes=uses_codes,
-            keep_upper=rules["settings"].get("keep_upper") or ())
+            keep_upper=rules["settings"].get("keep_upper") or (),
+            gender_map=rules["settings"].get("gender_map") or {},
+            hs_digits=int(rules["settings"].get("hs_digits") or 0),
+            group_by_word=bool(rules["settings"].get("group_by_product_word")),
+            barcode_supplier_size=rules["settings"].get("barcode_size") == "supplier",
+            keep_colour_slash=rules["settings"].get("colour_slash") == "keep")
         out = _template_questions(out, kind, rules, job)
     elif kind == ATTRIBUTES:
         from app.core.attribute_engine import enrich_style
@@ -522,7 +730,8 @@ def generate(db, job, kind: str, decisions=None) -> dict:
 
         def code_of(r):
             return item_colour_code(r.get("Item No."), r.get("Colour Code"),
-                                    r.get("Color"), uses_codes)
+                                    r.get("Color"), uses_codes,
+                                    keep_slash=rules["settings"].get("colour_slash") == "keep")
 
         if not price_list_columns(list(rows[0].keys()) if rows else []):
             # Not a Flender price sheet: start the price list from the

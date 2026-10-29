@@ -229,11 +229,16 @@ def _recount(job: CollectionJob, report: dict, rules: dict) -> None:
     """
     from app.services import packages as pkg
     try:
-        rows, problem, _rep = pkg.collection_rows(job, pkg.PRODUCT_CREATION, rules)
+        rows, problem, rep = pkg.collection_rows(job, pkg.PRODUCT_CREATION, rules)
     except Exception:
         return
     if problem or not rows:
         return
+    if rep.get("colour_unsure"):
+        shown = "; ".join(rep["colour_unsure"][:3])
+        report["warnings"].append(
+            f"{len(rep['colour_unsure'])} colours read from a description that does not "
+            f"start with the style name — check them: {shown}")
     def v(r, *keys):
         for k in keys:
             if not pkg._blank(r.get(k)):
@@ -295,7 +300,14 @@ def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
         mappings[str(cf.id)] = {"file": cf.filename, "kind": cf.kind,
                                 "headers": headers, "fields": fields}
         if cf.kind == intake_core.ORDER_SHEET:
+            # Komono has no colour column: its colour is the description less
+            # the style name, read later, so nothing is missing.
+            from_description = fields["Item Description"]["header"] and any(
+                field_mapping.norm(h) in pkg._NAME_COLUMNS
+                and h != fields["Item Description"]["header"] for h in headers)
             for essential in ("Item No.", "Color"):
+                if essential == "Color" and from_description:
+                    continue
                 if not fields[essential]["header"]:
                     report["warnings"].append(
                         f"{cf.filename}: no column found for "
