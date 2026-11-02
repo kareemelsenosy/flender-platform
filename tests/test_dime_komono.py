@@ -181,3 +181,58 @@ def test_dime_habits_are_learned_as_settings():
     assert learned["style_has_colour_code"] is True
     assert learned["barcode_size"] == "supplier"
     assert "one_size" not in learned
+
+
+# ── SAP's size master (the Sort Index sheet) ────────────────────────────────
+
+def _size_master_file(tmp_path):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["SIZE LIST", "Size Code", "PreFix", "Size", "No PostFix", "Web Size",
+               "Order Pos", "MainSize"])
+    for row in [("XS26XL", "S", 1500), ("XS26XL", "S/M", 1750), ("XS26XL", "M", 2000),
+                ("XS26XL", "L/XL", 2750), ("ONESIZE", "onesize", 58000),
+                ("HEADWEAR", 7, 60510), ("HEADWEAR", 7.125, 60520),
+                ("ACCS", "S/M", 83000), ("ACCS", "L/XL", 84000), ("ACCS", 8.0, 86500)]:
+        ws.append([row[0], row[1], None, None, None, row[1], row[2], "Y"])
+    path = tmp_path / "Sort Index.xlsx"
+    wb.save(path)
+    return str(path)
+
+
+def test_the_size_master_is_read_as_size_lists(tmp_path):
+    from app.core.brand_rules import parse_size_master
+    lists = {r["list_code"]: r for r in parse_size_master(_size_master_file(tmp_path))}
+    assert list(lists) == ["XS26XL", "ONESIZE", "HEADWEAR", "ACCS"]
+    assert lists["HEADWEAR"]["sizes"] == "7, 7.125"
+    assert lists["ACCS"]["sizes"] == "S/M, L/XL, 8"
+    assert lists["ACCS"]["sort"] == "83000, 84000, 86500"
+
+
+def test_brand_lists_come_before_the_master_and_socks_go_to_accs(tmp_path):
+    from app.core.brand_rules import parse_size_master, size_list_for, size_spelling
+    master = [{**r, "master": True} for r in parse_size_master(_size_master_file(tmp_path))]
+    tables = {"size_lists": master}
+    assert size_list_for(["S/M", "L/XL"], tables) == ("XS26XL", {"s": 1500, "s/m": 1750, "m": 2000,
+                                                                 "l/xl": 2750})
+    assert size_list_for(["S/M", "L/XL"], tables, prefer="ACCS")[0] == "ACCS"
+    assert size_list_for(["7", "7.125"], tables)[0] == "HEADWEAR"
+    # What Flender did for the brand wins over the master: Dime spells it Onesize.
+    dime = {"size_lists": [{"list_code": "ONESIZE", "sizes": "Onesize", "sort": "58000"}] + master}
+    assert size_list_for(["onesize"], dime, prefer="ACCS") == ("ONESIZE", {"onesize": 58000})
+    assert size_spelling("ONESIZE", dime) == {"onesize": "Onesize"}
+
+
+def test_the_size_master_is_imported_on_the_brand_rules_page(client, login_as, db_session, tmp_path):
+    from app.services.brand_rules import size_master, with_size_master
+    login_as()
+    with open(_size_master_file(tmp_path), "rb") as fh:
+        r = client.post("/brand-rules/size-master",
+                        files={"file": ("Sort Index.xlsx", fh.read())}, follow_redirects=True)
+    assert r.status_code == 200
+    assert "4 size lists" in r.text
+    assert [x["list_code"] for x in size_master(db_session)] == ["XS26XL", "ONESIZE", "HEADWEAR", "ACCS"]
+    tables = with_size_master(db_session, {"size_lists": [{"list_code": "PANTS", "sizes": "30",
+                                                           "sort": "9000"}]})
+    assert [x["list_code"] for x in tables["size_lists"]][:2] == ["PANTS", "XS26XL"]

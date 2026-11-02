@@ -645,13 +645,15 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         _check_size_runs(db, job, out, rules)
         out = _template_questions(out, kind, rules, job)
     elif kind == TEMP:
+        from app.services.brand_rules import with_size_master
         out = build_temp_sheet(
             rows, brand=job.brand or "", season=job.season or "",
             group_map=group_map, vocab=vocab, colour_lookup=colour_lookup,
             history=_history_from(reference, rows),
             earliest_ship_date=(config.earliest_ship_date if config else "") or "",
             colour_table=colour_table, temporary=temporary,
-            base_colour=uses_base, size_tables=rules["tables"],
+            base_colour=uses_base,
+            size_tables=with_size_master(db, rules["tables"]),
             uses_colour_codes=uses_codes,
             keep_upper=rules["settings"].get("keep_upper") or (),
             gender_map=rules["settings"].get("gender_map") or {},

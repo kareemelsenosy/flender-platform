@@ -215,6 +215,12 @@ _GROUP_WORDS = {
 }
 
 
+# Where SAP files a group's sizes when more than one list holds them: Dime's
+# socks and belts in S/M are ACCS, its caps in 7.125 HEADWEAR.
+_SIZE_LIST_FOR_GROUP = {"ACCS": "ACCS", "SOCKS": "ACCS", "BELT": "ACCS", "BAGS": "ACCS",
+                        "WALLET": "ACCS", "HEAD": "HEADWEAR"}
+
+
 def group_from_name(name: str, candidates) -> str:
     """The one candidate group the product name points to, or ''."""
     low = str(name or "").lower()
@@ -406,21 +412,6 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         run = runs.get((style, colour)) or [sap_size(get, x["size"]) for x in sizes]
         if len(sizes) > 1:
             run = [sap_size(get, x["size"]) for x in sizes]
-        # The brand's own SAP size lists first (learned from its finished
-        # TEMP sheets); the built-in runs only when the brand has none.
-        list_code, sort_of = size_list_for(run, size_tables)
-        spelled = size_spelling(list_code, size_tables)
-        list_why = ""
-        if not list_code:
-            list_code, list_why = size_list_code(run)
-        if not list_code:
-            # The subject is the size run, not the style: two styles sharing
-            # an unknown run are one decision, not two.
-            exceptions.append({"sku": style, "field": "U_def_size_list_code",
-                               "subject": "/".join(run),
-                               "severity": "manual_review", "reason": list_why,
-                               "suggestion": "Add this size run to the SAP size lists"})
-
         # Item group: one supplier subcategory can map to several SAP groups.
         candidates = group_map.get(subcat.upper(), [])
         if isinstance(candidates, str):
@@ -458,6 +449,23 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 "severity": "manual_review",
                 "reason": f"no SAP item group known for '{subcat}'",
                 "suggestion": f"Map '{subcat}' to a SAP item group"})
+
+        # The brand's own SAP size lists first (learned from its finished
+        # TEMP sheets), then SAP's size master; the built-in runs only when
+        # neither holds the run.
+        list_code, sort_of = size_list_for(run, size_tables,
+                                           prefer=_SIZE_LIST_FOR_GROUP.get(group, ""))
+        spelled = size_spelling(list_code, size_tables)
+        list_why = ""
+        if not list_code:
+            list_code, list_why = size_list_code(run)
+        if not list_code:
+            # The subject is the size run, not the style: two styles sharing
+            # an unknown run are one decision, not two.
+            exceptions.append({"sku": style, "field": "U_def_size_list_code",
+                               "subject": "/".join(run),
+                               "severity": "manual_review", "reason": list_why,
+                               "suggestion": "Add this size run to the SAP size lists"})
 
         if base_colour:
             base = propose_base_color(colour, vocab, colour_lookup,

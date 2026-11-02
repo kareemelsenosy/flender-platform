@@ -531,16 +531,24 @@ def size_prefix(scale: str, tables: dict) -> str:
     return ""
 
 
-def size_list_for(run: list[str], tables: dict) -> "tuple[str, dict[str, int]]":
+def size_list_for(run: list[str], tables: dict,
+                  prefer: str = "") -> "tuple[str, dict[str, int]]":
     """The SAP size list holding every size of a style, and its sort indexes.
 
     Returns ``(list_code, {size: sort})``, or ``("", {})`` when no list in the
-    brand's table holds them all. Lists are tried in table order.
+    brand's table holds them all. Lists are tried in table order, the
+    ``prefer``-red list first: socks in S/M are ACCS (83000), not the
+    clothing list's S/M (1750).
     """
     want = [_clean(s).lower() for s in run if _clean(s)]
     if not want:
         return "", {}
-    for r in tables.get("size_lists", []):
+    # The brand's own lists before SAP's master, the preferred list first
+    # within each: what Flender did for the brand wins over the general rule.
+    lists = sorted(tables.get("size_lists", []),
+                   key=lambda r: (bool(r.get("master")),
+                                  _clean(r.get("list_code")) != prefer if prefer else False))
+    for r in lists:
         sizes = [x.lower() for x in split_sizes(r.get("sizes"))]
         if sizes and all(w in sizes for w in want):
             sorts = split_sizes(r.get("sort"))
@@ -554,12 +562,63 @@ def size_list_for(run: list[str], tables: dict) -> "tuple[str, dict[str, int]]":
     return "", {}
 
 
+def _size_text(value) -> str:
+    """A size code as SAP writes it: 7.125 stays 7.125, 24.0 is 24."""
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else format(value, "g")
+    return _clean(value)
+
+
+def parse_size_master(path: str) -> list[dict]:
+    """SAP's size master (Flender's "Sort Index" sheet) as size lists.
+
+    One row per size: SIZE LIST, Size Code, …, Order Pos. Returns one entry
+    per list, in the sheet's order — ``{"list_code", "sizes", "sort"}``, the
+    shape of the brands' own size-list table.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        for ws in wb.worksheets:
+            rows = ws.iter_rows(values_only=True)
+            header = [str(h or "").strip().lower() for h in next(rows, ())]
+            try:
+                at_list = header.index("size list")
+                at_code = header.index("size code")
+                at_sort = header.index("order pos")
+            except ValueError:
+                continue
+            lists: dict[str, list] = {}
+            for row in rows:
+                code, size = _size_text(row[at_list]), _size_text(row[at_code])
+                try:
+                    sort = int(float(row[at_sort]))
+                except (TypeError, ValueError):
+                    continue
+                if code and size:
+                    lists.setdefault(code, []).append((size, sort))
+            if lists:
+                return [{"list_code": code,
+                         "sizes": ", ".join(z for z, _o in sizes),
+                         "sort": ", ".join(str(o) for _z, o in sizes)}
+                        for code, sizes in lists.items()]
+    finally:
+        wb.close()
+    raise ValueError("no sheet with SIZE LIST, Size Code and Order Pos columns")
+
+
 def size_spelling(list_code: str, tables: dict) -> dict[str, str]:
-    """How a SAP size list writes its sizes: {'onesize': 'Onesize'}."""
-    for r in tables.get("size_lists", []):
+    """How a SAP size list writes its sizes: {'onesize': 'Onesize'}.
+
+    The brand's own spelling first (Dime: Onesize), SAP's master for the rest.
+    """
+    out: dict[str, str] = {}
+    for r in sorted(tables.get("size_lists", []), key=lambda r: bool(r.get("master"))):
         if _clean(r.get("list_code")) == list_code:
-            return {z.lower(): z for z in split_sizes(r.get("sizes"))}
-    return {}
+            for z in split_sizes(r.get("sizes")):
+                out.setdefault(z.lower(), z)
+    return out
 
 
 def item_group_map(tables: dict) -> dict[str, list[str]]:

@@ -84,6 +84,7 @@ async def rules_index(request: Request, db: DBSession = Depends(get_db)):
         "brands": sorted(brands.values(), key=lambda b: (-b["pending"], b["brand"].lower())),
         "pending_total": len(pending),
         "tables": core.TABLES,
+        "size_master": svc.size_master(db),
     })
 
 
@@ -103,6 +104,33 @@ async def rules_training(request: Request, mode: str = Form(...),
     target = request.headers.get("referer") or "/brand-rules"
     return RedirectResponse(target if "/brand-rules" in target else "/brand-rules",
                             status_code=302)
+
+
+@router.post("/brand-rules/size-master")
+async def rules_size_master(request: Request, file: UploadFile = File(...),
+                            db: DBSession = Depends(get_db)):
+    """Import SAP's size master (the Sort Index sheet) for every brand."""
+    uid = get_current_user_id(request)
+    if not uid:
+        return RedirectResponse("/login", status_code=302)
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".xlsx"
+    if suffix != ".xlsx":
+        request.session["rules_note"] = "The size master must be an .xlsx file."
+        return RedirectResponse("/brand-rules#sizes", status_code=302)
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        path = tmp.name
+    try:
+        lists = svc.import_size_master(db, path, user_id=uid)
+        sizes = sum(len(core.split_sizes(r["sizes"])) for r in lists)
+        request.session["rules_note"] = (
+            f"Imported SAP's size master: {len(lists)} size lists, {sizes} sizes with "
+            f"their sort indexes. Every brand uses them from the next package you generate.")
+    except Exception as exc:
+        request.session["rules_note"] = f"Could not read the size master ({exc})."[:300]
+    finally:
+        os.unlink(path)
+    return RedirectResponse("/brand-rules#sizes", status_code=302)
 
 
 @router.post("/brand-rules/new")

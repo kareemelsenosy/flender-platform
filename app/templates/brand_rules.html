@@ -38,6 +38,30 @@
     </button>
   </form>
 
+  <form id="sizes" action="/brand-rules/size-master" method="post" enctype="multipart/form-data"
+        style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+               background:#fff;border:1px solid var(--gray-200,#eee);border-radius:12px;padding:14px 18px;margin-bottom:22px">
+    <div style="max-width:640px">
+      <strong style="font-size:0.95rem">SAP size master</strong>
+      <div style="font-size:0.84rem;color:var(--gray-500,#777);margin-top:3px">
+        {% if size_master %}
+        {{ size_master|length }} size lists ({{ size_master|map(attribute='list_code')|join(', ') }}) with every size's
+        sort index. Used for every brand after its own learned lists. Import a newer Sort Index sheet to replace it.
+        {% else %}
+        Not imported yet. Upload SAP's Sort Index sheet (SIZE LIST, Size Code, Order Pos) and every brand gets the
+        SAP size list and sort index for any size, not only those learned from its finished TEMP sheets.
+        {% endif %}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input type="file" name="file" accept=".xlsx" required style="font-size:0.82rem;max-width:220px">
+      <button type="submit"
+        style="padding:9px 18px;background:#111;color:#fff;border:0;border-radius:9px;font-weight:600;cursor:pointer;font-size:0.86rem">
+        Import
+      </button>
+    </div>
+  </form>
+
   {% if pending_total %}
   <div style="background:#fdfaf3;border:1px solid #efe0c2;border-left:3px solid #c9a227;border-radius:0 10px 10px 0;padding:13px 18px;margin-bottom:22px;color:#5f4a12">
     <strong>{{ pending_total }} rule change{{ '' if pending_total == 1 else 's' }} waiting for approval.</strong>

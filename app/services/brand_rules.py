@@ -248,6 +248,44 @@ def decide_change(db, change_id: int, approve: bool, *, user_id=None,
 # of colours and size runs to learn and nobody wants to click through them.
 
 TRAINING = "training_mode"
+SIZE_MASTER = "sap_size_master"
+
+
+def size_master(db) -> list[dict]:
+    """SAP's size lists for every brand, as imported from the Sort Index sheet."""
+    import json
+    from app.models import AppSetting
+    try:
+        row = db.get(AppSetting, SIZE_MASTER)
+    except Exception:
+        db.rollback()
+        return []
+    try:
+        return json.loads(row.value) if row and row.value else []
+    except ValueError:
+        return []
+
+
+def import_size_master(db, path: str, *, user_id=None) -> list[dict]:
+    """Replace the size master with the lists in ``path``."""
+    import json
+    from app.models import AppSetting
+    lists = core.parse_size_master(path)
+    row = db.get(AppSetting, SIZE_MASTER) or AppSetting(key=SIZE_MASTER)
+    row.value = json.dumps(lists)
+    row.updated_by_id = user_id
+    db.merge(row)
+    db.commit()
+    return lists
+
+
+def with_size_master(db, tables: dict) -> dict:
+    """The brand's tables with SAP's size master behind its own size lists."""
+    master = size_master(db)
+    if not master:
+        return tables
+    return {**tables, "size_lists": list(tables.get("size_lists", []))
+            + [{**r, "master": True} for r in master]}
 
 
 def training_mode(db) -> bool:
