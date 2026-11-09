@@ -118,6 +118,14 @@ def learn_settings(pairs) -> dict:
         out["description_from"] = "order"
     elif from_list:
         out["description_from"] = "list"
+    words = _gender_words(pairs)
+    if words:
+        # The gender column is learned from the pieces the name does not mark.
+        out["gender_words"] = words
+        genders = defaultdict(Counter)
+        for f, src in pairs:
+            if _v(f.get("U_Gender")) and not _named_gender(src, f, words):
+                genders[_v(src.get("Sex")).lower()][_v(f.get("U_Gender"))] += 1
     gmap = {k: c.most_common(1)[0][0] for k, c in genders.items()}
     if gmap:
         out["gender_map"] = gmap
@@ -164,6 +172,122 @@ def learn_settings(pairs) -> dict:
             changed += "/" not in web and bool(web)
     if kept > changed:
         out["colour_slash"] = "keep"
+    # SAP's item code is the supplier's own article number (ACL-271-SP-699-001),
+    # not style + colour name.
+    same = seen = 0
+    for f, src in pairs:
+        target = _flat(f.get("U_SuppCatNum"))
+        if target:
+            seen += 1
+            same += target == _flat(src.get("Original Item No.") or src.get("Item No."))
+    if seen and same / seen >= 0.9:
+        out["item_code"] = "supplier"
+    sizes = _size_spellings(pairs)
+    if sizes:
+        out["size_map"] = sizes
+    return out
+
+
+# Words in a product name that say who it is for.
+_GENDER_WORDS = {"WMN", "WMNS", "WOMEN", "WOMENS", "WOMAN", "LADIES", "LADY",
+                 "MEN", "MENS", "KIDS", "KID", "GIRLS", "BOYS", "UNISEX"}
+
+
+def _name_words(src, f) -> set:
+    name = _v(src.get("Item Description")) or _v(f.get("U_Webbeschreibung2"))
+    return set(re.findall(r"[A-Za-z]+", name.upper())) & _GENDER_WORDS
+
+
+def _named_gender(src, f, words: dict) -> bool:
+    return bool(_name_words(src, f) & set(words))
+
+
+def _gender_words(pairs) -> dict:
+    """A gender word in the name that overrules the gender column.
+
+    ACL marks every women's piece 'WMN' in its name while the supplier's
+    Gender Id says Unisex; Flender's sheet gives those F, and the unmarked
+    Unisex pieces M.
+    """
+    seen: dict[str, Counter] = defaultdict(Counter)
+    plain: dict[str, Counter] = defaultdict(Counter)
+    for f, src in pairs:
+        target = _v(f.get("U_Gender"))
+        if not target:
+            continue
+        found = _name_words(src, f)
+        for w in found:
+            seen[w][target] += 1
+        if not found:
+            plain[_v(src.get("Sex")).lower()][target] += 1
+    column = {k: c.most_common(1)[0][0] for k, c in plain.items()}
+    out = {}
+    for w, c in seen.items():
+        top, n = c.most_common(1)[0]
+        if n < 0.9 * sum(c.values()):
+            continue
+        # The word matters only where the column alone says something else.
+        differs = sum(column.get(_v(src.get("Sex")).lower()) != top
+                      for f, src in pairs if w in _name_words(src, f))
+        if differs >= 0.5 * sum(c.values()):
+            out[w] = top
+    return out
+
+
+def _size_spellings(pairs) -> dict:
+    """Supplier sizes SAP writes differently: ACL's 2XL is XXL."""
+    from app.core.temp_template import normalise_size
+    seen: dict[str, Counter] = defaultdict(Counter)
+    for f, src in pairs:
+        size = _v(src.get("Supplier Size") or src.get("Size"))
+        target = _v(f.get("U_SizeCode"))
+        if size and target:
+            seen[normalise_size(size).upper()][target] += 1
+    out = {}
+    for size, c in seen.items():
+        top, n = c.most_common(1)[0]
+        if top.upper() != size and n >= 3 and n >= 0.9 * sum(c.values()):
+            out[size] = top
+    return out
+
+
+# The TEMP columns a supplier column feeds as it is, and how to compare them.
+_FED_BY = {
+    "Item Description": ("U_Webbeschreibung2", lambda v: " ".join(v.lower().split())),
+    "Color": ("U_Web_Color", lambda v: " ".join(v.lower().replace("/", "-").split())),
+    "Material": ("U_Material", lambda v: " ".join(v.lower().split())),
+    "Duty Position": ("U_HS_Code", lambda v: re.sub(r"\D", "", re.sub(r"\.0$", "", v))),
+}
+
+
+def learn_columns(pairs) -> dict:
+    """Which of the supplier's columns the finished sheet was filled from.
+
+    ACL's master data names each product three times — on the size tab, the
+    colour tab and the model tab — and Flender used the model tab's
+    (“Ride A Lot T-Shirt” where the others say “Rida”). A column that agrees
+    with the finished sheet clearly more often than the one read now becomes
+    the brand's column for that field.
+    """
+    from app.core.field_mapping import FIELD_NAMES
+    skip = set(FIELD_NAMES) | {"Original Item No.", "Supplier Item Code", "Supplier Size"}
+    out = {}
+    for field, (column, same) in _FED_BY.items():
+        rows = [(f, src) for f, src in pairs if _v(f.get(column))]
+        if len(rows) < 3:
+            continue
+        def agreement(col):
+            return sum(same(_v(src.get(col))) == same(_v(f.get(column)))
+                       for f, src in rows) / len(rows)
+        # Against the column read now, as the supplier wrote it: the field
+        # itself has already been tidied (typos put right).
+        read = Counter((src.get("__columns") or {}).get(field, field) for _f, src in rows)
+        current = agreement(read.most_common(1)[0][0])
+        cols = {c for _f, src in rows for c in src
+                if c not in skip and not str(c).startswith(("_", "(unnamed", "Order "))}
+        scored = sorted(((agreement(c), c) for c in cols), reverse=True)
+        if scored and scored[0][0] >= 0.9 and scored[0][0] > current + 0.01:
+            out[field] = scored[0][1]
     return out
 
 
@@ -339,4 +463,5 @@ def learn(finished: list[dict], columns: list[str], rows: list[dict]) -> dict:
         "keep_upper": learn_upper_words(finished),
         "settings": learn_settings(pairs),
         "colours": learn_colours(pairs),
+        "columns": learn_columns(pairs),
     }

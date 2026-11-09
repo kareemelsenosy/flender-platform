@@ -424,6 +424,10 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
         done.append(f"Product group read from the “{groups['column']}” column: "
                     f"{groups['total']} categories mapped to SAP item groups "
                     f"({groups['clean']} map to exactly one).")
+    for field, header in (learned.get("columns") or {}).items():
+        tables["columns"], _ = core.upsert_row(
+            tables.get("columns", []), "columns", {"field": field, "header": header})
+        done.append(f"{field} read from the “{header}” column, as the finished sheet has it.")
     if learned.get("size_lists"):
         tables["size_lists"] = core.upsert_many(tables.get("size_lists", []),
                                                 "size_lists", learned["size_lists"])
@@ -466,6 +470,14 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
             words.append("colours keep their slash (Black/Tortoise)")
         if learned_settings.get("barcode_size") == "supplier":
             words.append("built barcodes end with the supplier's own size (OS, S/M)")
+        if learned_settings.get("item_code") == "supplier":
+            words.append("the item code is the supplier's own article number")
+        if learned_settings.get("gender_words"):
+            words.append("a name with " + ", ".join(
+                f"{w} is {g}" for w, g in learned_settings["gender_words"].items()))
+        if learned_settings.get("size_map"):
+            words.append("sizes written as SAP has them: " + ", ".join(
+                f"{a} = {b}" for a, b in learned_settings["size_map"].items()))
         if words:
             done.append("Also learned " + "; ".join(words) + ".")
 

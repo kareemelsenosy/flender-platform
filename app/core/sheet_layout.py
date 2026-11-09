@@ -152,13 +152,148 @@ def load_supplier_table(path: str) -> "tuple[pd.DataFrame, dict]":
         frames.append(body)
 
     table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    table, joined, key_fixes = _join_sheets_on_key(table, sheets, used)
     return table, {
         "sheets_used": used,
         "sheets_available": list(sheets),
         "header_row": header_row,
         "section_above": section_above,
         "rows": len(table),
+        "joined_sheets": joined,
+        "key_fixes": key_fixes,
     }
+
+
+def _norm_label(value) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _key_text(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = re.sub(r"\s+", " ", str(value)).strip().upper()
+    return "" if text in ("NAN", "NONE") else text
+
+
+def _similar(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, _norm_label(a), _norm_label(b)).ratio()
+
+
+def _with_header(raw: pd.DataFrame) -> pd.DataFrame:
+    h = find_header_row(raw)
+    cols = [str(v).strip() if pd.notna(v) else "" for v in raw.iloc[h].tolist()]
+    body = raw.iloc[h + 1:].copy()
+    body.columns = cols
+    body = body.loc[:, [bool(c) for c in body.columns]]
+    body = body.loc[:, ~body.columns.duplicated()]
+    return body.dropna(how="all").reset_index(drop=True)
+
+
+def _join_sheets_on_key(table: pd.DataFrame, sheets: dict, used: list[str]):
+    """Sheets that describe the same articles at a coarser level, joined on.
+
+    A German master-data file (Another Cotton Lab's Stammdaten) splits one
+    collection over three tabs: Modell (HS code, origin, gender per article),
+    Colors (colour names, material) and SKU & Barcodes (one row per size).
+    The size tab is the data; the others share its Factory Article No and are
+    joined onto every size row, so nothing on them is lost.
+
+    Two tabs typed by hand drift: Modell row 120 says ACL-261-TS-745-001
+    where Colors and the SKU tab say ACL-271-TS-745-003. When two tabs list
+    the same articles row for row, a row whose number matches nothing is the
+    article on the same row of the other tab — if the names agree.
+
+    Returns ``(table, joined sheet names, key fixes)``.
+    """
+    if table.empty or len(sheets) < 2:
+        return table, [], []
+    base_cols = {_norm_label(c): c for c in table.columns if str(c).strip()}
+    sides = []
+    for name, raw in sheets.items():
+        if name in used or raw.shape[0] < 4:
+            continue
+        frame = _with_header(raw)
+        if frame.empty or len(frame) > len(table):
+            continue
+        best = None
+        for col in frame.columns:
+            base_col = base_cols.get(_norm_label(col))
+            # A product name is shared by its colourways: never the key.
+            if not base_col or re.search(r"description|name", _norm_label(col)):
+                continue
+            keys = [_key_text(v) for v in frame[col]]
+            filled = [k for k in keys if k]
+            if len(filled) < 3 or len(set(filled)) < 0.75 * len(filled):
+                continue
+            base_keys = {_key_text(v) for v in table[base_col]}
+            hit = sum(k in base_keys for k in filled) / len(filled)
+            if hit >= 0.6 and (best is None or hit > best[0]):
+                best = (hit, col, base_col, keys)
+        if best:
+            sides.append({"name": name, "frame": frame, "col": best[1],
+                          "base_col": best[2], "keys": best[3]})
+    if not sides:
+        return table, [], []
+
+    # The product name, to tell apart two articles a supplier numbered alike
+    # (ACL-271-TS-750-002 is a T-Shirt and a Raglan Longsleeve) and to
+    # confirm a mistyped number is the same article.
+    def name_col(cols, avoid):
+        return next((c for c in cols if c != avoid and re.search(
+            r"description|name|model", _norm_label(c))), None)
+
+    key_fixes = []
+    for side in sides:
+        base_keys = {_key_text(v) for v in table[side["base_col"]]}
+        side_name = name_col(side["frame"].columns, side["col"])
+        for other in sides:
+            if other is side or len(other["keys"]) != len(side["keys"]):
+                continue
+            same = sum(a == b for a, b in zip(side["keys"], other["keys"]))
+            if same < 0.8 * len(side["keys"]):
+                continue
+            other_name = name_col(other["frame"].columns, other["col"])
+            for i, (mine, theirs) in enumerate(zip(side["keys"], other["keys"])):
+                if mine in base_keys or theirs not in base_keys or mine == theirs:
+                    continue
+                if side_name and other_name and _similar(
+                        side["frame"].at[i, side_name],
+                        other["frame"].at[i, other_name]) < 0.75:
+                    continue
+                side["keys"][i] = theirs
+                key_fixes.append({"sheet": side["name"], "row": i + 2,
+                                  "wrote": mine, "used": theirs})
+
+    out = table.copy()
+    taken = {_norm_label(c) for c in out.columns}
+    base_name = name_col(table.columns, None)
+    joined = []
+    for side in sides:
+        frame = side["frame"]
+        side_name = name_col(frame.columns, side["col"])
+        index: dict[str, list[int]] = {}
+        for i, k in enumerate(side["keys"]):
+            if k:
+                index.setdefault(k, []).append(i)
+        picks = []
+        for _, row in table.iterrows():
+            found = index.get(_key_text(row[side["base_col"]]), [])
+            if len(found) > 1 and base_name and side_name:
+                found = [max(found, key=lambda i: _similar(
+                    row[base_name], frame.at[i, side_name]))]
+            picks.append(found[0] if found else None)
+        for col in frame.columns:
+            if col == side["col"] or frame[col].isna().all():
+                continue
+            label = col if _norm_label(col) not in taken else f"{col} ({side['name']})"
+            if _norm_label(label) in taken:
+                continue
+            taken.add(_norm_label(label))
+            values = frame[col].tolist()
+            out[label] = [values[i] if i is not None else None for i in picks]
+        joined.append(side["name"])
+    return out, joined, key_fixes
 
 
 def workbook_labels(path: str) -> list[str]:

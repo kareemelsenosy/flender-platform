@@ -194,6 +194,29 @@ def _sample(cf, limit: int = 400) -> "tuple[list[str], list[dict]]":
     return headers, table.head(limit).to_dict("records")
 
 
+def _note_joined_tabs(cf, report: dict) -> None:
+    """Say which tabs of a master-data file were read together, and which
+    mistyped article numbers were matched (ACL's Modell row 120)."""
+    from app.core.sheet_layout import load_supplier_table
+    try:
+        _table, info = load_supplier_table(cf.parse_path)
+    except Exception:
+        return
+    if not info.get("joined_sheets"):
+        return
+    report["warnings"].append(
+        f"{cf.filename}: the {', '.join(info['joined_sheets'])} tab(s) were joined onto "
+        f"{', '.join(info['sheets_used'])} by article number")
+    fixes = info.get("key_fixes") or []
+    if fixes:
+        shown = "; ".join(f"{f['sheet']} row {f['row']} says {f['wrote']}, read as {f['used']}"
+                          for f in fixes[:4])
+        report["warnings"].append(
+            f"{cf.filename}: {len(fixes)} article number(s) differ between the tabs and "
+            f"were matched by their row and name — check them: {shown}"
+            + (" …" if len(fixes) > 4 else ""))
+
+
 def _identity_from_contents(job: CollectionJob) -> None:
     """Fill a missing brand or season from inside the supplier files."""
     if job.brand and job.season:
@@ -299,6 +322,7 @@ def _read_inside_files(db: DBSession, job: CollectionJob, report: dict) -> None:
         fields = field_mapping.detect(headers, overrides)
         mappings[str(cf.id)] = {"file": cf.filename, "kind": cf.kind,
                                 "headers": headers, "fields": fields}
+        _note_joined_tabs(cf, report)
         if cf.kind == intake_core.ORDER_SHEET:
             # Komono has no colour column: its colour is the description less
             # the style name, read later, so nothing is missing.

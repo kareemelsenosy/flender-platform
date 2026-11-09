@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -138,6 +139,11 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
                 break
 
     rows = field_mapping.apply(table.to_dict("records"), mapping)
+    # Which column each field was read from, for teaching to compare against.
+    read_from = {f: m["header"] for f, m in mapping.items()
+                 if isinstance(m, dict) and m.get("header")}
+    for r in rows:
+        r["__columns"] = read_from
     _colour_code_from_unnamed(rows, headers, mapping)
     _hs_code_by_value(rows, headers, mapping)
     rows = _sections(rows, headers, info.get("section_above", ""), mapping)
@@ -423,7 +429,221 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
     rows, dropped = _dedupe_lines(rows)
     if dropped:
         report["duplicate_lines_removed"] = dropped
+    _shared_article_numbers(rows)
+    _size_typos(rows)
+    _name_typos(rows)
     return rows, "", report
+
+
+def _note(row: dict, field: str, subject: str, reason: str, suggestion: str,
+          severity: str = "warning") -> None:
+    """Something the collection fixed or could not, shown with the package."""
+    row.setdefault("__notes", []).append({
+        "field": field, "subject": subject, "severity": severity,
+        "reason": reason, "suggestion": suggestion})
+
+
+def notes_as_exceptions(rows: list[dict]) -> list[dict]:
+    """The rows' notes as package exceptions, one per line they touch."""
+    out = []
+    for r in rows:
+        for n in r.get("__notes") or []:
+            out.append({"sku": str(r.get("Item No.") or ""), **n})
+    return out
+
+
+def _article_parts(code: str) -> list[str]:
+    return re.split(r"[-_]", str(code or "").strip().upper())
+
+
+def _shared_article_numbers(rows: list[dict]) -> None:
+    """Two products under one article number, told apart.
+
+    ACL numbered the Country Club T-Shirt and the Country Club Raglan
+    Longsleeve both ACL-271-TS-750-002. SAP needs one per product; Flender
+    gave the longsleeve ACL-271-LS-750-002, the letters every other ACL
+    longsleeve carries. The product word decides which part of the number
+    is the type, from the collection's own numbers.
+    """
+    from app.core.temp_template import product_words
+
+    def word(r):
+        keys = product_words(r.get("Item Description"))
+        return keys[-1] if keys else ""
+
+    def article(r):
+        return str(r.get("Supplier Item Code") or r.get("Original Item No.")
+                   or r.get("Item No.") or "").strip()
+
+    names: dict[str, dict[str, list]] = {}
+    for r in rows:
+        a = article(r)
+        name = " ".join(str(r.get("Item Description") or "").split())
+        if a and name and not _blank(name):
+            names.setdefault(a.upper(), {}).setdefault(name.lower(), []).append(r)
+    clashes = {a: by for a, by in names.items() if len(by) > 1
+               and len({word(rs[0]) for rs in by.values()}) > 1}
+    if not clashes:
+        return
+    # Which letters each product word carries, across the other articles —
+    # only in the parts that vary (ACL's brand prefix says nothing).
+    values: dict[int, set] = {}
+    for a in names:
+        for i, p in enumerate(_article_parts(a)):
+            if p.isalpha():
+                values.setdefault(i, set()).add(p)
+    letters: dict[tuple, Counter] = {}
+    for a, by in names.items():
+        if a in clashes:
+            continue
+        w = word(next(iter(by.values()))[0])
+        for i, p in enumerate(_article_parts(a)):
+            if p.isalpha() and len(values.get(i, ())) > 1:
+                letters.setdefault((w, i), Counter())[p] += 1
+    for a, by in clashes.items():
+        parts = _article_parts(a)
+        kept = False
+        for name, rs in by.items():
+            w = word(rs[0])
+            fixed = None
+            for i, p in enumerate(parts):
+                seen = letters.get((w, i))
+                if not p.isalpha() or not seen:
+                    continue
+                top, n = seen.most_common(1)[0]
+                if top == p:
+                    break           # this product already carries its letters
+                if n >= 2 and n >= 0.6 * sum(seen.values()) and seen[p] == 0:
+                    fixed = i, top
+                    break
+            if not fixed:
+                if kept:
+                    for r in rs:
+                        _note(r, "U_SuppCatNum", a,
+                              f"{a} is the article number of more than one product "
+                              f"({', '.join(sorted(by))})",
+                              "Give each product its own article number", "critical")
+                kept = True
+                continue
+            i, top = fixed
+            new = _with_part(article(rs[0]), i, top)
+            new_style = _with_part(rs[0].get("Item No."), i, top)
+            for r in rs:
+                for k in ("Supplier Item Code", "Original Item No."):
+                    if not _blank(r.get(k)):
+                        r[k] = new
+                r["Item No."] = new_style
+                _note(r, "U_SuppCatNum", a,
+                      f"{a} is also the article number of another product; "
+                      f"{rs[0].get('Item Description')} is written {new}, with the "
+                      f"letters {top} the brand's other {w.lower()}s carry",
+                      "Check the new article number with the supplier")
+
+
+def _with_part(code, i: int, value: str) -> str:
+    """'ACL-271-TS-750-002' with part 2 written LS: 'ACL-271-LS-750-002'."""
+    code = str(code or "")
+    pieces, seps = re.split(r"[-_]", code), re.findall(r"[-_]", code)
+    if i >= len(pieces):
+        return code
+    pieces[i] = value
+    return pieces[0] + "".join(s + p for s, p in zip(seps, pieces[1:]))
+
+
+# The order sizes come in, smallest first.
+_LETTER_SIZES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL"]
+
+
+def _size_typos(rows: list[dict]) -> None:
+    """A size written twice where the run skips one: ACL's sweatpant in Navy
+    runs XS, S, s, L, XL, 2XL — the second S sits where M belongs."""
+    from app.core.temp_template import normalise_size
+    canon = {"2XL": "XXL", "3XL": "XXXL", "2XS": "XXS"}
+
+    def rank(r):
+        s = normalise_size(str(r.get("Size") or "").strip()).upper()
+        s = canon.get(s, s)
+        return _LETTER_SIZES.index(s) if s in _LETTER_SIZES else None
+
+    groups: dict[tuple, list] = {}
+    for r in rows:
+        key = (str(r.get("Item No.") or ""), str(r.get("Colour Code") or r.get("Color") or ""))
+        groups.setdefault(key, []).append(r)
+    for key, rs in groups.items():
+        ranks = [rank(r) for r in rs]
+        if len(rs) < 3 or None in ranks or len(set(ranks)) == len(ranks):
+            continue
+        for i in range(1, len(rs) - 1):
+            prev, here, nxt = ranks[i - 1], ranks[i], ranks[i + 1]
+            if here == prev and nxt - prev == 2:
+                missing = _LETTER_SIZES[prev + 1]
+                was = rs[i].get("Size")
+                rs[i].setdefault("Supplier Size", was)
+                rs[i]["Size"] = missing
+                ranks[i] = prev + 1
+                _note(rs[i], "U_SizeCode", f"{key[0]} {was}",
+                      f"{key[0]} lists size {was} twice and no {missing}; the second "
+                      f"(barcode {rs[i].get('Barcode') or '-'}) is taken as {missing}",
+                      "Check the size with the supplier")
+
+
+def _name_typos(rows: list[dict]) -> None:
+    """A word typed with a letter missing, put right from the brand's other names.
+
+    ACL's master data has 'Another Wide Ft Camo Jorts', 'Rid A Lot Hoodie' and
+    'Slow Sunday Longsleve'; its other names say Wide Fit, Ride A Lot and
+    Longsleeve. Only a word that appears in a single name is corrected, only
+    to a word that spells it with one more letter (never just a plural), and
+    only when the right spelling is common or follows the same word.
+    """
+    styles: dict[str, str] = {}
+    for r in rows:
+        name = " ".join(str(r.get("Item Description") or "").split())
+        if name and not _blank(name):
+            styles.setdefault(name, name)
+    names = list(styles)
+    if len(names) < 5:
+        return
+    count: Counter = Counter()
+    spelled: dict[str, str] = {}
+    pairs: set = set()
+    for n in names:
+        words = n.split()
+        for w in set(words):
+            count[w.lower()] += 1
+            spelled.setdefault(w.lower(), w)
+        for a, b in zip(words, words[1:]):
+            pairs.add((a.lower(), b.lower()))
+    fixes: dict[str, str] = {}
+    for n in names:
+        words = n.split()
+        out = list(words)
+        for i, w in enumerate(words):
+            low = w.lower()
+            if count[low] != 1 or not low.isalpha():
+                continue
+            best = None
+            for v, c in count.items():
+                if len(v) != len(low) + 1 or not v.isalpha() or v in (low + "s", low + "es"):
+                    continue
+                if not any(v[:j] + v[j + 1:] == low for j in range(len(v))):
+                    continue
+                context = ((i > 0 and (words[i - 1].lower(), v) in pairs)
+                           or (i + 1 < len(words) and (v, words[i + 1].lower()) in pairs))
+                if (context or (len(low) >= 5 and c >= 3)) and (best is None or c > best[1]):
+                    best = (v, c)
+            if best:
+                out[i] = spelled[best[0]]
+        if out != words:
+            fixes[n] = " ".join(out)
+    for r in rows:
+        name = " ".join(str(r.get("Item Description") or "").split())
+        if name in fixes:
+            r["Item Description"] = fixes[name]
+            _note(r, "U_Webbeschreibung2", name,
+                  f"the supplier wrote “{name}”; corrected to “{fixes[name]}” "
+                  f"as the brand's other names spell it",
+                  "Check the spelling")
 
 
 def _abbreviates(suffix: str, colour) -> bool:
@@ -470,6 +690,9 @@ _SPLIT_STYLE = re.compile(r"^([A-Z0-9]{4,})-([A-Z0-9]{2,8})$", re.I)
 
 _TRAILING_CODE = re.compile(r"^(.*\d)([A-Za-z]{2,4})$")
 
+# A style written in parts with the colour code last (ACL-271-SP-699-001).
+_CODE_TAIL = re.compile(r"^([A-Z0-9]+(?:[-_][A-Z0-9]+)+)[-_]([A-Z0-9]{1,4})$", re.I)
+
 
 def _colour_code_suffix(item: str, colour) -> str:
     """The colour code on the end of a style code, or ''.
@@ -514,6 +737,15 @@ def fill_from_collection(rows: list[dict], job, settings: dict | None = None) ->
             # Komono's "Size" is the frame measurement; SAP has one size.
             row.setdefault("Supplier Size", row.get("Size"))
             row["Size"] = "onesize"
+        size_map = (settings or {}).get("size_map") or {}
+        if size_map and not _blank(row.get("Size")):
+            # ACL writes 2XL where SAP has XXL.
+            from app.core.temp_template import normalise_size
+            sap = size_map.get(normalise_size(str(row["Size"]).strip()).upper())
+            if sap:
+                row.setdefault("Supplier Size", row.get("Size"))
+                row.setdefault("Barcode Size", row.get("Size"))
+                row["Size"] = sap
         # Dime: DIMESU262CHA is style DIMESU262 in colour CHA.
         if (settings or {}).get("style_has_colour_code"):
             cut = _colour_code_suffix(item, row.get("Color"))
@@ -521,8 +753,17 @@ def fill_from_collection(rows: list[dict], job, settings: dict | None = None) ->
                 item = row["Item No."] = item[:-len(cut)]
                 if _blank(row.get("Colour Code")):
                     row["Colour Code"] = cut.upper()
-        m = _SPLIT_STYLE.match(item)
         code = str(row.get("Colour Code") or "").strip().upper()
+        if (settings or {}).get("item_code") == "supplier" and item:
+            # SAP keeps ACL's own article number as the item code.
+            row.setdefault("Supplier Item Code", item)
+        # ACL: ACL-271-SP-699-001 is style ACL-271-SP-699 in colour 1.
+        tail = _CODE_TAIL.match(item)
+        if tail and code and (tail.group(2).upper() == code or (
+                tail.group(2).isdigit() and code.isdigit()
+                and int(tail.group(2)) == int(code))):
+            item = row["Item No."] = tail.group(1)
+        m = _SPLIT_STYLE.match(item)
         if m and (_abbreviates(m.group(2), row.get("Color"))
                   or (code and m.group(2).upper() == code)):
             # 'JK00527-BLACK' is style JK00527 in BLACK. Split even when the
@@ -660,7 +901,8 @@ def generate(db, job, kind: str, decisions=None) -> dict:
             hs_digits=int(rules["settings"].get("hs_digits") or 0),
             group_by_word=bool(rules["settings"].get("group_by_product_word")),
             barcode_supplier_size=rules["settings"].get("barcode_size") == "supplier",
-            keep_colour_slash=rules["settings"].get("colour_slash") == "keep")
+            keep_colour_slash=rules["settings"].get("colour_slash") == "keep",
+            gender_words=rules["settings"].get("gender_words") or {})
         out = _template_questions(out, kind, rules, job)
     elif kind == ATTRIBUTES:
         from app.core.attribute_engine import enrich_style
@@ -731,6 +973,8 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         from app.core.sap_creation import item_colour_code
 
         def code_of(r):
+            if not _blank(r.get("Supplier Item Code")):
+                return str(r["Supplier Item Code"]).strip()
             return item_colour_code(r.get("Item No."), r.get("Colour Code"),
                                     r.get("Color"), uses_codes,
                                     keep_slash=rules["settings"].get("colour_slash") == "keep")
@@ -757,6 +1001,8 @@ def generate(db, job, kind: str, decisions=None) -> dict:
         return {"error": f"unknown package {kind!r}", "columns": [], "rows": [],
                 "exceptions": [], "summary": {}}
 
+    if kind in (TEMP, PRODUCT_CREATION):
+        out["exceptions"] = notes_as_exceptions(rows) + list(out.get("exceptions") or [])
     out = _apply_fill_decisions(out, decisions)
     out["reference_note"] = ref_note
     if reference:

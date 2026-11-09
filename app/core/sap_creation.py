@@ -172,8 +172,9 @@ def build_row(src: dict, *, season: str, collection: str,
 
     out["Item No."] = item_no
     out["Colour Code"] = colour_code
-    out["Item.Colour"] = item_colour_code(item_no, colour_code, colour_name,
-                                          uses_colour_codes, keep_slash=keep_slash)
+    # ACL's own article number is already style + colour (ACL-271-SP-699-001).
+    out["Item.Colour"] = get("Supplier Item Code") or item_colour_code(
+        item_no, colour_code, colour_name, uses_colour_codes, keep_slash=keep_slash)
     if uses_colour_codes:
         out["House Colour"], out["Finish"] = split_colour_code(colour_code)
 

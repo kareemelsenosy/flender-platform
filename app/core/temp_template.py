@@ -200,7 +200,7 @@ _GENDER = {"m": "M", "men": "M", "mens": "M", "men's": "M", "male": "M",
 _GROUP_WORDS = {
     "HOODYS": r"hood",
     "SWEATER": r"sweater|crew ?neck|jumper|cardigan|knit",
-    "JACKETS": r"jacket|fleece|coat|parka|anorak|vest|gilet|shell|bomber",
+    "JACKETS": r"jacket|fleece|coat|parka|anorak|vest|gilet|shell|bomber|windbreaker",
     "LONGSL": r"\bl/?s\b|long ?sleeve|longsleeve",
     "T-SHIRTS": r"\btee\b|t-shirt",
     "POLOS": r"polo",
@@ -276,6 +276,14 @@ def gender_code(value: str, brand_map=None) -> str:
     return _GENDER.get(v.lower(), v[:1].upper())
 
 
+def _gender_in_name(name: str, words) -> str:
+    """ACL's 'Another WMN Signature Longsleeve' is F whatever its Gender Id says."""
+    if not words:
+        return ""
+    found = set(re.findall(r"[A-Za-z]+", str(name or "").upper()))
+    return next((g for w, g in words.items() if w.upper() in found), "")
+
+
 def barcode_of(src: dict) -> str:
     """The supplier's barcode on a row, digits only, or ''."""
     for key in ("Barcode", "EAN", "UPC"):
@@ -327,7 +335,7 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                      gender_map=None, hs_digits: int = 0,
                      group_by_word: bool = False,
                      barcode_supplier_size: bool = False,
-                     keep_colour_slash: bool = False) -> dict:
+                     keep_colour_slash: bool = False, gender_words=None) -> dict:
     """Build the TEMP sheet from supplier order rows.
 
     ``group_map`` maps a supplier subcategory to a SAP item group. It is
@@ -389,7 +397,10 @@ def build_temp_sheet(rows, *, brand: str, season: str,
             if label not in runs.setdefault(key, []):
                 runs[key].append(label)
 
-    for order_index, raw in enumerate(rows, start=1):
+    # U_OSRow numbers the order's lines: one per style-colour, however many
+    # rows the supplier spends on its sizes (ACL's SKU tab: one per size).
+    line_of: dict[tuple, int] = {}
+    for raw in rows:
         src = {normalise_header(k): v for k, v in raw.items()}
         get = lambda *k: next(                                   # noqa: E731
             (str(src[x]).strip() for x in k
@@ -399,6 +410,9 @@ def build_temp_sheet(rows, *, brand: str, season: str,
         # cleaned (HUF's 'JK00525-CAMO' split into style and colour code).
         style = get("Item No.", "Style Number", "Style Code")
         colour = get("Color", "Colour")
+        order_index = line_of.setdefault(
+            (get("Original Item No.") or style, get("Colour Code", "Color Code") or colour),
+            len(line_of) + 1)
         name = get("Item Description", "Name", "Description")
         subcat = get("Subcategory", "Item Group", "Category")
         sizes = expand_sizes(src)
@@ -423,6 +437,20 @@ def build_temp_sheet(rows, *, brand: str, season: str,
             if by_word and (group_by_word or not candidates
                             or set(by_word) <= set(candidates)):
                 candidates = by_word
+            elif group_by_word and not candidates:
+                # A product word the finished sheet never showed (ACL's first
+                # Jeans): the name, among the groups this brand uses.
+                used = sorted({g for v in group_map.values()
+                               for g in ([v] if isinstance(v, str) else v)})
+                guess = group_from_name(name, used)
+                if guess:
+                    candidates = [guess]
+                    exceptions.append({
+                        "sku": style, "field": "U_ItmsGrpCod", "subject": name,
+                        "severity": "warning",
+                        "reason": f"no SAP item group learned for '{name}' yet; "
+                                  f"{guess} from the name",
+                        "suggestion": "Check the item group"})
         group = candidates[0] if len(candidates) == 1 else ""
         if len(candidates) > 1:
             # The product's own name usually settles it: HUF's C&S ZIP FLEECE
@@ -484,7 +512,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
             hs = hs[:hs_digits]          # Komono's SAP holds 8 of the 10 digits
         from_sheet = {"U_HS_Code": hs,
                       "U_COO": country_code(get("Country of Origin", "COO")),
-                      "U_Gender": gender_code(get("Sex", "Gender"), gender_map)}
+                      "U_Gender": (_gender_in_name(name, gender_words)
+                                   or gender_code(get("Sex", "Gender"), gender_map))}
         hist = {**history.get(style, {}),
                 **{k: v for k, v in from_sheet.items() if v}}
         colour_code = get("Colour Code", "Color Code")
@@ -511,12 +540,14 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                 # or the colour name where the brand has no codes.
                 "U_CodeBars": (barcode_of(src) if len(sizes) == 1 and barcode_of(src)
                                else barcode(style, colour_code or colour,
-                                            s["size"] if barcode_supplier_size else size,
+                                            ((len(sizes) == 1 and get("Barcode Size"))
+                                             or s["size"]) if barcode_supplier_size else size,
                                             barcode_supplier_size)),
                 # Carhartt / Edwin: style.colour-code; others: style-COLOUR NAME.
-                "U_SuppCatNum": item_colour_code(style, colour_code, colour,
-                                                 uses_colour_codes,
-                                                 keep_slash=keep_colour_slash),
+                # ACL: the supplier's own article number, when SAP keeps it.
+                "U_SuppCatNum": get("Supplier Item Code") or item_colour_code(
+                    style, colour_code, colour, uses_colour_codes,
+                    keep_slash=keep_colour_slash),
                 "U_Material": get("Material"),
                 "U_VCat": smart_title(subcat),
                 "U_ItmsGrpCod": group,
