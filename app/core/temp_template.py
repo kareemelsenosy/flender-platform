@@ -114,7 +114,9 @@ def web_colour(colour: str, keep_slash: bool = False) -> str:
     text = str(colour or "").strip()
     if not keep_slash:
         text = re.sub(r"(?<=\S)/(?=\S)", "-", text)
-    return smart_title(text)
+    # In a colour LT is Light: Hiking Patrol's 'LT GREY' is Lt Grey, though
+    # its names keep LT ('Edge LT Softshell').
+    return re.sub(r"\bLT\b", "Lt", smart_title(text))
 
 
 def size_list_code(sizes) -> "tuple[str, str]":

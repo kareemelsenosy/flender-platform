@@ -139,6 +139,7 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
                 break
 
     rows = field_mapping.apply(table.to_dict("records"), mapping)
+    rows = _split_colour_lists(rows, mapping)
     # Which column each field was read from, for teaching to compare against.
     read_from = {f: m["header"] for f, m in mapping.items()
                  if isinstance(m, dict) and m.get("header")}
@@ -167,6 +168,26 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
                                   has_size_field=bool(mapping["Size"]["header"]))
     mapping["_size_note"] = size_note
     return rows, mapping
+
+
+def _split_colour_lists(rows: list[dict], mapping) -> list[dict]:
+    """One row per colour where a style lists its colours in one cell.
+
+    Hiking Patrol's master data: COLORS 'CHARCOAL BLACK, GREY, STONE'. Only
+    under a plural header — Carhartt's 'Alton Check, Cypress' is one colour.
+    """
+    header = (mapping.get("Color") or {}).get("header") or ""
+    if field_mapping.norm(header) not in ("colors", "colours"):
+        return rows
+    out = []
+    for r in rows:
+        value = "" if _blank(r.get("Color")) else str(r["Color"])
+        parts = [p.strip() for p in re.split(r"[,\n]", value) if p.strip()]
+        if len(parts) < 2 or not _blank(r.get("Barcode")):
+            out.append(r)
+            continue
+        out.extend({**r, "Color": p, header: p} for p in parts)
+    return out
 
 
 _HEADING = re.compile(r"^[^\d]{2,40}$")
@@ -384,6 +405,12 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
         # A brand with prices inside the order sheet still has a price package.
         files = [f for f in job.files
                  if f.kind == intake_core.ORDER_SHEET and f.parse_path]
+    if not files and want == intake_core.ORDER_SHEET:
+        # Only the brand's master data (Hiking Patrol FW26): every product in
+        # it is built.
+        files = [f for f in job.files
+                 if f.kind == intake_core.PRODUCT_LIST and f.parse_path]
+        want = intake_core.PRODUCT_LIST
     if not files:
         return [], f"no {intake_core.KIND_LABELS.get(want, want)} in this collection", {}
 
@@ -432,6 +459,11 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
     _shared_article_numbers(rows)
     _size_typos(rows)
     _name_typos(rows)
+    # Colours only to a colour word: CHACOAL is Charcoal, but SMOKY BROWN
+    # stays as written next to another style's SMOKEY BROWN.
+    from app.core.base_color import DEFAULT_VOCAB, SYNONYMS
+    _name_typos(rows, "Color", "U_Web_Color",
+                only_to=set(SYNONYMS) | {v.lower() for v in DEFAULT_VOCAB})
     return rows, "", report
 
 
@@ -587,7 +619,8 @@ def _size_typos(rows: list[dict]) -> None:
                       "Check the size with the supplier")
 
 
-def _name_typos(rows: list[dict]) -> None:
+def _name_typos(rows: list[dict], field: str = "Item Description",
+                column: str = "U_Webbeschreibung2", only_to=None) -> None:
     """A word typed with a letter missing, put right from the brand's other names.
 
     ACL's master data has 'Another Wide Ft Camo Jorts', 'Rid A Lot Hoodie' and
@@ -598,7 +631,7 @@ def _name_typos(rows: list[dict]) -> None:
     """
     styles: dict[str, str] = {}
     for r in rows:
-        name = " ".join(str(r.get("Item Description") or "").split())
+        name = " ".join(str(r.get(field) or "").split())
         if name and not _blank(name):
             styles.setdefault(name, name)
     names = list(styles)
@@ -626,6 +659,8 @@ def _name_typos(rows: list[dict]) -> None:
             for v, c in count.items():
                 if len(v) != len(low) + 1 or not v.isalpha() or v in (low + "s", low + "es"):
                     continue
+                if only_to is not None and v not in only_to:
+                    continue
                 if not any(v[:j] + v[j + 1:] == low for j in range(len(v))):
                     continue
                 context = ((i > 0 and (words[i - 1].lower(), v) in pairs)
@@ -637,10 +672,10 @@ def _name_typos(rows: list[dict]) -> None:
         if out != words:
             fixes[n] = " ".join(out)
     for r in rows:
-        name = " ".join(str(r.get("Item Description") or "").split())
+        name = " ".join(str(r.get(field) or "").split())
         if name in fixes:
-            r["Item Description"] = fixes[name]
-            _note(r, "U_Webbeschreibung2", name,
+            r[field] = fixes[name]
+            _note(r, column, name,
                   f"the supplier wrote “{name}”; corrected to “{fixes[name]}” "
                   f"as the brand's other names spell it",
                   "Check the spelling")

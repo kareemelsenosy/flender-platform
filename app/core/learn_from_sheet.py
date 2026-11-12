@@ -47,7 +47,7 @@ def _join(finished: list[dict], rows: list[dict]) -> list[tuple[dict, dict]]:
     U_CodeBars DIMESU262CHAXXS is the order form's DIMESU262CHA + size XXS);
     else by style, with or without the colour code still on it.
     """
-    by_bc, by_code_size, by_style = {}, {}, {}
+    by_bc, by_code_size, by_style, by_style_colour = {}, {}, {}, {}
     for r in rows:
         bc = _digits(r.get("Barcode"))
         if len(bc) >= 8:
@@ -58,6 +58,10 @@ def _join(finished: list[dict], rows: list[dict]) -> list[tuple[dict, dict]]:
         if style:
             by_code_size.setdefault(style + size, r)
             by_code_size.setdefault(style + code + size, r)
+            # Hiking Patrol builds it from the colour name: HP0127001COYOTEBROWNXS.
+            by_code_size.setdefault(style + _flat(r.get("Color")) + size, r)
+            for key in (style + code, style + _flat(r.get("Color"))):
+                by_style_colour.setdefault(key, r)
             by_style.setdefault(style, r)
     pairs = []
     for f in finished:
@@ -65,6 +69,14 @@ def _join(finished: list[dict], rows: list[dict]) -> list[tuple[dict, dict]]:
         src = by_bc.get(_digits(cb)) if _digits(cb) == _flat(cb) else None
         if src is None:
             src = by_code_size.get(_flat(cb))
+        size = _flat(f.get("U_SizeCode"))
+        if src is None and size and _flat(cb).endswith(size):
+            # A row holding all its sizes (Size 1..5): the code less its size.
+            src = by_style_colour.get(_flat(cb)[:-len(size)])
+        if src is None:
+            # The item code: Hiking Patrol FW26's HP0226001-CHARCOAL BLACK,
+            # where the barcode used a colour number of Flender's own.
+            src = by_style_colour.get(_flat(f.get("U_SuppCatNum")))
         if src is None:
             src = by_style.get(_flat(f.get("U_SCode")))
         if src is None:

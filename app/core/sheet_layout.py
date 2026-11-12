@@ -93,7 +93,9 @@ def pick_data_sheets(sheets: "dict[str, pd.DataFrame]") -> list[str]:
     """
     if not sheets:
         return []
-    sized = sorted(sheets.items(), key=lambda kv: -(kv[1].shape[0] * kv[1].shape[1]))
+    # By filled cells, not the grid: Hiking Patrol's master data keeps an old
+    # season's tab (FW24_master) that is taller than this season's AW26.
+    sized = sorted(sheets.items(), key=lambda kv: -int(kv[1].notna().sum().sum()))
     primary_name, primary = sized[0]
     if primary.empty:
         return [primary_name]
