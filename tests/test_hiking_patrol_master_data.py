@@ -75,3 +75,15 @@ def test_teaching_pairs_lines_by_colour_name_or_item_code():
     ]
     assert [src["Color"] for _f, src in _join(finished, rows)] == [
         "NORWEIGIAN FOREST", "NORWEIGIAN FOREST"]
+
+
+def test_teaching_clears_a_column_rule_the_finished_sheet_does_not_use():
+    from app.core.learn_from_sheet import learn_columns
+    pairs = [({"U_Webbeschreibung2": "Trace LT Jacket", "U_Material": ""},
+              {"Item Description": "TRACE LT JACKET",
+               "Item Description 2": "TRACE LT TECHNICAL JACKET",
+               "Material": "Main fabric: water-repellent nylon"})] * 4
+    learned = learn_columns(pairs)
+    # U_Material is left empty, and the second description is not the one used.
+    assert learned["Material"] == "-"
+    assert learned["Item Description 2"] == "-"

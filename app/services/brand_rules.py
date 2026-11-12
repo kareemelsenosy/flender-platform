@@ -427,7 +427,8 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
     for field, header in (learned.get("columns") or {}).items():
         tables["columns"], _ = core.upsert_row(
             tables.get("columns", []), "columns", {"field": field, "header": header})
-        done.append(f"{field} read from the “{header}” column, as the finished sheet has it.")
+        done.append(f"{field} left empty, as the finished sheet has it." if header == "-"
+                    else f"{field} read from the “{header}” column, as the finished sheet has it.")
     if learned.get("size_lists"):
         tables["size_lists"] = core.upsert_many(tables.get("size_lists", []),
                                                 "size_lists", learned["size_lists"])

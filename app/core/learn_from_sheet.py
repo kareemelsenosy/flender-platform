@@ -121,8 +121,12 @@ def learn_settings(pairs) -> dict:
     from_list = from_order = 0
     for f, src in pairs:
         target = " ".join(_v(f.get("U_Webbeschreibung2")).lower().split())
-        listed = " ".join(_v(src.get("Item Description")).lower().split())
-        ordered = " ".join(_v(src.get("Order Item Description")).lower().split())
+        # Either description field: a brand's rules may have put the name
+        # under the second one (Hiking Patrol's live rules did).
+        listed = " ".join((_v(src.get("Item Description"))
+                           or _v(src.get("Item Description 2"))).lower().split())
+        ordered = " ".join((_v(src.get("Order Item Description"))
+                            or _v(src.get("Order Item Description 2"))).lower().split())
         if target and ordered and listed != ordered:
             from_order += target == ordered
             from_list += target == listed
@@ -281,11 +285,17 @@ def learn_columns(pairs) -> dict:
     with the finished sheet clearly more often than the one read now becomes
     the brand's column for that field.
     """
-    from app.core.field_mapping import FIELD_NAMES
+    from app.core.field_mapping import FIELD_NAMES, NONE
     skip = set(FIELD_NAMES) | {"Original Item No.", "Supplier Item Code", "Supplier Size"}
     out = {}
     for field, (column, same) in _FED_BY.items():
         rows = [(f, src) for f, src in pairs if _v(f.get(column))]
+        filled = sum(bool(_v(src.get(field))) for _f, src in pairs)
+        if len(pairs) >= 3 and len(rows) <= 0.05 * len(pairs) and filled >= 0.5 * len(pairs):
+            # The finished sheet leaves it empty where a column fills it:
+            # Hiking Patrol's U_Material, not its long product description.
+            out[field] = NONE
+            continue
         if len(rows) < 3:
             continue
         def agreement(col):
@@ -300,6 +310,18 @@ def learn_columns(pairs) -> dict:
         scored = sorted(((agreement(c), c) for c in cols), reverse=True)
         if scored and scored[0][0] >= 0.9 and scored[0][0] > current + 0.01:
             out[field] = scored[0][1]
+    # U_Webbeschreibung2 is the second description when there is one; a
+    # second description the finished sheet does not use is not the brand's.
+    column, same = _FED_BY["Item Description"]
+    rows = [(f, src) for f, src in pairs
+            if _v(f.get(column)) and _v(src.get("Item Description 2"))]
+    if len(rows) >= 3:
+        second = sum(same(_v(src.get("Item Description 2"))) == same(_v(f.get(column)))
+                     for f, src in rows)
+        first = sum(same(_v(src.get(out.get("Item Description", "Item Description"))))
+                    == same(_v(f.get(column))) for f, src in rows)
+        if first > second:
+            out["Item Description 2"] = NONE
     return out
 
 
