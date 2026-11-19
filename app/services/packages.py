@@ -140,6 +140,7 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
 
     rows = field_mapping.apply(table.to_dict("records"), mapping)
     rows = _split_colour_lists(rows, mapping)
+    _colour_code_in_name(rows, mapping)
     # Which column each field was read from, for teaching to compare against.
     read_from = {f: m["header"] for f, m in mapping.items()
                  if isinstance(m, dict) and m.get("header")}
@@ -168,6 +169,39 @@ def _read_mapped(path: str, overrides: dict, legend: dict | None = None
                                   has_size_field=bool(mapping["Size"]["header"]))
     mapping["_size_note"] = size_note
     return rows, mapping
+
+
+_CODE_AND_NAME = re.compile(r"^(\d{1,4})\s+([^\d].*)$")
+
+
+def _colour_code_in_name(rows: list[dict], mapping) -> None:
+    """Arte's AW26 barcode list writes '450 Navy': colour number 450, colour
+    Navy (its SS27 export keeps them apart, Colour no. 450 and Colour Navy)."""
+    if mapping["Colour Code"]["header"] or not mapping["Color"]["header"]:
+        return
+    values = [str(r.get("Color") or "").strip() for r in rows if not _blank(r.get("Color"))]
+    if not values or sum(bool(_CODE_AND_NAME.match(v)) for v in values) < 0.8 * len(values):
+        return
+    for r in rows:
+        m = _CODE_AND_NAME.match(str(r.get("Color") or "").strip())
+        if m:
+            r["Colour Code"], r["Color"] = m.group(1), m.group(2).strip()
+    mapping["Colour Code"] = {"header": "", "source": "detected",
+                              "note": f"the number before the colour in “{mapping['Color']['header']}”"}
+
+
+def _group_column(rows: list[dict], learned: str) -> str:
+    """The brand's group column, or this season's name for it: Arte's SS27
+    export says Sub Category, its AW26 product list Sub item group."""
+    if not learned or any(learned in r for r in rows[:50]):
+        return learned
+    if not re.search(r"\bsub", learned, re.I):
+        return learned
+    for r in rows[:50]:
+        for k in r:
+            if re.fullmatch(r"sub[\s_-]*(item[\s_-]*)?(category|group)", str(k).strip(), re.I):
+                return k
+    return learned
 
 
 def _split_colour_lists(rows: list[dict], mapping) -> list[dict]:
@@ -451,6 +485,10 @@ def collection_rows(job, kind: str, rules=None) -> "tuple[list[dict], str, dict]
             for k in ("Item Description", "Item Description 2"):
                 if not _blank(r.get(f"Order {k}")):
                     r[k] = r[f"Order {k}"]
+    if rules["settings"].get("material_from") == "order":
+        for r in rows:
+            if not _blank(r.get("Order Material")):
+                r["Material"] = r["Order Material"]
     rows = expand_scale_rows(rows, rules["tables"], legend)
     rows = fill_from_collection(rows, job, rules["settings"])
     rows, dropped = _dedupe_lines(rows)
@@ -501,7 +539,8 @@ def _shared_article_numbers(rows: list[dict]) -> None:
 
     def word(r):
         keys = product_words(r.get("Item Description"))
-        return keys[-1] if keys else ""
+        # 'Denim Short' and 'Denim Shorts' are the same product.
+        return re.sub(r"S$", "", keys[-1]) if keys else ""
 
     def article(r):
         return str(r.get("Supplier Item Code") or r.get("Original Item No.")
@@ -665,7 +704,9 @@ def _name_typos(rows: list[dict], field: str = "Item Description",
                     continue
                 context = ((i > 0 and (words[i - 1].lower(), v) in pairs)
                            or (i + 1 < len(words) and (v, words[i + 1].lower()) in pairs))
-                if (context or (len(low) >= 5 and c >= 3)) and (best is None or c > best[1]):
+                # Without the neighbouring word to go on, only a long word:
+                # Arte's 'Beach Print' is not a 'Bleach Print'.
+                if (context or (len(low) >= 6 and c >= 3)) and (best is None or c > best[1]):
                     best = (v, c)
             if best:
                 out[i] = spelled[best[0]]
@@ -937,7 +978,8 @@ def generate(db, job, kind: str, decisions=None) -> dict:
             group_by_word=bool(rules["settings"].get("group_by_product_word")),
             barcode_supplier_size=rules["settings"].get("barcode_size") == "supplier",
             keep_colour_slash=rules["settings"].get("colour_slash") == "keep",
-            gender_words=rules["settings"].get("gender_words") or {})
+            gender_words=rules["settings"].get("gender_words") or {},
+            group_column=_group_column(rows, rules["settings"].get("group_column") or ""))
         out = _template_questions(out, kind, rules, job)
     elif kind == ATTRIBUTES:
         from app.core.attribute_engine import enrich_style

@@ -44,9 +44,11 @@ def _style_keys(row: dict) -> list[str]:
     HUF's order form writes 'JK00525-CAMO' where the list has 'JK00525'."""
     raw = str(row.get("Item No.") or "").strip()
     keys = [_n(raw)]
-    head = re.split(r"[-./ ]", raw, maxsplit=1)[0]
-    if _n(head) and _n(head) != keys[0]:
-        keys.append(_n(head))
+    parts = re.split(r"[-./ ]", raw, maxsplit=1)
+    # Only a colour after the separator: Arte's 'SS27-297AC.C' is not style
+    # 'SS27' (every Arte style starts with it).
+    if len(parts) == 2 and _n(parts[0]) and re.fullmatch(r"[A-Za-z ]+", parts[1].strip()):
+        keys.append(_n(parts[0]))
     return [k for k in keys if k]
 
 
@@ -116,6 +118,7 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
     added_fields: set[str] = set()
     unmatched_order: dict[str, str] = {}
     expanded = 0
+    grid_dropped = 0
 
     def merge(base: dict, extra: dict, line_level: bool) -> dict:
         new = dict(base)
@@ -174,7 +177,23 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
 
         if not is_scale:
             same = [m for m in sized if _n(m.get("Size")) == _n(size)]
-            out.append(merge(row, same[0], True) if same else merge(row, matches[0], False))
+            label = str(row.get("__size_label") or "")
+            if not same and "/" in label:
+                # Arte's grid column 'XS / 28' is also waist 28 for shorts.
+                alts = {_n(p) for p in re.split(r"\s*/\s*", label) if _n(p)}
+                same = [m for m in sized if _n(m.get("Size")) in alts]
+            if same:
+                line = merge(row, same[0], True)
+                line["Size"] = same[0].get("Size")
+                out.append(line)
+            elif (row.get("__grid_ordered") is False and sized
+                  and any(not _blank(m.get("Barcode")) for m in sized)):
+                # An empty order grid offers every size; the product list says
+                # which ones the article is made in (Arte's T-shirts stop at 4XL,
+                # its shorts run 28-42).
+                grid_dropped += 1
+            else:
+                out.append(merge(row, matches[0], False))
         elif sized:
             # One order line for a whole size scale becomes one line per size,
             # each carrying that size's UPC from the product list.
@@ -218,6 +237,7 @@ def combine(order_rows: list[dict], list_rows: list[dict], *,
         "only_in_list_count": len(only_in_list),
         "fields_added": sorted(f for f in added_fields if f[:1] != "_"),
         "lines_expanded": expanded,
+        "grid_sizes_not_made": grid_dropped,
         "added_from_list": added,
         "included": sorted(include),
         "rows_out": len(out),

@@ -134,6 +134,18 @@ def learn_settings(pairs) -> dict:
         out["description_from"] = "order"
     elif from_list:
         out["description_from"] = "list"
+    # The same for the composition: Arte's order sheet writes '26% Alpaca
+    # Wool / 26% Kid Mohair', its article export '26% Virgin Wool, 26% Mohair'.
+    from_list = from_order = 0
+    for f, src in pairs:
+        target = " ".join(_v(f.get("U_Material")).lower().split())
+        listed = " ".join(_v(src.get("Material")).lower().split())
+        ordered = " ".join(_v(src.get("Order Material")).lower().split())
+        if target and ordered and listed != ordered:
+            from_order += target == ordered
+            from_list += target == listed
+    if from_order > from_list:
+        out["material_from"] = "order"
     words = _gender_words(pairs)
     if words:
         # The gender column is learned from the pieces the name does not mark.
@@ -435,6 +447,26 @@ def _product_word_groups(pairs, with_group: int) -> dict:
             "total": len(mapping), "agreement": round(right / with_group, 3)}
 
 
+def _group_beside_vcat(groups: dict, pairs) -> dict:
+    """Whether the column that decides the SAP group also names U_VCat.
+
+    HUF's P3 Name is both. Arte's Sub Category (T-Shirt, Hoodie) decides
+    the group while U_VCat keeps the coarser Item group (Tops, Bottoms): the
+    group is then read from its own column and the category is left alone.
+    """
+    col = groups.get("column")
+    if not col:
+        return groups
+    def agree(get):
+        rows = [(f, s) for f, s in pairs if _v(f.get("U_VCat"))]
+        return sum(_v(get(s)).lower() == _v(f.get("U_VCat")).lower() for f, s in rows), len(rows)
+    by_group, n = agree(lambda s: s.get(col))
+    by_category, _n = agree(lambda s: s.get("Item Group"))
+    if n and by_category > by_group and by_category >= 0.9 * n:
+        groups = {**groups, "beside_vcat": True}
+    return groups
+
+
 def learn_size_lists(finished: list[dict]) -> list[dict]:
     """SAP size lists with each size's sort index, as the finished sheet has them."""
     sizes: dict[str, dict[str, int]] = defaultdict(dict)
@@ -491,7 +523,7 @@ def learn(finished: list[dict], columns: list[str], rows: list[dict]) -> dict:
     pairs = _join(finished, rows)
     return {
         "matched": len(pairs), "lines": len(finished),
-        "item_groups": learn_item_groups(pairs),
+        "item_groups": _group_beside_vcat(learn_item_groups(pairs), pairs),
         "size_lists": learn_size_lists(finished),
         "template": learn_template(columns, finished),
         "keep_upper": learn_upper_words(finished),

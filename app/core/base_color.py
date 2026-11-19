@@ -48,7 +48,7 @@ SYNONYMS = {
     "cream": "Beige", "sand": "Beige", "tan": "Beige", "ecru": "Beige",
     "camel": "Beige", "stone": "Beige", "oat": "Beige",
     "natural": "White", "wax": "White", "ivory": "White", "chalk": "White",
-    "burgundy": "Red", "wine": "Red", "rust": "Red", "maroon": "Red",
+    "burgundy": "Red", "bordeaux": "Red", "wine": "Red", "rust": "Red", "maroon": "Red",
     "scarlet": "Red", "crimson": "Red",
     "tobacco": "Brown", "chocolate": "Brown", "coffee": "Brown",
     "hamilton": "Brown", "walnut": "Brown", "hazel": "Brown",

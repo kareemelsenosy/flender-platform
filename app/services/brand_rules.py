@@ -414,6 +414,16 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
         examples = ", ".join(f"{k.title()} → {v[0]}" for k, v in list(groups["map"].items())[:4])
         done.append(f"Product group read from the product word that ends each name "
                     f"({examples}…): {groups['total']} words mapped to SAP item groups.")
+    elif groups.get("column") and groups.get("beside_vcat"):
+        settings = view(rs)["settings"]
+        settings["group_column"] = groups["column"]
+        rs.settings = settings
+        rows = [{"supplier": val, "sap": ", ".join(g)} for val, g in groups["map"].items()]
+        tables["item_groups"] = core.upsert_many(tables.get("item_groups", []),
+                                                 "item_groups", rows)
+        done.append(f"SAP item group read from the “{groups['column']}” column "
+                    f"({groups['total']} values mapped); the category column stays "
+                    f"the U_VCat, as the finished sheet has it.")
     elif groups.get("column"):
         tables["columns"], _ = core.upsert_row(
             tables.get("columns", []), "columns",
@@ -471,6 +481,8 @@ def apply_learned(db, brand: str, learned: dict, *, filename: str = "",
             words.append("colours keep their slash (Black/Tortoise)")
         if learned_settings.get("barcode_size") == "supplier":
             words.append("built barcodes end with the supplier's own size (OS, S/M)")
+        if learned_settings.get("material_from") == "order":
+            words.append("the material is the order sheet's composition")
         if learned_settings.get("item_code") == "supplier":
             words.append("the item code is the supplier's own article number")
         if learned_settings.get("gender_words"):

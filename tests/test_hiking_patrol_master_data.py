@@ -87,3 +87,58 @@ def test_teaching_clears_a_column_rule_the_finished_sheet_does_not_use():
     # U_Material is left empty, and the second description is not the one used.
     assert learned["Material"] == "-"
     assert learned["Item Description 2"] == "-"
+
+
+# ── Arte: order grid + article export, and the seasons around it ─────────────
+
+def test_an_article_export_is_the_product_list():
+    assert intake.classify_attachment("SS27 Article Export.xlsx") == intake.PRODUCT_LIST
+
+
+def test_an_empty_order_grid_takes_the_sizes_the_article_is_made_in():
+    from app.core.combine import combine
+    from app.core.size_expand import expand_rows
+    headers = ["Item No.", "Color", "XS / 28", "S / 30", "One Size"]
+    order, _note = expand_rows(
+        [{"Item No.": "SS27-102SHO", "Color": "Dark Denim"},
+         {"Item No.": "SS27-004T", "Color": "White"}], headers, has_size_field=False)
+    listed = [{"Item No.": "SS27-102SHO", "Color": "Dark Denim", "Size": s, "Barcode": b}
+              for s, b in (("28", "5400892256076"), ("30", "5400892256083"))]
+    listed += [{"Item No.": "SS27-004T", "Color": "White", "Size": "XS", "Barcode": "5400892251439"}]
+    rows, report = combine(order, listed)
+    sizes = sorted((r["Item No."], r["Size"]) for r in rows)
+    # Waist 28/30 from the 'XS / 28' columns; One Size and the T-shirt's S
+    # are not made, and nothing was ordered in them.
+    assert sizes == [("SS27-004T", "XS"), ("SS27-102SHO", "28"), ("SS27-102SHO", "30")]
+    assert report["grid_sizes_not_made"] == 3
+
+
+def test_a_season_prefix_is_not_a_style():
+    from app.core.combine import _style_keys
+    assert _style_keys({"Item No.": "SS27-297AC.C"}) == ["SS27297ACC"]
+    assert _style_keys({"Item No.": "JK00525-CAMO"}) == ["JK00525CAMO", "JK00525"]
+
+
+def test_a_colour_number_written_before_the_colour_is_split_off():
+    mapping = {"Colour Code": {"header": ""}, "Color": {"header": "Color"}}
+    rows = [{"Color": c} for c in ("450 Navy", "1 Black", "602 Bordeaux", "100 White",
+                                   "300 Green", "487")]
+    pkg._colour_code_in_name(rows, mapping)
+    assert [(r.get("Colour Code"), r["Color"]) for r in rows][:3] == [
+        ("450", "Navy"), ("1", "Black"), ("602", "Bordeaux")]
+    # A number alone is left for a person: the colour's name is not there.
+    assert rows[-1] == {"Color": "487"}
+
+
+def test_the_group_column_is_found_under_this_seasons_name():
+    rows = [{"Sub item group": "Jacket", "Item Group": "Outerwear"}]
+    assert pkg._group_column(rows, "Sub Category") == "Sub item group"
+    assert pkg._group_column(rows, "") == ""
+
+
+def test_a_real_word_is_not_corrected_without_its_neighbour():
+    names = ["Beach Print T'shirt", "Bleach Wash Hoodie", "Bleach Denim Jacket",
+             "Bleach Wash Shorts", "Arte Logo Cap", "Heart Tee"]
+    rows = [{"Item Description": n} for n in names]
+    pkg._name_typos(rows)
+    assert rows[0]["Item Description"] == "Beach Print T'shirt"

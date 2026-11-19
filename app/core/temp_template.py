@@ -337,7 +337,8 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                      gender_map=None, hs_digits: int = 0,
                      group_by_word: bool = False,
                      barcode_supplier_size: bool = False,
-                     keep_colour_slash: bool = False, gender_words=None) -> dict:
+                     keep_colour_slash: bool = False, gender_words=None,
+                     group_column: str = "") -> dict:
     """Build the TEMP sheet from supplier order rows.
 
     ``group_map`` maps a supplier subcategory to a SAP item group. It is
@@ -417,6 +418,11 @@ def build_temp_sheet(rows, *, brand: str, season: str,
             len(line_of) + 1)
         name = get("Item Description", "Name", "Description")
         subcat = get("Subcategory", "Item Group", "Category")
+        # The column that decides the SAP group when it is not the category
+        # (Arte: Sub Category T-Shirt decides; Item group Tops is the VCat).
+        vcat = subcat
+        if group_column and get(normalise_header(group_column)):
+            subcat = get(normalise_header(group_column))
         sizes = expand_sizes(src)
         if not sizes:
             exceptions.append({"sku": style, "field": "U_SizeCode",
@@ -551,7 +557,7 @@ def build_temp_sheet(rows, *, brand: str, season: str,
                     style, colour_code, colour, uses_colour_codes,
                     keep_slash=keep_colour_slash),
                 "U_Material": get("Material"),
-                "U_VCat": smart_title(subcat),
+                "U_VCat": smart_title(vcat),
                 "U_ItmsGrpCod": group,
                 "U_SCode": style,
                 # Written as the brand's SAP size list spells it ("Onesize").

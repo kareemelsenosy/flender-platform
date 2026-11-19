@@ -158,6 +158,10 @@ def expand_rows(rows: list[dict], headers: list[str], *, has_size_field: bool) -
         elif not size and cols:
             ordered = [h for h in cols if _qty(row.get(h))]
             sizes = [_label(h) for h in (ordered or cols)]
+            # The column each size came from ('XS / 28' is also waist 28) and
+            # whether anything was ordered: an empty grid offers every size.
+            labels = dict(zip(sizes, ordered or cols))
+            row = {**row, "__grid_ordered": bool(ordered)}
             note["from_columns"] += 1
         elif not size and not has_size_field and not cols:
             sizes, note["one_size_default"] = ["onesize"], note["one_size_default"] + 1
@@ -165,11 +169,15 @@ def expand_rows(rows: list[dict], headers: list[str], *, has_size_field: bool) -
         if len(sizes) <= 1:
             if sizes:
                 row = {**row, "Size": sizes[0]}
+                if "__grid_ordered" in row:
+                    row["__size_label"] = labels.get(sizes[0], sizes[0])
             out.append(row)
             continue
         for s in sizes:
             line = dict(row)
             line["Size"] = s
+            if "__grid_ordered" in row:
+                line["__size_label"] = labels.get(s, s)
             # A barcode or SKU on a row that covers several sizes belongs to
             # none of them.
             line["Barcode"] = ""
