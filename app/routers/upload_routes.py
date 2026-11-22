@@ -91,8 +91,12 @@ async def dashboard(request: Request, db: DBSession = Depends(get_db)):
         .limit(50)
         .all()
     )
+    # "Searching" only while a search really runs; one a restart cut off is
+    # shown as stopped (its page offers to start again).
+    from app.routers.search_routes import _search_progress
+    running = {sid for sid, p in list(_search_progress.items()) if p.get("running")}
     return templates.TemplateResponse(request, "dashboard.html", {
-        "user": user, "sessions": sessions,
+        "user": user, "sessions": sessions, "running_searches": running,
     })
 
 

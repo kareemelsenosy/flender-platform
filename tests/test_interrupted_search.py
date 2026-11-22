@@ -19,3 +19,14 @@ def test_interrupted_searches_go_back_to_review(test_app, db_session, make_user)
     db_session.expire_all()
     assert sessions["half searched"].status == "reviewing"
     assert sessions["never searched"].status == "searching"
+
+
+def test_the_dashboard_says_a_dead_search_stopped(client, login_as, test_app, db_session):
+    models = test_app["models"]
+    uid = login_as()["id"]
+    s = models.Session(user_id=uid, name="cut off", source_type="excel_upload", status="searching")
+    db_session.add(s)
+    db_session.commit()
+    page = client.get("/order-sheet").text
+    assert "Search stopped" in page and "Search Again" in page
+    assert ">Searching<" not in page

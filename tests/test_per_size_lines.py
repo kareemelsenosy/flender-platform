@@ -94,3 +94,23 @@ def test_merging_an_uploaded_sheet_keeps_every_size():
     rows = _item_to_rows(it)
     assert [(r["size"], r["barcode"], r["qty_available"]) for r in rows] == [
         ("M", "4064958000011", 3), ("L", "4064958000028", 2)]
+
+
+def test_a_re_search_that_finds_nothing_keeps_the_approved_image(client, login_as, test_app, db_session, monkeypatch):
+    models = test_app["models"]
+    login_as()
+    sid = _mapped_session(client, test_app)
+    hat = db_session.query(models.UniqueItem).filter_by(session_id=sid, item_code="I020222").one()
+    url = "https://images.example.com/hat.jpg"
+    hat.search_status = "done"
+    db_session.commit()
+    assert client.post(f"/review/{sid}/set-url", json={"id": hat.id, "url": url}).status_code == 200
+
+    from app.core import searcher
+    monkeypatch.setattr(searcher.ImageSearcher, "search", lambda self, item, ai_queries=None: ([], {}))
+    review = __import__("app.routers.review_routes", fromlist=["x"])
+    monkeypatch.setattr(review, "ai_available", lambda: False)
+    body = client.post(f"/review/{sid}/re-search", json={"id": hat.id}).json()
+    assert body["found"] == 0 and body["approved_url"] == url and body["status"] == "approved"
+    db_session.refresh(hat)
+    assert hat.approved_url == url and hat.review_status == "approved" and url in hat.candidates

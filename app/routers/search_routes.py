@@ -230,7 +230,11 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
 
         total = len(items)
         import time as _time_mod
-        _search_progress[session_id] = {
+        # This run's own progress record. It is updated through this reference,
+        # never looked up again by session id: the cleanup timer of a previous
+        # run of the same session could remove the entry mid-search, and the
+        # KeyError ended the search before the session left "searching".
+        progress = {
             "done": 0,
             "total": total,
             "running": True,
@@ -240,6 +244,7 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             "groups_total": 0,
             "groups_done": 0,
         }
+        _search_progress[session_id] = progress
 
         search_mode = config.get("search_mode", "web")  # web, local, both
         local_folder = config.get("local_folder", "")
@@ -529,8 +534,8 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             search_mode=search_mode,
             use_ai=use_ai,
         )
-        _search_progress[session_id]["workers"] = workers
-        _search_progress[session_id]["groups_total"] = len(group_entries)
+        progress["workers"] = workers
+        progress["groups_total"] = len(group_entries)
 
         # Collect all results first so we can dedup `approved_url` across
         # different base-item-codes once every search has completed. Different
@@ -566,12 +571,12 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
                 except Exception as e:
                     logger.error(f"Search error: {e}")
 
-                _search_progress[session_id]["done"] += len(grouped["items"])
-                _search_progress[session_id]["groups_done"] = len(completed_results)
+                progress["done"] += len(grouped["items"])
+                progress["groups_done"] = len(completed_results)
                 label = grouped["label"]
                 if len(grouped["items"]) > 1:
                     label = f"{label} (+{len(grouped['items']) - 1})"
-                _search_progress[session_id]["current"] = label
+                progress["current"] = label
 
         # Dedup: give the highest-confidence group first pick of its best URL,
         # then later groups must pick a URL not yet claimed by another group.
@@ -657,13 +662,15 @@ def _run_search_background(session_id: int, config: dict, user_id: int = None):
             ).count()
             db.commit()
 
-        _search_progress[session_id]["running"] = False
+        progress["running"] = False
 
         # L3: Schedule cleanup of progress entry after 5 minutes (gives SSE time to drain)
         import time as _time
         def _cleanup_progress():
             _time.sleep(300)
-            _search_progress.pop(session_id, None)
+            # Only this run's record: a newer search of the session may be running.
+            if _search_progress.get(session_id) is progress:
+                _search_progress.pop(session_id, None)
         threading.Thread(target=_cleanup_progress, daemon=True).start()
 
         # Notify user

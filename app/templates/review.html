@@ -1560,6 +1560,11 @@ async function doResearch(key, itemId) {
       state[key].confidence_reason = data.confidence_reason || '';
       updateSidebar();
       renderMain(key);
+      if (data.message) {
+        const st = document.getElementById('research-status');
+        if (st) st.textContent = data.message;
+        if (typeof showToast === 'function') showToast('Re-search', data.message, [], 'info');
+      }
     } else {
       status.textContent = 'Error: ' + (data.error || 'unknown');
     }

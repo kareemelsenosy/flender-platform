@@ -221,8 +221,10 @@ async function startUpload(fileList) {
           <span class="badge badge-gray">Created</span>
         {% elif sess.status == 'mapping' %}
           <span class="badge badge-yellow">Mapping</span>
-        {% elif sess.status == 'searching' %}
+        {% elif sess.status == 'searching' and sess.id in running_searches %}
           <span class="badge badge-blue">Searching</span>
+        {% elif sess.status == 'searching' %}
+          <span class="badge badge-yellow" title="The search was interrupted; open it to start again">Search stopped</span>
         {% elif sess.status == 'reviewing' %}
           <span class="badge badge-blue">Reviewing</span>
         {% elif sess.status == 'completed' %}
@@ -234,7 +236,7 @@ async function startUpload(fileList) {
       {% if sess.status == 'mapping' %}
         <a href="/mapping/{{ sess.id }}" class="btn btn-primary btn-sm">Continue Mapping</a>
       {% elif sess.status == 'searching' %}
-        <a href="/search/{{ sess.id }}" class="btn btn-primary btn-sm">View Progress</a>
+        <a href="/search/{{ sess.id }}" class="btn btn-primary btn-sm">{{ 'View Progress' if sess.id in running_searches else 'Search Again' }}</a>
         {% if sess.source_type != 'google_sheets' %}
         <a href="/mapping/{{ sess.id }}" class="btn btn-outline btn-sm">Edit Mapping</a>
         {% endif %}

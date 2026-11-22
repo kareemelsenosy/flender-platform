@@ -154,9 +154,38 @@ def _get_owned_item(db: DBSession, uid: int, session_id: int, item_id: int | Non
     ).first()
 
 
+def _host_is_internal(url: str) -> bool:
+    """True when the URL's host resolves to a private, loopback or link-local
+    address — the proxy must never fetch those (cloud metadata, the app itself).
+    A host that does not resolve is not internal; the fetch simply fails."""
+    import socket
+    from ipaddress import ip_address
+    hostname = urllib.parse.urlparse(url).hostname
+    if not hostname:
+        return True
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for info in infos:
+        ip = ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return True
+    return False
+
+
 def _fetch_remote_image(url: str) -> tuple[int, dict[str, str], bytes]:
-    resp = _UPSTREAM_HTTP.get(url, headers=_DL_HEADERS, timeout=5, allow_redirects=True)
-    return resp.status_code, dict(resp.headers), resp.content
+    # Redirects are followed one hop at a time so every hop is checked: a
+    # public URL redirecting to an internal address must not get through.
+    for _hop in range(6):
+        if _host_is_internal(url):
+            return 403, {}, b""
+        resp = _UPSTREAM_HTTP.get(url, headers=_DL_HEADERS, timeout=5, allow_redirects=False)
+        if resp.is_redirect and resp.headers.get("location"):
+            url = urllib.parse.urljoin(url, resp.headers["location"])
+            continue
+        return resp.status_code, dict(resp.headers), resp.content
+    return 502, {}, b""
 
 
 @router.get("/api/image/local")
@@ -203,19 +232,10 @@ async def image_proxy(request: Request, url: str = ""):
     if not url or not url.startswith("http"):
         return Response(status_code=400)
 
-    # SSRF protection: block requests to private/internal IPs
-    try:
-        import socket
-        from ipaddress import ip_address
-        hostname = urllib.parse.urlparse(url).hostname
-        if hostname:
-            for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
-                addr = info[4][0]
-                ip = ip_address(addr)
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                    return Response(status_code=403)
-    except Exception:
-        pass  # DNS resolution failed — let httpx handle it
+    # SSRF protection: block requests to private/internal IPs (each redirect
+    # hop is checked again in _fetch_remote_image).
+    if _host_is_internal(url):
+        return Response(status_code=403)
 
     # Convert dropbox sharing URLs to direct download
     if "dropbox.com" in url or "dropboxusercontent.com" in url:
@@ -262,8 +282,11 @@ async def image_proxy(request: Request, url: str = ""):
             ct = "image/gif"
         else:
             ct = resp_headers.get("content-type", "image/jpeg")
-            # If response is HTML (error page), don't serve it as an image
-            if "text/html" in ct or data[:20].strip().startswith(b"<"):
+            # Only raster images are passed on: an HTML error page, JSON or
+            # text is not a picture (and must not be readable through the
+            # proxy), and an SVG served from this site could run script.
+            if (not ct.lower().startswith("image/") or "svg" in ct.lower()
+                    or data[:20].strip().startswith(b"<")):
                 _fail_cache[url_hash] = now
                 return Response(status_code=502)
 
@@ -975,9 +998,31 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
                 new_scores[url] = min(round(base + bonus, 2), 1.0)
             scores = new_scores
 
-    # Update item in DB
-    item.candidates = candidates
-    item.scores = scores
+    # Nothing found: leave the item as it was. Clearing it here threw away the
+    # image the user had approved (and their pasted URL), and set the item back
+    # to pending — which drops it from the export.
+    if not candidates:
+        return JSONResponse({
+            "ok": True,
+            "found": 0,
+            "message": "No new images found; the current ones are kept.",
+            "candidates": item.candidates,
+            "scores": item.scores,
+            "approved_url": item.approved_url,
+            "suggested_url": item.suggested_url,
+            "status": item.review_status,
+            "auto_selected": item.auto_selected,
+            "search_confidence": item.search_confidence,
+            "confidence_label": item.confidence_label,
+            "confidence_reason": item.confidence_reason,
+        })
+
+    # New results first; earlier candidates (a pasted URL among them) stay
+    # available below them.
+    previous = [u for u in item.candidates if u not in candidates]
+    old_scores = item.scores
+    item.candidates = candidates + previous
+    item.scores = {**{u: old_scores.get(u, 0.0) for u in previous}, **scores}
     decision = searcher.assess_match_confidence(candidates, scores, item_dict)
     item.suggested_url = decision.get("suggested_url") or None
     item.search_confidence = float(decision.get("score", 0.0) or 0.0)
@@ -995,8 +1040,9 @@ async def re_search_item(session_id: int, request: Request, db: DBSession = Depe
 
     return JSONResponse({
         "ok": True,
-        "candidates": candidates,
-        "scores": scores,
+        "found": len(candidates),
+        "candidates": item.candidates,
+        "scores": item.scores,
         "approved_url": item.approved_url,
         "suggested_url": item.suggested_url,
         "status": item.review_status,

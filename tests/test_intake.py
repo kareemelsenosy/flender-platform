@@ -6,6 +6,7 @@ import io
 import pytest
 
 from app.core.intake import (
+    detect_brands,
     CATALOG, IMAGES, ORDER_SHEET, OTHER, PRICE_LIST,
     analyse_rows, build_intake_report, classify_attachment, detect_brand,
     detect_season, format_intake_email, missing_kinds,
@@ -370,3 +371,9 @@ def test_a_style_level_code_outranks_a_size_level_sku():
     from app.core.parser import detect_columns
     m = detect_columns(["SKU", "Item No.", "Color", "Size", "Barcode"])
     assert m["item_code"] == "Item No."
+
+
+def test_the_word_on_is_not_the_brand_on():
+    # "On" (On Running) is also English: only its full name names the brand.
+    assert detect_brands("Carhartt FW26 order on hold.xlsx") == ["Carhartt"]
+    assert detect_brands("On Running SS27 order.xlsx") == ["On Running"]

@@ -184,6 +184,10 @@ def brand_display_name(brand: str) -> str:
     return brand.title() if brand.islower() else brand
 
 
+# Registry keys that are ordinary words; their full name is registered too.
+_COMMON_WORD_BRANDS = {"on"}
+
+
 def detect_brands(*texts: str) -> list[str]:
     """Every registered brand named in ``texts``, most specific first.
 
@@ -198,6 +202,10 @@ def detect_brands(*texts: str) -> list[str]:
 
     hits: list[str] = []
     for brand in _known_brands():
+        # A brand whose short name is an everyday word ("on") is only taken
+        # from its full name ("On Running"): "order on hold" names no brand.
+        if brand.lower() in _COMMON_WORD_BRANDS:
+            continue
         # Compare on the same flattened form the haystack uses, so a registry
         # key like "c.p. company" still matches "C.P. Company" in a subject.
         needle = re.sub(r"[\s_\-.]+", " ", brand.lower()).strip()
