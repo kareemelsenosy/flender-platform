@@ -103,3 +103,24 @@ def restore_on_startup() -> tuple[dict, dict]:
         logger.info(f"Restored batch {bid} for user {uid} ({batch.get('done')}/{batch.get('total')} jobs)")
 
     return batch_progress, user_batches
+
+
+def reset_interrupted_searches(db) -> int:
+    """Move sessions a restart left at "searching" back to review.
+
+    Searches run in threads of this process, so at startup none is running.
+    Only sessions with at least one searched item move (review needs one);
+    the rest stay on the search page, which offers to start again.
+    """
+    from sqlalchemy import exists
+
+    from app.models import Session, UniqueItem
+
+    searched = exists().where(UniqueItem.session_id == Session.id,
+                              UniqueItem.search_status == "done")
+    n = (db.query(Session)
+         .filter(Session.status == "searching", searched)
+         .update({"status": "reviewing"}, synchronize_session=False))
+    if n:
+        db.commit()
+    return n

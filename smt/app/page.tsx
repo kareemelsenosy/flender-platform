@@ -220,7 +220,32 @@ export default function DashboardPage() {
       .slice(0, 5)
       .map(([name, count]) => ({ name, count, pct: Math.round((count / totalMax) * 100) }));
 
-    return { activeCustomers, totalPosts, topBrandEntry, activity, topBrands };
+    // Month by month for the last six months, oldest first — the sparklines
+    // and the change against last month come from the records themselves.
+    const months = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const y = String(d.getFullYear());
+      const rows = src.filter((r) => {
+        const parts = r.date.split('-');
+        return parts.length === 3 && parts[1] === m && parts[2] === y;
+      });
+      return {
+        records: rows.length,
+        customers: new Set(rows.map((r) => r.customer)).size,
+        posts: rows.reduce((s, r) => s + (r.num_posts || 0), 0),
+      };
+    });
+    const series = (k: 'records' | 'customers' | 'posts') => months.map((m) => m[k]);
+    const change = (k: 'records' | 'customers' | 'posts') => {
+      const cur = months[5][k];
+      const prev = months[4][k];
+      if (!prev) return cur ? { text: 'new this month', up: true } : null;
+      const pct = Math.round(((cur - prev) / prev) * 100);
+      return { text: `${pct >= 0 ? '+' : ''}${pct}% vs last month`, up: pct >= 0 };
+    };
+
+    return { activeCustomers, totalPosts, topBrandEntry, activity, topBrands, series, change };
   }, [scopedRecords]);
 
   const sessionFileCount = useMemo(() => {
@@ -372,23 +397,23 @@ export default function DashboardPage() {
         <StatCard
           label={session ? 'Session Records' : 'Total Records'}
           value={loading ? '—' : scopedRecords.length.toLocaleString()}
-          change="+12%" changePositive
-          sparkData={[3, 5, 4, 7, 6, 8, 10, 9, 12]} loading={loading} />
+          change={stats.change('records')?.text} changePositive={stats.change('records')?.up ?? true}
+          sparkData={stats.series('records')} loading={loading} />
         <StatCard
           label="Active Customers"
           value={loading ? '—' : String(stats.activeCustomers)}
-          change="+4%" changePositive
-          sparkData={[2, 4, 3, 5, 4, 6, 5, 7, 8]} loading={loading} />
+          change={stats.change('customers')?.text} changePositive={stats.change('customers')?.up ?? true}
+          sparkData={stats.series('customers')} loading={loading} />
         <StatCard
           label="Posts This Month"
           value={loading ? '—' : stats.totalPosts.toLocaleString()}
-          change="+18%" changePositive
-          sparkData={[10, 20, 15, 25, 30, 22, 35, 28, 40]} loading={loading} />
+          change={stats.change('posts')?.text} changePositive={stats.change('posts')?.up ?? true}
+          sparkData={stats.series('posts')} loading={loading} />
         <StatCard
           label="Most Active Brand"
           value={loading ? '—' : (stats.topBrandEntry?.[0] ?? '—')}
           change={`${stats.topBrandEntry?.[1] ?? 0} records`} changePositive
-          sparkData={[5, 8, 6, 9, 7, 10, 8, 12, 11]} loading={loading} isBrand />
+          loading={loading} isBrand />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '65% 1fr', gap: '20px', marginBottom: '24px' }}>

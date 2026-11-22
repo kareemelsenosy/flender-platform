@@ -132,6 +132,23 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # No image search survives a restart (they run in this process's threads),
+    # so a session still marked "searching" was cut off. Left alone it shows
+    # "Searching" on the dashboard for ever; one with searched items goes back
+    # to review, where the rest can be searched again.
+    try:
+        from app.database import SessionLocal as _SL2
+        from app.services.task_state import reset_interrupted_searches
+        _sdb = _SL2()
+        try:
+            n = reset_interrupted_searches(_sdb)
+            if n:
+                logger.info(f"Moved {n} interrupted image search(es) back to review")
+        finally:
+            _sdb.close()
+    except Exception:
+        pass
+
     logger.info("FLENDER Platform ready")
     yield
     logger.info("FLENDER Platform shutting down")

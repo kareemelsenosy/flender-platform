@@ -53,7 +53,8 @@ function Sparkline({ data, positive = true }: SparklineProps) {
 interface StatCardProps {
   label: string;
   value: string;
-  change: string;
+  // Omitted when there is nothing to compare against (no badge is shown).
+  change?: string;
   changePositive?: boolean;
   sparkData?: number[];
   loading?: boolean;
@@ -142,7 +143,7 @@ export default function StatCard({
       {/* Change badge */}
       {loading ? (
         <div className="skeleton" style={{ width: '60px', height: '20px' }} />
-      ) : (
+      ) : !change ? null : (
         <div
           style={{
             display: 'inline-flex',
