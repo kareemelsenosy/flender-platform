@@ -322,7 +322,9 @@ def _extract_archives(root: Path, depth: int = 0) -> None:
                         continue
                     # Guard against zip-slip: resolve and confirm containment.
                     dest = (target / member.filename).resolve()
-                    if not str(dest).startswith(str(target.resolve())):
+                    # is_relative_to, not a string prefix: "photos_2/x" starts
+                    # with "photos" but lies outside it.
+                    if not dest.is_relative_to(target.resolve()):
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member) as src, open(dest, "wb") as out:

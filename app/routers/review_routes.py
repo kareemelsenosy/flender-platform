@@ -545,6 +545,17 @@ async def edit_item_fields(session_id: int, item_id: int, request: Request,
     if not changed:
         return JSONResponse({"error": "no editable fields provided"}, status_code=400)
 
+    # A barcode or quantity typed here replaces the per-size values the sheet
+    # gave, or the export would keep writing the sheet's.
+    details = item.size_details
+    if details and ("barcode" in changed or "qty_available" in changed):
+        for d in details.values():
+            if "barcode" in changed:
+                d.pop("barcode", None)
+            if "qty_available" in changed:
+                d.pop("qty", None)
+        item.size_details = {k: v for k, v in details.items() if v}
+
     # Saving a field that carried a merge conflict counts as the user resolving it:
     # record their chosen value + mark it resolved so it stops being flagged.
     prov = item.provenance

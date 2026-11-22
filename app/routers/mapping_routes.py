@@ -262,6 +262,7 @@ async def save_mapping(session_id: int, request: Request, db: DBSession = Depend
             source_order=_item_idx,
         )
         ui.sizes = normalized_sizes
+        ui.size_details = item.get("size_details") or {}
         db.add(ui)
 
     sess.total_items = len(unique_items)

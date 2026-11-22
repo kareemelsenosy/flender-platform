@@ -3,6 +3,12 @@
 
 {% block content %}
 <div style="max-width:1220px">
+  {% if zip_error %}
+  <div style="margin-bottom:16px;padding:12px 16px;border-radius:8px;background:#fef3c7;color:#92400e;font-size:0.9rem">
+    {% if zip_error == 'expired' %}That run's photos were deleted after {{ retention_days }} days, so there is no ZIP to download. Its matches are still listed; sort the drop again to get the folders.
+    {% else %}The folder ZIP could not be built. Try again; if it keeps failing, sort the drop again.{% endif %}
+  </div>
+  {% endif %}
   <div style="margin-bottom:24px">
     <h1 style="font-size:1.9rem;font-weight:800;letter-spacing:-0.02em">Image Sorter</h1>
     <p style="color:var(--gray-500);margin-top:6px;max-width:760px">
@@ -92,7 +98,8 @@
           </div>
         </div>
         <button class="btn btn-primary btn-sm hist-open" data-run-id="{{ h.id }}" type="button">Open</button>
-        <a class="btn btn-outline btn-sm" href="/image-sort/download/{{ h.id }}">ZIP</a>
+        {% if h.expired %}<span style="font-size:0.75rem;color:var(--gray-500);max-width:150px;text-align:right" title="Photos are kept {{ retention_days }} days; the matches are still here, the photos must be sorted again for a ZIP.">photos deleted after {{ retention_days }} days</span>
+        {% else %}<a class="btn btn-outline btn-sm" href="/image-sort/download/{{ h.id }}">ZIP</a>{% endif %}
         {% if h.mine %}<button class="btn btn-danger btn-sm hist-del" data-run-id="{{ h.id }}" type="button">Delete</button>{% endif %}
       </div>
       {% endfor %}
@@ -124,6 +131,7 @@
 
     <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
       <a id="download-btn" class="btn btn-primary" href="#">Download folder ZIP</a>
+      <span id="expired-note" style="display:none;font-size:0.85rem;color:#b45309"></span>
       <a id="report-btn" class="btn btn-outline" href="#">Match report (CSV)</a>
       <button class="btn btn-outline" id="reset-btn" type="button">Sort another drop</button>
       <div style="margin-left:auto;display:flex;gap:6px" id="view-tabs">
@@ -396,6 +404,12 @@
     stat('stat-review', `${result.approved_count} / ${result.folders.length}`, 'Approved');
     stat('stat-missing', s.groups_missing, 'Still no photo');
     $('download-btn').href = `/image-sort/download/${result.id}`;
+    // Past the retention window the photos are gone: no ZIP to give.
+    $('download-btn').style.display = result.photos_expired ? 'none' : '';
+    $('expired-note').style.display = result.photos_expired ? '' : 'none';
+    $('expired-note').textContent = result.photos_expired
+      ? `These photos were deleted after ${result.retention_days} days. The matches below are kept; sort the drop again to download the folders.`
+      : '';
     $('report-btn').href = `/image-sort/report/${result.id}`;
     $('catalog-export-toggle').checked = !!result.export_catalog;
     loadTeammates(result.assigned_to);

@@ -113,10 +113,13 @@ async def image_sort_page(request: Request, db: DBSession = Depends(get_db)):
         "mine": r.user_id == uid,
         "owner": names.get(r.user_id, ""),
         "assigned_to": names.get(r.assigned_to_id, "") if r.assigned_to_id else "",
+        "expired": _photos_expired(r),
     } for r in runs]
 
     return templates.TemplateResponse(request, "image_sort.html", {
         "history": history,
+        "retention_days": GENERATED_FILE_RETENTION_DAYS,
+        "zip_error": request.query_params.get("error", ""),
         "ai_ready": ai_available(),
     })
 
@@ -320,6 +323,23 @@ def _load(run: ImageSortRun) -> tuple[list[MatchResult], list[ItemGroup]]:
     return results, groups
 
 
+def _photos_expired(run: ImageSortRun) -> bool:
+    """True when a finished run's stored photos have been swept away.
+
+    Photos are kept for GENERATED_FILE_RETENTION_DAYS (they fill the disk
+    otherwise); after that the run's matches remain viewable, but its photos
+    and folder ZIP are gone — an empty ZIP must not be handed out as if it
+    were the result.
+    """
+    if run.status != "done":
+        return False
+    source = Path(run.work_dir or _run_dir(run.id)) / "source"
+    try:
+        return not source.is_dir() or not any(source.iterdir())
+    except OSError:
+        return True
+
+
 def _payload(run: ImageSortRun) -> dict:
     """Full result view: folders (with their photos) + the unmatched pile.
 
@@ -394,6 +414,8 @@ def _payload(run: ImageSortRun) -> dict:
         "summary": summarise(results, groups),
         "review_threshold": CONFIDENCE_REVIEW_THRESHOLD,
         "export_catalog": bool(run.export_catalog),
+        "photos_expired": _photos_expired(run),
+        "retention_days": GENERATED_FILE_RETENTION_DAYS,
         "assigned_to": run.assigned_to_id,
         "approved_count": len([f for f in folders.values() if f["approved"]]),
         "folders": sorted(folders.values(), key=lambda f: f["code"]),
@@ -741,6 +763,9 @@ async def image_sort_download(run_id: int, request: Request, db: DBSession = Dep
         # Browser navigation: never return JSON here or the browser saves a
         # ".json" file instead of showing the page.
         return RedirectResponse("/image-sort", status_code=302)
+
+    if _photos_expired(run):
+        return RedirectResponse("/image-sort?error=expired", status_code=302)
 
     results, _groups = _load(run)
     work_dir = Path(run.work_dir or _run_dir(run.id))

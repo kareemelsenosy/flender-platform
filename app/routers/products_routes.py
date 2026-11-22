@@ -149,7 +149,8 @@ async def products_run(request: Request, db: DBSession = Depends(get_db)):
     workdir = tempfile.mkdtemp(prefix="prodattr_")
     for up in uploads:
         names.append(up.filename)
-        path = os.path.join(workdir, up.filename)
+        # basename: a crafted name like '../../x.xlsx' must not leave workdir.
+        path = os.path.join(workdir, os.path.basename(up.filename.replace("\\", "/")))
         with open(path, "wb") as fh:
             fh.write(await up.read())
         try:

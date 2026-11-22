@@ -369,7 +369,10 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
         sizes = item.sizes or []
         if not sizes:
             sizes = [""]  # one row even with no size data
+        details = item.size_details
+        per_size_qty = any("qty" in d for d in details.values())
         for size in sizes:
+            detail = details.get(str(size)) or {}
             item_dicts.append({
                 "item_code": item.item_code or "",
                 "style_name": item.style_name or "",
@@ -378,14 +381,16 @@ async def generate_excel(session_id: int, request: Request, db: DBSession = Depe
                 "gender": item.gender or "",
                 "wholesale_price": item.wholesale_price,
                 "retail_price": item.retail_price,
-                "qty_available": item.qty_available,
+                # One size's own quantity when the sheet gave it per size.
+                "qty_available": (detail["qty"] if "qty" in detail else
+                                  None if per_size_qty else item.qty_available),
                 "size": str(size or ""),  # single size per row
                 "approved_url": item.approved_url or "",
                 "suggested_url": item.suggested_url or "",
                 "pictures_url": item.pictures_url or "",
                 "additional_urls": item.additional_urls,
                 "brand": item.brand or "",
-                "barcode": item.barcode or "",
+                "barcode": detail.get("barcode") or item.barcode or "",
                 "item_group": item.item_group or "",
                 "item_group_code": item.item_group_code or "",
                 "sap_code": item.sap_code or "",

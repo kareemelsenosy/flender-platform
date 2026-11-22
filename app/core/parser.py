@@ -458,16 +458,26 @@ class FileParser:
                     "pictures_url": row.get("pictures_url"),
                     "sizes": [],
                     "qty_available": 0,
+                    "size_details": {},
                 }
             item = seen[key]
             size = row.get("size")
+            qty = row.get("qty_available")
             if size:
                 # Split concatenated sizes like "S / M / L" or "7 / 8 / 8.5"
                 parts = [s.strip() for s in str(size).split("/") if s.strip()]
                 for part in parts:
                     if part not in item["sizes"]:
                         item["sizes"].append(part)
-            qty = row.get("qty_available")
+                # A row for one size carries that size's own barcode and
+                # quantity; the export must not give every size the first
+                # size's barcode or the style's total.
+                if len(parts) == 1:
+                    detail = item["size_details"].setdefault(parts[0], {})
+                    if row.get("barcode") and not detail.get("barcode"):
+                        detail["barcode"] = str(row["barcode"]).strip()
+                    if isinstance(qty, (int, float)):
+                        detail["qty"] = (detail.get("qty") or 0) + qty
             if isinstance(qty, (int, float)) and qty:
                 item["qty_available"] = (item["qty_available"] or 0) + qty
 

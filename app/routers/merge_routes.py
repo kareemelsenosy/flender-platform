@@ -36,14 +36,15 @@ def _num(value):
         return None
 
 
-def _item_to_row(it: UniqueItem) -> dict:
-    """Flatten a UniqueItem into the row shape the merge engine consumes."""
-    sizes = it.sizes or []
-    return {
+def _item_to_rows(it: UniqueItem) -> list[dict]:
+    """Flatten a UniqueItem into the row shape the merge engine consumes —
+    one row per size, so an uploaded sheet's item with several sizes keeps
+    all of them (and each size its own barcode and quantity)."""
+    sizes = it.sizes or [""]
+    details = it.size_details
+    base = {
         "item_code": it.item_code or "",
         "color_name": it.color_name or "",
-        "size": (sizes[0] if sizes else ""),
-        "barcode": it.barcode or "",
         "brand": it.brand or "",
         "style_name": it.style_name or "",
         "gender": it.gender or "",
@@ -52,10 +53,19 @@ def _item_to_row(it: UniqueItem) -> dict:
         "sap_code": it.sap_code or "",
         "wholesale_price": "" if it.wholesale_price is None else it.wholesale_price,
         "retail_price": "" if it.retail_price is None else it.retail_price,
-        "qty_available": "" if it.qty_available is None else it.qty_available,
         "comming_soon_qty": it.comming_soon_qty or "",
         "image_url": it.approved_url or it.suggested_url or "",
     }
+    rows = []
+    for size in sizes:
+        detail = details.get(str(size)) or {}
+        qty = detail["qty"] if "qty" in detail else (
+            None if any("qty" in d for d in details.values()) else it.qty_available)
+        rows.append({**base,
+                     "size": str(size or ""),
+                     "barcode": detail.get("barcode") or it.barcode or "",
+                     "qty_available": "" if qty is None else qty})
+    return rows
 
 
 @router.post("/merge")
@@ -82,7 +92,7 @@ async def merge_sessions(request: Request, db: DBSession = Depends(get_db)):
         if name in ordered_names:
             name = f"{name} (#{sess.id})"
         ordered_names.append(name)
-        sources.append({"name": name, "rows": [_item_to_row(it) for it in items]})
+        sources.append({"name": name, "rows": [r for it in items for r in _item_to_rows(it)]})
 
     if not any(s["rows"] for s in sources):
         return JSONResponse({"error": "The selected sources have no items to merge."}, status_code=400)

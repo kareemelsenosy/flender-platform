@@ -743,3 +743,24 @@ def test_prune_drops_a_live_run_once_it_is_past_retention(
     removed, _freed = image_sort_routes.prune_old_image_sort_dirs(db_session)
     assert removed == 1
     assert not work_dir.exists()
+
+
+def test_a_run_whose_photos_were_swept_gives_no_empty_zip(client, login_as, stub_ai, test_app):
+    """After the retention sweep the matches stay, but the ZIP would be empty."""
+    import shutil
+    from pathlib import Path
+    login_as()
+    run_id, _status = _run_and_wait(client)
+    db = test_app["database"].SessionLocal()
+    try:
+        run = db.get(test_app["models"].ImageSortRun, run_id)
+        shutil.rmtree(Path(run.work_dir) / "source")
+    finally:
+        db.close()
+
+    resp = client.get(f"/image-sort/download/{run_id}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/image-sort?error=expired"
+    assert client.get(f"/image-sort/run/{run_id}").json()["photos_expired"] is True
+    page = client.get("/image-sort?error=expired").text
+    assert "deleted after" in page and f'href="/image-sort/download/{run_id}"' not in page

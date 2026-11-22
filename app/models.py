@@ -98,6 +98,10 @@ class UniqueItem(Base):
     wholesale_price = Column(Float)
     retail_price = Column(Float)
     sizes_json = Column(Text, default="[]")
+    # Per-size barcode and quantity, {size: {"barcode": str, "qty": float}},
+    # for an uploaded sheet with one row per size. The item's own barcode and
+    # qty_available are the first barcode and the style total.
+    size_details_json = Column(Text, default="{}")
     qty_available = Column(Float)
     barcode = Column(String(255))
     item_group = Column(String(500))
@@ -152,6 +156,17 @@ class UniqueItem(Base):
     @sizes.setter
     def sizes(self, val: list):
         self.sizes_json = json.dumps(val)
+
+    @property
+    def size_details(self) -> dict:
+        try:
+            return json.loads(self.size_details_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+
+    @size_details.setter
+    def size_details(self, val: dict):
+        self.size_details_json = json.dumps(val or {})
 
     @property
     def provenance(self) -> dict:
