@@ -268,16 +268,25 @@ def _recount(job: CollectionJob, report: dict, rules: dict) -> None:
                 return str(r.get(k)).strip()
         return ""
 
+    from app.core.temp_template import expand_sizes
+
+    def sizes_of(r):
+        # An order form with its sizes across the row (Size 1…Size n — Hiking
+        # Patrol, NuORDER) has one line per size, as the TEMP has; counting the
+        # row once reported its colourways as SKUs (60 against a 272-line TEMP).
+        across = [x["size"] for x in expand_sizes(r)] if not pkg._blank(r.get("Size 1")) else []
+        return across or ["/".join(x for x in (v(r, "Size"), v(r, "Size Run")) if x)]
+
     as_identity = [{"item_code": v(r, "Item No."),
                     # Edwin: one colour name, several finish codes — each its own product.
                     "color_name": " ".join(x for x in (v(r, "Colour Code"), v(r, "Color")) if x),
                     "color_code": v(r, "Colour Code"),
-                    "size": "/".join(x for x in (v(r, "Size"), v(r, "Size Run")) if x),
+                    "size": size,
                     "barcode": v(r, "Barcode"), "brand": v(r, "Brand"),
                     "style_name": v(r, "Item Description"),
                     "wholesale_price": v(r, "Wholesale Price EUR", "Supplier Wholesale Price") or None,
                     "retail_price": v(r, "Retail EUR", "Supplier Retail Price") or None}
-                   for r in rows]
+                   for r in rows for size in sizes_of(r)]
     totals = intake_core.analyse_rows(as_identity)
     gap_words = ("lines without a barcode", "lines without a purchase price",
                  "lines without an RRP", "lines without a size")

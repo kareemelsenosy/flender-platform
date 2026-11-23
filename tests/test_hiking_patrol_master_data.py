@@ -142,3 +142,21 @@ def test_a_real_word_is_not_corrected_without_its_neighbour():
     rows = [{"Item Description": n} for n in names]
     pkg._name_typos(rows)
     assert rows[0]["Item Description"] == "Beach Print T'shirt"
+
+
+def test_sizes_across_the_row_are_counted_as_skus(monkeypatch, test_app):
+    """NuORDER lays sizes out as Size 1…Size n: one line each, as in the TEMP."""
+    import importlib
+    from types import SimpleNamespace
+
+    intake_routes = importlib.import_module("app.routers.intake_routes")
+    pkg = importlib.import_module("app.services.packages")
+    rows = [{"Item No.": "HP0127001", "Color": "COYOTE BROWN",
+             "Size 1": "S", "Size 2": "M", "Size 3": "L"},
+            {"Item No.": "HP0127002", "Color": "BLACK", "Size": "One Size"}]
+    monkeypatch.setattr(pkg, "collection_rows", lambda job, kind, rules: (rows, None, {}))
+    job = SimpleNamespace(total_styles=0, total_skus=0)
+    report = {"warnings": []}
+    intake_routes._recount(job, report, {})
+    assert job.total_skus == 4
+    assert "4 lines without a barcode" in report["warnings"]
